@@ -6,6 +6,7 @@ from pathlib import Path
 from agents import Agent, Runner, function_tool
 
 from openkb.agent.tools import list_wiki_files, read_wiki_file
+from openkb.llm_runtime import build_agent_model_settings, resolve_agent_model
 
 MAX_TURNS = 50
 from openkb.schema import SCHEMA_MD, get_agents_md
@@ -74,7 +75,8 @@ def build_lint_agent(wiki_root: str, model: str, language: str = "en") -> Agent:
         name="wiki-linter",
         instructions=instructions,
         tools=[list_files, read_file],
-        model=f"litellm/{model}",
+        model=resolve_agent_model(model),
+        model_settings=build_agent_model_settings(parallel_tool_calls=False),
     )
 
 

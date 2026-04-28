@@ -49,7 +49,7 @@ def test_init_schema_content(tmp_path):
         assert result.exit_code == 0
 
         from pathlib import Path
-        agents_content = Path("wiki/AGENTS.md").read_text()
+        agents_content = Path("wiki/AGENTS.md").read_text(encoding="utf-8")
         assert agents_content == AGENTS_MD
 
 

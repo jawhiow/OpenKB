@@ -7,6 +7,7 @@ from agents import Agent, Runner, function_tool
 
 from agents import ToolOutputImage, ToolOutputText
 from openkb.agent.tools import get_wiki_page_content, read_wiki_file, read_wiki_image
+from openkb.llm_runtime import build_agent_model_settings, resolve_agent_model
 
 MAX_TURNS = 50
 from openkb.schema import get_agents_md
@@ -79,15 +80,12 @@ def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent
         if result["type"] == "image":
             return ToolOutputImage(image_url=result["image_url"])
         return ToolOutputText(text=result["text"])
-
-    from agents.model_settings import ModelSettings
-
     return Agent(
         name="wiki-query",
         instructions=instructions,
         tools=[read_file, get_page_content, get_image],
-        model=f"litellm/{model}",
-        model_settings=ModelSettings(parallel_tool_calls=False),
+        model=resolve_agent_model(model),
+        model_settings=build_agent_model_settings(parallel_tool_calls=False),
     )
 
 

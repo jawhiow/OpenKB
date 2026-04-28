@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenKB Agent Native"
+  short_description: "用 agent 原生能力维护 OpenKB 兼容知识库"
+  default_prompt: "Use $openkb-agent-native to build or maintain an OpenKB-compatible knowledge base in the current directory."

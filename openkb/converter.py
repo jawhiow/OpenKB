@@ -1,7 +1,9 @@
 """Document conversion pipeline for OpenKB."""
 from __future__ import annotations
 
+import inspect
 import logging
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +33,32 @@ def get_pdf_page_count(path: Path) -> int:
     """Return the number of pages in the PDF at *path* using pymupdf."""
     with pymupdf.open(str(path)) as doc:
         return doc.page_count
+
+
+def _pageindex_long_doc_available() -> bool:
+    """Return whether long-PDF indexing is available in the current environment."""
+    try:
+        from pageindex import PageIndexClient
+    except ImportError:
+        return False
+
+    # Cloud SDK path: requires an explicit API key.
+    if os.environ.get("PAGEINDEX_API_KEY", "").strip():
+        return True
+
+    # Local/open-source variants expose richer indexing methods.
+    if hasattr(PageIndexClient, "collection") or hasattr(PageIndexClient, "index"):
+        return True
+
+    try:
+        init_sig = inspect.signature(PageIndexClient.__init__)
+    except (TypeError, ValueError):
+        return False
+
+    return any(
+        name in init_sig.parameters
+        for name in ("model", "workspace", "storage_path", "retrieve_model")
+    )
 
 
 def convert_document(src: Path, kb_dir: Path) -> ConvertResult:
@@ -75,13 +103,20 @@ def convert_document(src: Path, kb_dir: Path) -> ConvertResult:
     if src.suffix.lower() == ".pdf":
         page_count = get_pdf_page_count(src)
         if page_count >= threshold:
+            if _pageindex_long_doc_available():
+                logger.info(
+                    "Long PDF detected (%d pages >= %d threshold): %s",
+                    page_count,
+                    threshold,
+                    src.name,
+                )
+                return ConvertResult(raw_path=raw_dest, is_long_doc=True, file_hash=file_hash)
+
             logger.info(
-                "Long PDF detected (%d pages >= %d threshold): %s",
-                page_count,
-                threshold,
+                "Long PDF detected but no compatible PageIndex long-doc backend is available; "
+                "falling back to direct PDF conversion: %s",
                 src.name,
             )
-            return ConvertResult(raw_path=raw_dest, is_long_doc=True, file_hash=file_hash)
 
     # ------------------------------------------------------------------
     # 4/5. Convert to Markdown

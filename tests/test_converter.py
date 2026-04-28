@@ -118,6 +118,7 @@ class TestConvertDocumentPdfLong:
 
         with (
             patch("openkb.converter.pymupdf.open") as mock_mu,
+            patch("openkb.converter._pageindex_long_doc_available", return_value=True),
         ):
             fake_doc = MagicMock()
             fake_doc.page_count = 200  # above threshold
@@ -131,3 +132,26 @@ class TestConvertDocumentPdfLong:
         assert result.source_path is None
         assert result.skipped is False
         assert result.raw_path is not None
+
+    def test_long_pdf_falls_back_when_pageindex_unavailable(self, kb_dir, tmp_path):
+        """Long PDFs fall back to regular PDF conversion if no long-doc indexer is available."""
+        src = tmp_path / "fallback.pdf"
+        src.write_bytes(b"%PDF-1.4 fake long content")
+
+        with (
+            patch("openkb.converter.pymupdf.open") as mock_mu,
+            patch("openkb.converter._pageindex_long_doc_available", return_value=False),
+            patch("openkb.converter.convert_pdf_with_images", return_value="# Fallback PDF\n\nConverted.") as mock_cpwi,
+        ):
+            fake_doc = MagicMock()
+            fake_doc.page_count = 200
+            fake_doc.__enter__ = MagicMock(return_value=fake_doc)
+            fake_doc.__exit__ = MagicMock(return_value=False)
+            mock_mu.return_value = fake_doc
+
+            result = convert_document(src, kb_dir)
+
+        mock_cpwi.assert_called_once()
+        assert result.is_long_doc is False
+        assert result.source_path is not None
+        assert result.source_path.exists()

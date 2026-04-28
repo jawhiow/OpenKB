@@ -26,6 +26,7 @@ litellm.suppress_debug_info = True
 from dotenv import load_dotenv
 
 from openkb.config import DEFAULT_CONFIG, load_config, save_config, load_global_config, register_kb
+from openkb.llm_runtime import configure_runtime, get_base_url, uses_responses_api
 from openkb.converter import convert_document
 from openkb.log import append_log
 from openkb.schema import AGENTS_MD
@@ -74,6 +75,13 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
         for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
             if not os.environ.get(env_var):
                 os.environ[env_var] = api_key
+
+    normalized_base = get_base_url()
+    if normalized_base:
+        os.environ["OPENAI_BASE_URL"] = normalized_base
+        os.environ["OPENAI_API_BASE"] = normalized_base
+
+    configure_runtime()
 
 # Supported document extensions for the `add` command
 SUPPORTED_EXTENSIONS = {

@@ -1,6 +1,7 @@
 """Tests for openkb.indexer."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -125,3 +126,82 @@ class TestIndexLongDocument:
         assert ic.if_add_node_text is True
         assert ic.if_add_node_summary is True
         assert ic.if_add_doc_description is True
+
+    def test_compatible_client_without_index_config(self, kb_dir, sample_tree, tmp_path):
+        """Falls back to the published PageIndex client API when legacy kwargs fail."""
+        doc_id = "compat-123"
+        compat_client = MagicMock()
+        compat_client.index.return_value = doc_id
+        compat_client.get_document.return_value = json.dumps(
+            {
+                "doc_id": doc_id,
+                "doc_name": sample_tree["doc_name"],
+                "doc_description": sample_tree["doc_description"],
+                "type": "pdf",
+                "page_count": 2,
+            }
+        )
+        compat_client.get_document_structure.return_value = json.dumps(sample_tree["structure"])
+
+        pdf_path = tmp_path / "compat.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        def fake_client_factory(*args, **kwargs):
+            if "storage_path" in kwargs or "index_config" in kwargs:
+                raise TypeError("legacy kwargs not supported")
+            return compat_client
+
+        with patch("openkb.indexer.PageIndexClient", side_effect=fake_client_factory), \
+             patch("openkb.images.convert_pdf_to_pages", return_value=self._fake_pages()):
+            result = index_long_document(pdf_path, kb_dir)
+
+        assert isinstance(result, IndexResult)
+        assert result.doc_id == doc_id
+        compat_client.index.assert_called_once_with(str(pdf_path), mode="pdf")
+
+    def test_compatible_client_with_cloud_sdk(self, kb_dir, sample_tree, tmp_path, monkeypatch):
+        """Supports the cloud SDK shape exposed by the current PageIndex Python package."""
+        doc_id = "pi-cloud-123"
+        cloud_client = MagicMock()
+        cloud_client.submit_document.return_value = {"doc_id": doc_id}
+        cloud_client.get_tree.return_value = {
+            "doc_id": doc_id,
+            "status": "completed",
+            "result": sample_tree["structure"],
+        }
+        cloud_client.get_document.return_value = {
+            "id": doc_id,
+            "name": "sample.pdf",
+            "description": sample_tree["doc_description"],
+            "status": "completed",
+            "pageNum": 2,
+        }
+        cloud_client.get_ocr.return_value = {
+            "doc_id": doc_id,
+            "status": "completed",
+            "result": [
+                {"page": 1, "content": "Page one text.", "images": []},
+                {"page": 2, "content": "Page two text.", "images": []},
+            ],
+        }
+
+        pdf_path = tmp_path / "cloud.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+        def fake_client_factory(*args, **kwargs):
+            if "storage_path" in kwargs or "index_config" in kwargs or "workspace" in kwargs or "model" in kwargs:
+                raise TypeError("unsupported kwargs for cloud sdk")
+            return cloud_client
+
+        monkeypatch.setenv("PAGEINDEX_API_KEY", "pi-test-key")
+
+        with patch("openkb.indexer.PageIndexClient", side_effect=fake_client_factory), \
+             patch("openkb.images.convert_pdf_to_pages", return_value=self._fake_pages()):
+            result = index_long_document(pdf_path, kb_dir)
+
+        assert isinstance(result, IndexResult)
+        assert result.doc_id == doc_id
+        assert result.description == sample_tree["doc_description"]
+        cloud_client.submit_document.assert_called_once_with(str(pdf_path))
+        cloud_client.get_tree.assert_called_once_with(doc_id, node_summary=True)
+        cloud_client.get_ocr.assert_called_once_with(doc_id, format="page")

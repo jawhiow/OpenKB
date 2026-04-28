@@ -22,6 +22,7 @@ from pathlib import Path
 import litellm
 
 from openkb.schema import get_agents_md
+from openkb.llm_runtime import acompletion, completion
 
 logger = logging.getLogger(__name__)
 
@@ -160,11 +161,24 @@ class _Spinner:
 
 def _format_usage(elapsed: float, usage) -> str:
     """Format timing and token usage into a short summary string."""
+    input_tokens = getattr(usage, "prompt_tokens", None)
+    output_tokens = getattr(usage, "completion_tokens", None)
+    total_tokens = getattr(usage, "total_tokens", None)
+
+    if input_tokens is None and hasattr(usage, "input_tokens"):
+        input_tokens = usage.input_tokens
+    if output_tokens is None and hasattr(usage, "output_tokens"):
+        output_tokens = usage.output_tokens
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
     cached = getattr(usage, "prompt_tokens_details", None)
+    if cached is None:
+        cached = getattr(usage, "input_tokens_details", None)
     cache_info = ""
     if cached and hasattr(cached, "cached_tokens") and cached.cached_tokens:
         cache_info = f", cached={cached.cached_tokens}"
-    return f"{elapsed:.1f}s (in={usage.prompt_tokens}, out={usage.completion_tokens}{cache_info})"
+    return f"{elapsed:.1f}s (in={input_tokens}, out={output_tokens}{cache_info})"
 
 
 def _fmt_messages(messages: list[dict], max_content: int = 200) -> str:
@@ -191,8 +205,8 @@ def _llm_call(model: str, messages: list[dict], step_name: str, **kwargs) -> str
     spinner.start()
     t0 = time.time()
 
-    response = litellm.completion(model=model, messages=messages, **kwargs)
-    content = response.choices[0].message.content or ""
+    response = completion(model=model, messages=messages, **kwargs)
+    content = response.text
 
     spinner.stop(_format_usage(time.time() - t0, response.usage))
     logger.debug("LLM response [%s]:\n%s", step_name, content[:500] + ("..." if len(content) > 500 else ""))
@@ -205,8 +219,8 @@ async def _llm_call_async(model: str, messages: list[dict], step_name: str) -> s
 
     t0 = time.time()
 
-    response = await litellm.acompletion(model=model, messages=messages)
-    content = response.choices[0].message.content or ""
+    response = await acompletion(model=model, messages=messages)
+    content = response.text
 
     elapsed = time.time() - t0
     sys.stdout.write(f"    {step_name}... {_format_usage(elapsed, response.usage)}\n")
