@@ -39,6 +39,7 @@ def ensure_kb_structure(kb_dir: Path) -> None:
     (kb_dir / "wiki" / "explorations").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "reports").mkdir(parents=True, exist_ok=True)
     (kb_dir / ".openkb").mkdir(parents=True, exist_ok=True)
+    (kb_dir / ".openkb" / "tree_index").mkdir(parents=True, exist_ok=True)
 
 
 def write_default_files(kb_dir: Path, *, language: str = "zh") -> None:

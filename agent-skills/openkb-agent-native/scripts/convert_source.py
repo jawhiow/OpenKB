@@ -6,11 +6,13 @@ from pathlib import Path
 
 from _converter import convert_document
 from _images import convert_pdf_with_images
+from tree_index import build_tree_index
 
 
 def convert_source_file(source_path: Path, kb_dir: Path) -> dict:
     result = convert_document(source_path, kb_dir)
     resolved_source_path = result.source_path
+    tree_index_path: str | None = None
 
     # Agent-native KBs do not rely on PageIndex. If a long PDF is detected but
     # conversion did not produce a markdown source, force a local markdown
@@ -28,12 +30,17 @@ def convert_source_file(source_path: Path, kb_dir: Path) -> dict:
         resolved_source_path = sources_dir / f"{doc_name}.md"
         resolved_source_path.write_text(markdown, encoding="utf-8")
 
+    if result.is_long_doc and resolved_source_path is not None:
+        tree_index = build_tree_index(resolved_source_path, kb_dir)
+        tree_index_path = tree_index["tree_index_path"]
+
     return {
         "raw_path": result.raw_path.as_posix() if result.raw_path else None,
         "source_path": resolved_source_path.as_posix() if resolved_source_path else None,
         "is_long_doc": result.is_long_doc,
         "skipped": result.skipped,
         "file_hash": result.file_hash,
+        "tree_index_path": tree_index_path,
     }
 
 

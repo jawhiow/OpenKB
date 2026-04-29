@@ -46,7 +46,22 @@ Expected flow:
 3. Rebuild index
 4. Append log entries
 
-## Example 4: Query And Save
+## Example 4: Add A Long PDF
+
+User request:
+
+`把这份几十页的行业报告加入知识库`
+
+Expected flow:
+
+1. Convert with `scripts/convert_source.py`
+2. If the file is treated as a long PDF, ensure `.openkb/tree_index/<doc>.json` exists
+3. Read the tree index before reading the full source
+4. Summarize by important nodes, not by naive full-text reread
+5. Write summary and update concepts
+6. Rebuild index and append log
+
+## Example 5: Query And Save
 
 User request:
 
@@ -57,7 +72,8 @@ Expected flow:
 1. Search `index.md`
 2. Read relevant concepts
 3. Read relevant summaries
-4. Fall back to sources only if needed
-5. Answer in the current thread
-6. Save an exploration page
-7. Rebuild index and append log
+4. For long PDFs, consult `.openkb/tree_index/*.json` before opening the full source
+5. Fall back to sources only if needed
+6. Answer in the current thread
+7. Save an exploration page
+8. Rebuild index and append log

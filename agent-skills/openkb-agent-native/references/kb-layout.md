@@ -10,6 +10,7 @@ OpenKB-compatible knowledge bases should keep this layout:
     config.yaml
     hashes.json
     chats/
+    tree_index/
   raw/
   wiki/
     AGENTS.md
@@ -26,6 +27,7 @@ OpenKB-compatible knowledge bases should keep this layout:
 
 - `.openkb/config.yaml` stores KB-level defaults and may include `agent_native: true`
 - `.openkb/hashes.json` is the primary dedupe and document-state registry
+- `.openkb/tree_index/` stores lightweight tree indexes for long sources
 - `raw/` stores source artifacts
 - `wiki/sources/` stores converted document content
 - `wiki/summaries/` stores one page per source document

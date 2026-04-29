@@ -53,6 +53,7 @@ def make_minimal_kb(kb_dir: Path) -> None:
     (kb_dir / "wiki" / "explorations").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "reports").mkdir(parents=True, exist_ok=True)
     (kb_dir / ".openkb").mkdir(parents=True, exist_ok=True)
+    (kb_dir / ".openkb" / "tree_index").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "AGENTS.md").write_text("# Wiki Schema\n", encoding="utf-8")
     (kb_dir / "wiki" / "index.md").write_text(
         "# Knowledge Base Index\n\n## Documents\n\n## Concepts\n\n## Explorations\n",
@@ -83,6 +84,7 @@ def test_init_kb_creates_compatible_structure(tmp_path):
 
     assert (kb_dir / ".openkb" / "config.yaml").exists()
     assert (kb_dir / ".openkb" / "hashes.json").exists()
+    assert (kb_dir / ".openkb" / "tree_index").is_dir()
     assert (kb_dir / "raw").is_dir()
     assert (kb_dir / "wiki" / "sources").is_dir()
     assert (kb_dir / "wiki" / "summaries").is_dir()
@@ -249,6 +251,8 @@ def test_convert_source_falls_back_to_local_pdf_markdown_for_long_pdf(tmp_path):
 
     assert (tmp_path / "wiki" / "sources" / "report.md").exists()
     assert result["source_path"].endswith("wiki/sources/report.md")
+    assert (tmp_path / ".openkb" / "tree_index" / "report.json").exists()
+    assert result["tree_index_path"].endswith(".openkb/tree_index/report.json")
 
 
 def test_common_loads_without_openkb_dependency(monkeypatch):
@@ -261,3 +265,74 @@ def test_convert_source_loads_without_openkb_dependency(monkeypatch):
     block_openkb_imports(monkeypatch)
     module = load_script_module("convert_source")
     assert hasattr(module, "convert_source_file")
+
+
+def test_tree_index_builds_hierarchy_from_headings(tmp_path):
+    module = load_script_module("tree_index")
+    make_minimal_kb(tmp_path)
+
+    source_path = tmp_path / "wiki" / "sources" / "report.md"
+    source_path.write_text(
+        "# Report\n\n概览。\n\n## AI Demand\n\nAI demand is rising.\n\n## HBM Bottlenecks\n\nHBM is constrained.\n",
+        encoding="utf-8",
+    )
+
+    index = module.build_tree_index(source_path, tmp_path)
+
+    assert index["doc_name"] == "report"
+    assert index["structure"][0]["title"] == "Report"
+    child_titles = [node["title"] for node in index["structure"][0]["children"]]
+    assert "AI Demand" in child_titles
+    assert "HBM Bottlenecks" in child_titles
+
+
+def test_tree_index_can_search_relevant_nodes(tmp_path):
+    module = load_script_module("tree_index")
+    make_minimal_kb(tmp_path)
+
+    source_path = tmp_path / "wiki" / "sources" / "report.md"
+    source_path.write_text(
+        "# Report\n\n概览。\n\n## AI Demand\n\nAI demand is rising.\n\n## HBM Bottlenecks\n\nHBM is constrained.\n",
+        encoding="utf-8",
+    )
+
+    index = module.build_tree_index(source_path, tmp_path)
+    matches = module.search_tree_index(index, "HBM constrained", top_k=2)
+
+    assert matches
+    assert matches[0]["title"] == "HBM Bottlenecks"
+
+
+def test_tree_index_falls_back_to_chunk_mode_without_headings(tmp_path):
+    module = load_script_module("tree_index")
+    make_minimal_kb(tmp_path)
+
+    source_path = tmp_path / "wiki" / "sources" / "plain.md"
+    source_path.write_text(
+        "第一段内容非常长。" * 20 + "\n\n" + "第二段继续讨论 AI 芯片和封装问题。" * 20,
+        encoding="utf-8",
+    )
+
+    index = module.build_tree_index(source_path, tmp_path, max_chars=120)
+
+    assert index["structure"]
+    assert index["structure"][0]["children"]
+
+
+def test_tree_index_search_prefers_relevant_chunk_in_chunk_mode(tmp_path):
+    module = load_script_module("tree_index")
+    make_minimal_kb(tmp_path)
+
+    source_path = tmp_path / "wiki" / "sources" / "plain.md"
+    source_path.write_text(
+        ("GPU training demand is rising.\n" * 20)
+        + "\n"
+        + ("HBM constrained supply limits shipments.\n" * 20),
+        encoding="utf-8",
+    )
+
+    index = module.build_tree_index(source_path, tmp_path, max_chars=200)
+    matches = module.search_tree_index(index, "HBM constrained", top_k=3)
+
+    assert matches
+    assert matches[0]["title"].startswith("Chunk")

@@ -15,6 +15,7 @@ description: Use when Codex or Claude Code needs to build, update, query, chat o
 - 当前工作目录就是知识库根目录
 - 如果当前目录还不是 KB，先初始化
 - 兼容目录结构优先于复刻原始 OpenKB 内部实现
+- 长 PDF 优先走“轻量树索引”路径，而不是直接整篇硬读
 
 ## 独立性边界
 
@@ -64,6 +65,18 @@ python .\scripts\sync_raw.py .
 python .\scripts\convert_source.py <source-path> --kb-dir .
 ```
 
+### 为长文 source 建树索引
+
+```powershell
+python .\scripts\tree_index.py build .\wiki\sources\<doc>.md --kb-dir .
+```
+
+### 在树索引中定位相关节点
+
+```powershell
+python .\scripts\tree_index.py search .\.openkb\tree_index\<doc>.json --query "HBM bottleneck"
+```
+
 ### 重建索引
 
 ```powershell
@@ -110,6 +123,8 @@ python .\scripts\lint_structural.py .
 2. 若处理的是 `raw/` 目录批量更新，先运行 `scripts/sync_raw.py` 获取待处理清单
 3. 对每个待处理文件：
    - 转换到 `wiki/sources/`
+   - 如果是长 PDF，优先生成 `.openkb/tree_index/<doc>.json`
+   - 对长 PDF，先读 tree index，再按节点回看原文
    - 阅读转换后的 source
    - 生成或更新对应 `wiki/summaries/<name>.md`
    - 优先更新已有 `wiki/concepts/*.md`，避免制造近义概念页
@@ -130,7 +145,8 @@ python .\scripts\lint_structural.py .
 1. `wiki/index.md`
 2. 相关 `wiki/concepts/*.md`
 3. 相关 `wiki/summaries/*.md`
-4. 证据不足时再回看 `wiki/sources/*`
+4. 如果问题涉及长 PDF，优先查看 `.openkb/tree_index/*.json`
+5. 证据不足时再回看 `wiki/sources/*`
 
 如果用户要求保存结果：
 
@@ -214,18 +230,21 @@ python .\scripts\lint_structural.py .
   执行结构层检查，例如断链、缺 source、hash 指向缺失 raw。
 - `scripts/chat_store.py`
   保存和恢复 KB 对话会话元数据。
+- `scripts/tree_index.py`
+  为长 source 生成轻量树索引，并按关键词定位相关节点。
 
 ## 长文档策略
 
-第一版不依赖 PageIndex Cloud，也不承诺完整复刻树检索。
+第一版不依赖 PageIndex Cloud，但已经加入了一个轻量树索引模式。
 
 长文档处理原则：
 
-1. 先尽可能本地转换
-2. 必要时分页或分块读取
-3. 先生成阶段性摘要
-4. 再产出最终 summary / concept
-5. query 时按需回看具体 source 片段
+1. 先本地转换成长 markdown
+2. 再生成 `.openkb/tree_index/<doc>.json`
+3. 先看树结构和命中节点，不要上来就通读全文
+4. 按节点回看原文
+5. 先生成阶段性摘要，再产出最终 summary / concept
+6. query 时优先利用 tree index 缩小范围
 
 ## 何时读取 references
 
