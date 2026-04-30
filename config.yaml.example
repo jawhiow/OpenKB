@@ -1,3 +1,4 @@
 model: gpt-5.4                   # LLM model (any LiteLLM-supported provider)
 language: en                     # Wiki output language
 pageindex_threshold: 20          # PDF pages threshold for PageIndex
+wire_api: responses              # gpt-5 models prefer responses; others may use chat_completions

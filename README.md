@@ -86,12 +86,18 @@ openkb chat
 OpenKB comes with [multi-LLM support](https://docs.litellm.ai/docs/providers) (e.g., OpenAI, Claude, Gemini) via [LiteLLM](https://github.com/BerriAI/litellm) (pinned to a [safe version](https://docs.litellm.ai/blog/security-update-march-2026)).
 
 Set your model during `openkb init`, or in [`.openkb/config.yaml`](#configuration), using `provider/model` LiteLLM format (like `anthropic/claude-sonnet-4-6`). OpenAI models can omit the prefix (like `gpt-5.4`).
+For `gpt-5*` models, OpenKB automatically prefers the OpenAI Responses API.
 
 Create a `.env` file with your LLM API key:
 
 ```bash
 LLM_API_KEY=your_llm_api_key
 ```
+
+For OpenAI-compatible gateways, you can also point OpenKB at a custom base URL.
+If your gateway only exposes one wire protocol, set `wire_api` explicitly in
+`.openkb/config.yaml` or export `OPENKB_WIRE_API`. `gpt-5*` models default to
+`responses`; other models continue to default to `chat_completions`.
 
 # 🧩 How OpenKB Works
 
@@ -189,7 +195,15 @@ Settings are initialized by `openkb init`, and stored in `.openkb/config.yaml`:
 model: gpt-5.4                   # LLM model (any LiteLLM-supported provider)
 language: en                     # Wiki output language
 pageindex_threshold: 20          # PDF pages threshold for PageIndex
+wire_api: responses              # gpt-5 models prefer responses
 ```
+
+For OpenAI-compatible providers:
+
+- `gpt-5*` models default to `wire_api: responses`
+- Other models default to `wire_api: chat_completions`
+- Override `wire_api` if your gateway only exposes `/chat/completions` or `/responses`
+- Set `OPENAI_BASE_URL` in `.env` when using a custom OpenAI-compatible endpoint
 
 Model names use `provider/model` LiteLLM [format](https://docs.litellm.ai/docs/providers) (OpenAI models can omit the prefix):
 

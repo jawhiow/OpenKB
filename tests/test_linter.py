@@ -29,9 +29,16 @@ class TestBuildLintAgent:
         agent = build_lint_agent(str(tmp_path), "gpt-4o-mini")
         assert SCHEMA_MD in agent.instructions
 
-    def test_agent_model(self, tmp_path):
+    def test_agent_model(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENKB_WIRE_API", raising=False)
+        monkeypatch.delenv("OPENAI_WIRE_API", raising=False)
         agent = build_lint_agent(str(tmp_path), "custom-model")
         assert agent.model == "litellm/custom-model"
+
+    def test_agent_model_with_responses_api(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENKB_WIRE_API", "responses")
+        agent = build_lint_agent(str(tmp_path), "custom-model")
+        assert agent.model == "custom-model"
 
     def test_instructions_mention_contradictions(self, tmp_path):
         agent = build_lint_agent(str(tmp_path), "gpt-4o-mini")

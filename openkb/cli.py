@@ -26,7 +26,7 @@ litellm.suppress_debug_info = True
 from dotenv import load_dotenv
 
 from openkb.config import DEFAULT_CONFIG, load_config, save_config, load_global_config, register_kb
-from openkb.llm_runtime import configure_runtime, get_base_url, uses_responses_api
+from openkb.llm_runtime import configure_runtime, get_base_url, model_prefers_responses_api
 from openkb.converter import convert_document
 from openkb.log import append_log
 from openkb.schema import AGENTS_MD
@@ -49,10 +49,20 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
     Also propagates to provider-specific env vars (OPENAI_API_KEY, etc.)
     so that the Agents SDK litellm provider can pick them up.
     """
+    model_name: str | None = None
+
     if kb_dir is not None:
         env_file = kb_dir / ".env"
         if env_file.exists():
             load_dotenv(env_file, override=False)
+
+        config_path = kb_dir / ".openkb" / "config.yaml"
+        if config_path.exists():
+            config = load_config(config_path)
+            model_name = str(config.get("model", "")).strip() or None
+            wire_api = str(config.get("wire_api", "")).strip().lower()
+            if wire_api and not os.environ.get("OPENKB_WIRE_API") and not os.environ.get("OPENAI_WIRE_API"):
+                os.environ["OPENKB_WIRE_API"] = wire_api
 
     from openkb.config import GLOBAL_CONFIG_DIR
     global_env = GLOBAL_CONFIG_DIR / ".env"
@@ -76,12 +86,12 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
             if not os.environ.get(env_var):
                 os.environ[env_var] = api_key
 
-    normalized_base = get_base_url()
+    normalized_base = get_base_url(model_name)
     if normalized_base:
         os.environ["OPENAI_BASE_URL"] = normalized_base
         os.environ["OPENAI_API_BASE"] = normalized_base
 
-    configure_runtime()
+    configure_runtime(model_name)
 
 # Supported document extensions for the `add` command
 SUPPORTED_EXTENSIONS = {
@@ -307,6 +317,7 @@ def init():
         "model": model,
         "language": DEFAULT_CONFIG["language"],
         "pageindex_threshold": DEFAULT_CONFIG["pageindex_threshold"],
+        "wire_api": "responses" if model_prefers_responses_api(model) else DEFAULT_CONFIG["wire_api"],
     }
     save_config(openkb_dir / "config.yaml", config)
     (openkb_dir / "hashes.json").write_text(json.dumps({}), encoding="utf-8")

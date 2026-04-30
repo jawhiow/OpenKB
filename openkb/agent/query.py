@@ -85,7 +85,7 @@ def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent
         instructions=instructions,
         tools=[read_file, get_page_content, get_image],
         model=resolve_agent_model(model),
-        model_settings=build_agent_model_settings(parallel_tool_calls=False),
+        model_settings=build_agent_model_settings(parallel_tool_calls=False, model=model),
     )
 
 

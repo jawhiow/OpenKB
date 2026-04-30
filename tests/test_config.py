@@ -7,12 +7,14 @@ def test_default_config_keys():
     assert "model" in DEFAULT_CONFIG
     assert "language" in DEFAULT_CONFIG
     assert "pageindex_threshold" in DEFAULT_CONFIG
+    assert "wire_api" in DEFAULT_CONFIG
 
 
 def test_default_config_values():
     assert DEFAULT_CONFIG["model"] == "gpt-5.4-mini"
     assert DEFAULT_CONFIG["language"] == "en"
     assert DEFAULT_CONFIG["pageindex_threshold"] == 20
+    assert DEFAULT_CONFIG["wire_api"] == "chat_completions"
 
 
 def test_load_missing_file_returns_defaults(tmp_path):
@@ -47,3 +49,4 @@ def test_load_overrides_defaults(tmp_path):
     assert loaded["pageindex_threshold"] == 100
     # Non-overridden defaults still present
     assert loaded["language"] == "en"
+    assert loaded["wire_api"] == "chat_completions"
