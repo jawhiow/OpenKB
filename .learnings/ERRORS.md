@@ -81,3 +81,30 @@ Use `${pidValue}` when a variable is immediately followed by punctuation in a do
 - Related Files: none
 
 ---
+## [ERR-20260430-004] powershell_nested_redaction_command
+
+**Logged**: 2026-04-30T13:35:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+A nested one-line PowerShell command for redacting config and env files failed because the braces became hard to audit.
+
+### Error
+```text
+Unexpected token '}' in expression or statement.
+```
+
+### Context
+- Command attempted while inspecting OpenKB runtime configuration without exposing secrets.
+- The script mixed nested loops, if/else blocks, regex replacements, and redaction logic in one long command.
+
+### Suggested Fix
+Use smaller PowerShell commands or a here-string script for multi-branch redaction logic; keep secret-redaction inspection readable.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+---
