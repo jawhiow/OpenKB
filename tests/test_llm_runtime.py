@@ -111,3 +111,20 @@ def test_completion_routes_gpt5_to_responses_api_when_chat_completions_is_config
     assert result.text == "OK"
     mock_client.responses.create.assert_called_once()
     mock_chat_completion.assert_not_called()
+
+
+def test_completion_passes_configured_timeout_to_responses_api(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "responses")
+    monkeypatch.setenv("OPENKB_LLM_TIMEOUT", "12.5")
+
+    mock_client = MagicMock()
+    mock_client.responses.create.return_value = _fake_response("OK")
+
+    with patch("openkb.llm_runtime._get_sync_openai_client", return_value=mock_client):
+        result = completion(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+
+    assert result.text == "OK"
+    assert mock_client.responses.create.call_args.kwargs["timeout"] == 12.5

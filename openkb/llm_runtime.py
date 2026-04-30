@@ -105,6 +105,27 @@ def get_response_retry_max_delay() -> float:
         return 10.0
 
 
+def get_llm_timeout() -> float | None:
+    value = os.getenv("OPENKB_LLM_TIMEOUT", "").strip().lower()
+    if value in {"0", "none", "false", "off"}:
+        return None
+    if not value:
+        return 180.0
+    try:
+        timeout = float(value)
+    except ValueError:
+        return 180.0
+    return timeout if timeout > 0 else None
+
+
+def _apply_default_timeout(kwargs: dict[str, Any]) -> dict[str, Any]:
+    if "timeout" not in kwargs:
+        timeout = get_llm_timeout()
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+    return kwargs
+
+
 def _status_code(exc: Exception) -> int | None:
     status = getattr(exc, "status_code", None)
     return status if isinstance(status, int) else None
@@ -216,7 +237,7 @@ def _split_messages_for_responses(messages: list[dict]) -> tuple[str | None, lis
 def _responses_request_kwargs(model: str, messages: list[dict], **kwargs) -> dict[str, Any]:
     instructions, input_items = _split_messages_for_responses(messages)
     max_tokens = kwargs.pop("max_tokens", None)
-    return {
+    return _apply_default_timeout({
         "model": model,
         "instructions": instructions,
         "input": input_items,
@@ -225,12 +246,12 @@ def _responses_request_kwargs(model: str, messages: list[dict], **kwargs) -> dic
         "reasoning": Reasoning(effort=get_reasoning_effort()) if get_reasoning_effort() else None,
         "text": {"verbosity": get_verbosity()} if get_verbosity() in {"low", "medium", "high"} else None,
         **kwargs,
-    }
+    })
 
 
 def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     if not uses_responses_api(model):
-        response = litellm.completion(model=model, messages=messages, **kwargs)
+        response = litellm.completion(model=model, messages=messages, **_apply_default_timeout(kwargs))
         text = response.choices[0].message.content or ""
         return CompletionResult(text=text.strip(), usage=response.usage)
 
@@ -250,7 +271,7 @@ def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
 
 async def acompletion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     if not uses_responses_api(model):
-        response = await litellm.acompletion(model=model, messages=messages, **kwargs)
+        response = await litellm.acompletion(model=model, messages=messages, **_apply_default_timeout(kwargs))
         text = response.choices[0].message.content or ""
         return CompletionResult(text=text.strip(), usage=response.usage)
 

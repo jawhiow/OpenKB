@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Callable
 
 import os
 
@@ -63,6 +64,10 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
             wire_api = str(config.get("wire_api", "")).strip().lower()
             if wire_api and not os.environ.get("OPENKB_WIRE_API") and not os.environ.get("OPENAI_WIRE_API"):
                 os.environ["OPENKB_WIRE_API"] = wire_api
+            base_url = str(config.get("base_url", "")).strip().rstrip("/")
+            if base_url and not os.environ.get("OPENAI_BASE_URL") and not os.environ.get("OPENAI_API_BASE"):
+                os.environ["OPENAI_BASE_URL"] = base_url
+                os.environ["OPENAI_API_BASE"] = base_url
 
     from openkb.config import GLOBAL_CONFIG_DIR
     global_env = GLOBAL_CONFIG_DIR / ".env"
@@ -146,7 +151,21 @@ def _find_kb_dir(override: Path | None = None) -> Path | None:
     return None
 
 
-def add_single_file(file_path: Path, kb_dir: Path) -> None:
+ProgressCallback = Callable[[str], None]
+
+
+def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> None:
+    if progress_callback is not None:
+        progress_callback(message)
+
+
+def add_single_file(
+    file_path: Path,
+    kb_dir: Path,
+    *,
+    strict: bool = False,
+    progress_callback: ProgressCallback | None = None,
+) -> None:
     """Convert, index, and compile a single document into the knowledge base.
 
     Steps:
@@ -167,15 +186,19 @@ def add_single_file(file_path: Path, kb_dir: Path) -> None:
 
     # 2. Convert document
     click.echo(f"Adding: {file_path.name}")
+    _emit_progress(progress_callback, f"Converting: {file_path.name}")
     try:
         result = convert_document(file_path, kb_dir)
     except Exception as exc:
         click.echo(f"  [ERROR] Conversion failed: {exc}")
         logger.debug("Conversion traceback:", exc_info=True)
+        if strict:
+            raise RuntimeError(f"Conversion failed: {exc}") from exc
         return
 
     if result.skipped:
         click.echo(f"  [SKIP] Already in knowledge base: {file_path.name}")
+        _emit_progress(progress_callback, f"Skipped already-known file: {file_path.name}")
         return
 
     doc_name = file_path.stem
@@ -183,16 +206,20 @@ def add_single_file(file_path: Path, kb_dir: Path) -> None:
     # 3/4. Index and compile
     if result.is_long_doc:
         click.echo(f"  Long document detected — indexing with PageIndex...")
+        _emit_progress(progress_callback, f"Indexing long document: {file_path.name}")
         try:
             from openkb.indexer import index_long_document
             index_result = index_long_document(result.raw_path, kb_dir)
         except Exception as exc:
             click.echo(f"  [ERROR] Indexing failed: {exc}")
             logger.debug("Indexing traceback:", exc_info=True)
+            if strict:
+                raise RuntimeError(f"Indexing failed: {exc}") from exc
             return
 
         summary_path = kb_dir / "wiki" / "summaries" / f"{doc_name}.md"
         click.echo(f"  Compiling long doc (doc_id={index_result.doc_id})...")
+        _emit_progress(progress_callback, f"Compiling long document: {file_path.name}")
         for attempt in range(2):
             try:
                 asyncio.run(
@@ -207,9 +234,12 @@ def add_single_file(file_path: Path, kb_dir: Path) -> None:
                 else:
                     click.echo(f"  [ERROR] Compilation failed: {exc}")
                     logger.debug("Compilation traceback:", exc_info=True)
+                    if strict:
+                        raise RuntimeError(f"Compilation failed: {exc}") from exc
                     return
     else:
         click.echo(f"  Compiling short doc...")
+        _emit_progress(progress_callback, f"Compiling short document: {file_path.name}")
         for attempt in range(2):
             try:
                 asyncio.run(compile_short_doc(doc_name, result.source_path, kb_dir, model))
@@ -221,14 +251,18 @@ def add_single_file(file_path: Path, kb_dir: Path) -> None:
                 else:
                     click.echo(f"  [ERROR] Compilation failed: {exc}")
                     logger.debug("Compilation traceback:", exc_info=True)
+                    if strict:
+                        raise RuntimeError(f"Compilation failed: {exc}") from exc
                     return
 
     # Register hash only after successful compilation
     if result.file_hash:
+        _emit_progress(progress_callback, f"Registering document: {file_path.name}")
         doc_type = "long_pdf" if result.is_long_doc else file_path.suffix.lstrip(".")
         registry.add(result.file_hash, {"name": file_path.name, "type": doc_type})
 
     append_log(kb_dir / "wiki", "ingest", file_path.name)
+    _emit_progress(progress_callback, f"Finished: {file_path.name}")
     click.echo(f"  [OK] {file_path.name} added to knowledge base.")
 
 
@@ -318,6 +352,7 @@ def init():
         "language": DEFAULT_CONFIG["language"],
         "pageindex_threshold": DEFAULT_CONFIG["pageindex_threshold"],
         "wire_api": "responses" if model_prefers_responses_api(model) else DEFAULT_CONFIG["wire_api"],
+        "base_url": DEFAULT_CONFIG["base_url"],
     }
     save_config(openkb_dir / "config.yaml", config)
     (openkb_dir / "hashes.json").write_text(json.dumps({}), encoding="utf-8")
@@ -743,3 +778,19 @@ def status(ctx):
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
     print_status(kb_dir)
+
+
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind the local client server.")
+@click.option("--port", default=8765, show_default=True, type=int, help="Port for the local client server.")
+@click.option("--no-browser", is_flag=True, default=False, help="Do not open a browser automatically.")
+def client(host, port, no_browser):
+    """Start the local OpenKB browser client."""
+    try:
+        from openkb.client.server import ClientDependencyError, serve_client
+
+        serve_client(host=host, port=port, open_browser=not no_browser)
+    except ClientDependencyError as exc:
+        raise click.ClickException(
+            f"{exc}\nRun: pip install \"openkb[client]\""
+        ) from exc

@@ -97,6 +97,32 @@ def test_setup_llm_key_reads_wire_api_from_kb_config(tmp_path, monkeypatch):
     mock_configure.assert_called_once_with("gpt-5.4")
 
 
+def test_setup_llm_key_reads_base_url_from_kb_config(tmp_path, monkeypatch):
+    from openkb import config as config_module
+    from openkb.cli import _setup_llm_key
+
+    kb_dir = tmp_path / "kb"
+    openkb_dir = kb_dir / ".openkb"
+    openkb_dir.mkdir(parents=True)
+    (openkb_dir / "config.yaml").write_text(
+        "model: gpt-5.4\nlanguage: zh\npageindex_threshold: 20\nwire_api: responses\nbase_url: https://gateway.example.com\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(config_module, "GLOBAL_CONFIG_DIR", tmp_path / "global-config")
+
+    with patch("openkb.cli.configure_runtime") as mock_configure:
+        _setup_llm_key(kb_dir)
+
+    assert os.environ["OPENAI_BASE_URL"] == "https://gateway.example.com/v1"
+    assert os.environ["OPENAI_API_BASE"] == "https://gateway.example.com/v1"
+    mock_configure.assert_called_once_with("gpt-5.4")
+
+
 def test_init_keeps_chat_completions_for_non_gpt5_models(tmp_path):
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path), \

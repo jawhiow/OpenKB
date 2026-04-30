@@ -15,5 +15,6 @@ wiki/
 .openkb/
 
 # Local only
+.openkb-client/
 docs/
 .claude/
