@@ -10,6 +10,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "language": "en",
     "pageindex_threshold": 20,
     "wire_api": "chat_completions",
+    "base_url": "",
 }
 
 GLOBAL_CONFIG_DIR = Path.home() / ".config" / "openkb"

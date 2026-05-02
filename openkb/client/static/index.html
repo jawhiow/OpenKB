@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenKB Workbench</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">OK</div>
+          <div>
+            <h1>OpenKB Workbench</h1>
+            <span id="kbLabel">No KB selected</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <span id="healthBadge" class="badge muted">Starting</span>
+          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="Primary">
+        <button class="nav-item active" data-view="overview" type="button">Overview</button>
+        <button class="nav-item" data-view="documents" type="button">Documents</button>
+        <button class="nav-item" data-view="wiki" type="button">Wiki</button>
+        <button class="nav-item" data-view="sessions" type="button">Sessions</button>
+        <button class="nav-item" data-view="reports" type="button">Reports</button>
+        <button class="nav-item" data-view="settings" type="button">Settings</button>
+      </aside>
+
+      <main class="workspace">
+        <section id="viewTitle" class="view-title">
+          <h2>Overview</h2>
+          <span id="viewMeta"></span>
+        </section>
+        <section id="mainView" class="main-view"></section>
+      </main>
+
+      <aside class="assistant-panel" aria-label="Assistant">
+        <div class="panel-header">
+          <h2>Ask</h2>
+          <button id="clearAnswerBtn" type="button">Clear</button>
+        </div>
+        <textarea id="questionInput" rows="5" placeholder="Ask this knowledge base"></textarea>
+        <label class="checkline">
+          <input id="saveQueryInput" type="checkbox" />
+          Save
+        </label>
+        <button id="askBtn" class="primary" type="button">Ask</button>
+        <div id="answerBox" class="answer-box"></div>
+      </aside>
+
+      <section class="job-dock" aria-label="Jobs">
+        <div class="panel-header">
+          <h2>Jobs</h2>
+          <span id="jobCount" class="badge muted">0</span>
+        </div>
+        <div class="job-dock-body">
+          <div id="jobsList" class="jobs-list"></div>
+          <aside id="jobDetails" class="job-details" aria-live="polite">
+            <div class="empty">Select a job to view progress and logs.</div>
+            <div id="jobLogList" class="job-log-list hidden"></div>
+          </aside>
+        </div>
+      </section>
+    </div>
+
+    <div id="toastHost" class="toast-host" aria-live="polite"></div>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

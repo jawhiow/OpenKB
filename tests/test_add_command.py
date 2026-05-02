@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -145,7 +145,32 @@ class TestAddCommand:
         runner = CliRunner()
         with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
              patch("openkb.cli.convert_document", return_value=mock_result), \
-             patch("openkb.cli.asyncio.run") as mock_arun:
+             patch("openkb.agent.compiler.compile_short_doc", new_callable=AsyncMock) as mock_compile:
             result = runner.invoke(cli, ["add", str(doc)])
-            mock_arun.assert_called_once()
+            mock_compile.assert_awaited_once()
             assert "OK" in result.output
+
+    def test_add_single_file_strict_raises_compilation_failure_with_progress(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+        source_path = kb_dir / "wiki" / "sources" / "test.md"
+        source_path.write_text("# Hello converted")
+        events: list[str] = []
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "test.md",
+            source_path=source_path,
+            is_long_doc=False,
+        )
+
+        with patch("openkb.cli.convert_document", return_value=mock_result), \
+             patch("openkb.agent.compiler.compile_short_doc", side_effect=RuntimeError("llm timeout")):
+            with pytest.raises(RuntimeError, match="Compilation failed"):
+                add_single_file(doc, kb_dir, strict=True, progress_callback=events.append)
+
+        assert any("Converting" in event for event in events)
+        assert any("Compiling short document" in event for event in events)

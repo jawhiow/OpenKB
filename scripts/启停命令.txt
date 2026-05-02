@@ -1,0 +1,49 @@
+已加好启停脚本，位置是 [scripts/openkb-client.ps1](D:/workspace/codex/jt-ai-tz/OpenKB/scripts/openkb-client.ps1)。我也加了对应测试 [tests/test_client_management_script.py](D:/workspace/codex/jt-ai-tz/OpenKB/tests/test_client_management_script.py)，并把脚本运行时目录 `.openkb-client/` 加进了 [.gitignore](D:/workspace/codex/jt-ai-tz/OpenKB/.gitignore:12)，避免 PID 和日志文件进仓库。
+
+用法如下，在仓库根目录运行：
+
+```powershell
+# 查看状态
+powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 status
+
+# 启动页面服务，默认 127.0.0.1:8765，默认 --no-browser
+powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 start
+
+# 停止由这个脚本启动的服务
+powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 stop
+
+# 重启
+powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 restart
+```
+
+可选参数：
+
+```powershell
+# 换端口
+powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 start -Port 8766
+
+# 启动时打开浏览器，不加这个开关则默认 --no-browser
+powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 start -Browser
+
+# 指定 Python
+powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 start -Python .\.venv\Scripts\python.exe
+```
+
+脚本默认会用 `.\.venv\Scripts\python.exe -m openkb client --host 127.0.0.1 --port 8765 --no-browser` 启动服务，PID 和日志会写到：
+
+```text
+.openkb-client/client-8765.pid
+.openkb-client/client-8765.out.log
+.openkb-client/client-8765.err.log
+```
+
+我特意让 `stop` 只停止这个脚本自己 PID 文件记录的进程，避免误杀你现在手动启动或 IDE 启动的服务。所以你当前旧的 `8765` 进程如果不是脚本启动的，第一次 `status` 会提示端口被别的 PID 占用，`stop` 不会直接动它；结束旧进程后，再用这个脚本启动，以后就能正常 `restart` 了。
+
+验证结果：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_client_management_script.py tests/test_client_cli.py tests/test_client_server.py -q
+# 5 passed
+```
+
+完整套件也跑了，当前不是全绿，结果是 `220 passed, 44 failed`。失败仍是之前那些既有/环境类问题：Windows 无控制台下 `prompt_toolkit` 测试报 `NoConsoleScreenBufferError`、部分测试触发真实 LLM/PageIndex 客户端、GBK/UTF-8 解码问题、Windows 路径分隔符断言、以及 list/lint/status 的测试隔离问题；新加的启停脚本相关测试是通过的。
