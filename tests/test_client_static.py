@@ -23,3 +23,10 @@ def test_client_script_renders_job_progress_logs_and_busy_buttons():
     assert "function renderJobDetails" in script
     assert "progress-bar" in script
     assert "job-log-list" in script
+
+
+def test_client_api_error_path_reads_response_body_once():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "const raw = await response.text();" in script
+    assert "const body = await response.json();" not in script

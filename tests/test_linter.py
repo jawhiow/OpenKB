@@ -32,6 +32,8 @@ class TestBuildLintAgent:
     def test_agent_model(self, tmp_path, monkeypatch):
         monkeypatch.delenv("OPENKB_WIRE_API", raising=False)
         monkeypatch.delenv("OPENAI_WIRE_API", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_BASE", raising=False)
         agent = build_lint_agent(str(tmp_path), "custom-model")
         assert agent.model == "litellm/custom-model"
 

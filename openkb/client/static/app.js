@@ -127,17 +127,25 @@ async function api(path, options = {}) {
     headers: options.body instanceof FormData ? undefined : { "Content-Type": "application/json" },
     ...options,
   });
+  const raw = await response.text();
+  let body = null;
+  if (raw) {
+    try {
+      body = JSON.parse(raw);
+    } catch (_) {
+      body = null;
+    }
+  }
   if (!response.ok) {
     let message = response.statusText;
-    try {
-      const body = await response.json();
+    if (body && typeof body === "object") {
       message = body.detail || message;
-    } catch (_) {
-      message = await response.text();
+    } else if (raw) {
+      message = raw;
     }
     throw new Error(message);
   }
-  return response.json();
+  return body;
 }
 
 function withKb(path) {

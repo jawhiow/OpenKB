@@ -25,6 +25,9 @@ def _import_web_dependencies():
         raise ClientDependencyError(
             "OpenKB client dependencies are not installed."
         ) from exc
+    # `create_app()` defines routes under postponed evaluation of annotations,
+    # so FastAPI resolves names like `UploadFile` from module globals.
+    globals()["UploadFile"] = UploadFile
     return FastAPI, File, FileResponse, HTTPException, Query, Response, StaticFiles, UploadFile, uvicorn
 
 

@@ -71,6 +71,15 @@ def get_base_url(model: str | None = None) -> str | None:
     return base_url
 
 
+def normalize_model_name(model: str) -> str:
+    normalized = model.strip()
+    if not normalized or "/" in normalized or uses_responses_api(normalized):
+        return normalized
+    if get_base_url(normalized):
+        return f"openai/{normalized}"
+    return normalized
+
+
 def get_reasoning_effort() -> str | None:
     value = os.getenv("OPENKB_MODEL_REASONING_EFFORT", "").strip().lower()
     return value or None
@@ -211,7 +220,8 @@ def configure_runtime(model: str | None = None) -> None:
 
 
 def resolve_agent_model(model: str) -> str:
-    return model if uses_responses_api(model) else f"litellm/{model}"
+    normalized = normalize_model_name(model)
+    return normalized if uses_responses_api(normalized) else f"litellm/{normalized}"
 
 
 def build_agent_model_settings(*, parallel_tool_calls: bool | None = None, model: str | None = None) -> ModelSettings:
@@ -251,7 +261,7 @@ def _responses_request_kwargs(model: str, messages: list[dict], **kwargs) -> dic
 
 def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     if not uses_responses_api(model):
-        response = litellm.completion(model=model, messages=messages, **_apply_default_timeout(kwargs))
+        response = litellm.completion(model=normalize_model_name(model), messages=messages, **_apply_default_timeout(kwargs))
         text = response.choices[0].message.content or ""
         return CompletionResult(text=text.strip(), usage=response.usage)
 
@@ -271,7 +281,11 @@ def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
 
 async def acompletion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     if not uses_responses_api(model):
-        response = await litellm.acompletion(model=model, messages=messages, **_apply_default_timeout(kwargs))
+        response = await litellm.acompletion(
+            model=normalize_model_name(model),
+            messages=messages,
+            **_apply_default_timeout(kwargs),
+        )
         text = response.choices[0].message.content or ""
         return CompletionResult(text=text.strip(), usage=response.usage)
 

@@ -139,3 +139,29 @@ def test_completion_passes_configured_timeout_to_responses_api(monkeypatch):
 
     assert result.text == "OK"
     assert mock_client.responses.create.call_args.kwargs["timeout"] == 12.5
+
+
+def test_resolve_agent_model_prefixes_openai_for_custom_gateway_models(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")
+
+    assert resolve_agent_model("doubao-seed-2-0-pro-260215") == "litellm/openai/doubao-seed-2-0-pro-260215"
+
+
+def test_completion_prefixes_openai_for_custom_gateway_models(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")
+
+    mock_client = MagicMock()
+    mock_chat_completion = MagicMock(return_value=_fake_chat_response("OK"))
+
+    with patch("openkb.llm_runtime._get_sync_openai_client", return_value=mock_client), \
+         patch("openkb.llm_runtime.litellm.completion", mock_chat_completion):
+        result = completion(
+            model="doubao-seed-2-0-pro-260215",
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+
+    assert result.text == "OK"
+    mock_client.responses.create.assert_not_called()
+    assert mock_chat_completion.call_args.kwargs["model"] == "openai/doubao-seed-2-0-pro-260215"
