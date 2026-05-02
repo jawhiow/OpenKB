@@ -26,6 +26,33 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260502-001] rg_unicode_path_access_denied
+
+**Logged**: 2026-05-02T20:00:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+Running `rg --files` directly against a Windows path containing Chinese characters failed with `Access is denied`.
+
+### Error
+```text
+Program 'rg.exe' failed to run: Access is denied
+```
+
+### Context
+- Command attempted while enumerating `D:\知识库\openkb-test`.
+- PowerShell native `Get-ChildItem -Recurse` remained available as a fallback.
+
+### Suggested Fix
+Use PowerShell native enumeration for non-ASCII Windows paths when `rg` launch fails, or run `rg` from inside the target directory if allowed.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: none
+
+---
 
 ## [ERR-20260430-002] node_repl_runtime_version
 
