@@ -745,6 +745,7 @@ function renderSettings() {
             <input id="apiKeyInput" type="password" value="" />
           </div>
           <div class="row-actions full">
+            <button id="testLlmBtn" type="button">Test LLM</button>
             <button id="saveConfigBtn" class="primary" type="button">Save Config</button>
           </div>
         </div>
@@ -754,6 +755,7 @@ function renderSettings() {
   $("#wireApiInput").value = cfg.wire_api || "responses";
   $("#useKbBtn").addEventListener("click", useKb);
   $("#createKbBtn").addEventListener("click", createKb);
+  $("#testLlmBtn").addEventListener("click", testLlm);
   $("#saveConfigBtn").addEventListener("click", saveConfig);
 }
 
@@ -830,6 +832,34 @@ async function saveConfig(event) {
     await loadAll();
   } catch (error) {
     setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function testLlm(event) {
+  const button = event?.currentTarget;
+  if (!state.kbDir) {
+    notify("Select or create a knowledge base first.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Testing...");
+  try {
+    const result = await api("/api/config/test-llm", {
+      method: "POST",
+      body: JSON.stringify({
+        kb_dir: state.kbDir,
+        model: $("#modelInput").value.trim(),
+        language: $("#languageInput").value.trim(),
+        pageindex_threshold: Number($("#thresholdInput").value || 20),
+        wire_api: $("#wireApiInput").value,
+        base_url: $("#baseUrlInput").value.trim(),
+        api_key: $("#apiKeyInput").value,
+      }),
+    });
+    notify(result?.message || "LLM test succeeded.", "success");
+  } catch (error) {
+    notify(`LLM test failed: ${error.message}`, "error");
   } finally {
     setButtonBusy(button, false);
   }

@@ -37,6 +37,22 @@ def _fake_chat_response(text: str) -> SimpleNamespace:
     )
 
 
+def _fake_requests_response(text: str) -> MagicMock:
+    response = MagicMock()
+    response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": text,
+                }
+            }
+        ],
+        "usage": {},
+    }
+    response.raise_for_status.return_value = None
+    return response
+
+
 def test_completion_retries_retryable_responses_error(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "responses")
 
@@ -145,18 +161,19 @@ def test_resolve_agent_model_prefixes_openai_for_custom_gateway_models(monkeypat
     monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")
 
-    assert resolve_agent_model("doubao-seed-2-0-pro-260215") == "litellm/openai/doubao-seed-2-0-pro-260215"
+    assert resolve_agent_model("doubao-seed-2-0-pro-260215") == "litellm/custom_openai/doubao-seed-2-0-pro-260215"
 
 
 def test_completion_prefixes_openai_for_custom_gateway_models(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     mock_client = MagicMock()
-    mock_chat_completion = MagicMock(return_value=_fake_chat_response("OK"))
+    mock_post = MagicMock(return_value=_fake_requests_response("OK"))
 
     with patch("openkb.llm_runtime._get_sync_openai_client", return_value=mock_client), \
-         patch("openkb.llm_runtime.litellm.completion", mock_chat_completion):
+         patch("openkb.llm_runtime.requests.post", mock_post):
         result = completion(
             model="doubao-seed-2-0-pro-260215",
             messages=[{"role": "user", "content": "Reply with OK"}],
@@ -164,4 +181,24 @@ def test_completion_prefixes_openai_for_custom_gateway_models(monkeypatch):
 
     assert result.text == "OK"
     mock_client.responses.create.assert_not_called()
-    assert mock_chat_completion.call_args.kwargs["model"] == "openai/doubao-seed-2-0-pro-260215"
+    assert mock_post.call_args.kwargs["json"]["model"] == "doubao-seed-2-0-pro-260215"
+    assert mock_post.call_args.kwargs["json"]["stream"] is False
+
+
+@pytest.mark.asyncio
+async def test_acompletion_uses_requests_for_custom_gateway_models(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    mock_post = MagicMock(return_value=_fake_requests_response("OK"))
+
+    with patch("openkb.llm_runtime.requests.post", mock_post):
+        result = await acompletion(
+            model="doubao-seed-2-0-pro-260215",
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+
+    assert result.text == "OK"
+    assert mock_post.call_args.kwargs["json"]["model"] == "doubao-seed-2-0-pro-260215"
+    assert mock_post.call_args.kwargs["json"]["stream"] is False

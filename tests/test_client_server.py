@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -96,3 +98,75 @@ def test_upload_document_accepts_single_file_and_queues_add_job(tmp_path, monkey
     assert calls["file_path"] == kb_dir / "raw" / "doc.txt"
     assert calls["target_kb"] == kb_dir
     assert calls["strict"] is True
+
+
+def test_test_llm_endpoint_uses_current_form_values(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".env").write_text("LLM_API_KEY=saved-secret\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_completion(model, messages, **kwargs):
+        captured["model"] = model
+        captured["message"] = messages[0]["content"]
+        captured["wire_api"] = os.environ.get("OPENKB_WIRE_API")
+        captured["base_url"] = os.environ.get("OPENAI_BASE_URL")
+        captured["api_key"] = os.environ.get("OPENAI_API_KEY")
+        captured["custom_llm_provider"] = kwargs.get("custom_llm_provider")
+        return SimpleNamespace(text="pong", usage=SimpleNamespace())
+
+    monkeypatch.setattr("openkb.llm_runtime.completion", fake_completion)
+
+    client = TestClient(create_app())
+    response = client.post(
+        "/api/config/test-llm",
+        json={
+            "kb_dir": str(kb_dir),
+            "model": "openai/doubao-seed-2-0-pro-260215",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v1",
+            "api_key": "override-secret",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["message"] == "LLM test succeeded."
+    assert captured["model"] == "doubao-seed-2-0-pro-260215"
+    assert captured["custom_llm_provider"] == "custom_openai"
+    assert body["effective_model"] == "doubao-seed-2-0-pro-260215"
+    assert body["effective_url"] == "https://gateway.example.com/v1/chat/completions"
+    assert captured["wire_api"] == "chat_completions"
+    assert captured["base_url"] == "https://gateway.example.com/v1"
+    assert captured["api_key"] == "override-secret"
+    assert "ping" in str(captured["message"]).lower()
+
+
+def test_test_llm_endpoint_returns_rich_error_context(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+
+    def fake_completion(model, messages, **kwargs):
+        raise RuntimeError("blocked by upstream")
+
+    monkeypatch.setattr("openkb.llm_runtime.completion", fake_completion)
+
+    client = TestClient(create_app())
+    response = client.post(
+        "/api/config/test-llm",
+        json={
+            "kb_dir": str(kb_dir),
+            "model": "openai/doubao-seed-2-0-pro-260215",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v1",
+            "api_key": "override-secret",
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "blocked by upstream" in detail
+    assert "effective_model: doubao-seed-2-0-pro-260215" in detail
+    assert "effective_wire_api: chat_completions" in detail
+    assert "effective_url: https://gateway.example.com/v1/chat/completions" in detail
+    assert "api_key: over...cret" in detail
+    assert "override-secret" not in detail

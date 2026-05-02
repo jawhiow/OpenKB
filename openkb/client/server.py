@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import webbrowser
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
 
 from openkb.client.jobs import JobRegistry, default_registry
 from openkb.client import kb as kb_helpers
@@ -51,6 +55,136 @@ def _resolve_kb_dir(raw: str | None = None) -> Path:
 
 def _static_dir() -> Path:
     return Path(__file__).resolve().parent / "static"
+
+
+_RUNTIME_ENV_KEYS = (
+    "LLM_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENKB_WIRE_API",
+    "OPENAI_WIRE_API",
+)
+
+
+@contextmanager
+def _runtime_env_override():
+    snapshot = {key: os.environ.get(key) for key in _RUNTIME_ENV_KEYS}
+    try:
+        yield
+    finally:
+        for key, value in snapshot.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _mask_secret(secret: str) -> str:
+    value = secret.strip()
+    if not value:
+        return "(empty)"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _effective_llm_request_info(*, model: str, wire_api: str, base_url: str) -> dict[str, str]:
+    from openkb.llm_runtime import normalize_model_name
+
+    effective_model = normalize_model_name(model)
+    endpoint_path = "/responses" if wire_api == "responses" else "/chat/completions"
+    base = base_url.rstrip("/")
+    effective_url = f"{base}{endpoint_path}" if base else endpoint_path
+    return {
+        "effective_model": effective_model,
+        "effective_wire_api": wire_api,
+        "effective_url": effective_url,
+    }
+
+
+def _test_llm_config(payload: dict[str, Any]) -> dict[str, Any]:
+    from openkb.llm_runtime import completion, normalize_model_name
+    from openkb.config import GLOBAL_CONFIG_DIR
+
+    target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+    config = load_config(target_kb / ".openkb" / "config.yaml")
+    model = str(payload.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip()
+    if not model:
+        raise ValueError("Model is required.")
+    wire_api = str(payload.get("wire_api") or config.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower()
+    base_url = str(payload.get("base_url") or config.get("base_url") or "").strip().rstrip("/")
+    if base_url and wire_api != "responses" and model.startswith("openai/"):
+        model = model.split("/", 1)[1]
+    else:
+        model = normalize_model_name(model)
+    api_key = str(payload.get("api_key") or "").strip()
+    request_info = _effective_llm_request_info(model=model, wire_api=wire_api, base_url=base_url)
+
+    with _runtime_env_override():
+        env_file = target_kb / ".env"
+        if env_file.exists():
+            load_dotenv(env_file, override=True)
+        global_env = GLOBAL_CONFIG_DIR / ".env"
+        if global_env.exists():
+            load_dotenv(global_env, override=False)
+
+        if wire_api:
+            os.environ["OPENKB_WIRE_API"] = wire_api
+
+        if "base_url" in payload:
+            if base_url:
+                os.environ["OPENAI_BASE_URL"] = base_url
+                os.environ["OPENAI_API_BASE"] = base_url
+            else:
+                os.environ.pop("OPENAI_BASE_URL", None)
+                os.environ.pop("OPENAI_API_BASE", None)
+
+        if api_key:
+            os.environ["LLM_API_KEY"] = api_key
+            os.environ["OPENAI_API_KEY"] = api_key
+        else:
+            saved_key = os.environ.get("LLM_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()
+            if saved_key:
+                os.environ["LLM_API_KEY"] = saved_key
+                os.environ["OPENAI_API_KEY"] = saved_key
+
+        try:
+            completion_kwargs: dict[str, Any] = {
+                "max_tokens": 8,
+                "timeout": 20,
+            }
+            if base_url and wire_api != "responses":
+                completion_kwargs["custom_llm_provider"] = "custom_openai"
+            result = completion(
+                model=model,
+                messages=[{"role": "user", "content": "Ping. Reply with exactly pong."}],
+                **completion_kwargs,
+            )
+        except Exception as exc:
+            raise ValueError(
+                "\n".join(
+                    [
+                        f"LLM test failed: {exc}",
+                        f"effective_model: {request_info['effective_model']}",
+                        f"effective_wire_api: {request_info['effective_wire_api'] or '(empty)'}",
+                        f"effective_url: {request_info['effective_url']}",
+                        f"api_key: {_mask_secret(api_key or os.environ.get('OPENAI_API_KEY', '') or os.environ.get('LLM_API_KEY', ''))}",
+                    ]
+                )
+            ) from exc
+
+    return {
+        "ok": True,
+        "message": "LLM test succeeded.",
+        "model": model,
+        "wire_api": wire_api,
+        "base_url": base_url,
+        **request_info,
+        "response_text": result.text,
+    }
 
 
 def create_app(registry: JobRegistry | None = None):
@@ -327,6 +461,13 @@ def create_app(registry: JobRegistry | None = None):
     def update_config(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             return kb_helpers.update_config_data(_resolve_kb_dir(payload.get("kb_dir")), payload)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.post("/api/config/test-llm")
+    def test_llm(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return _test_llm_config(payload)
         except Exception as exc:
             raise translate_error(exc) from exc
 

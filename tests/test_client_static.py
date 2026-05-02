@@ -30,3 +30,12 @@ def test_client_api_error_path_reads_response_body_once():
 
     assert "const raw = await response.text();" in script
     assert "const body = await response.json();" not in script
+
+
+def test_client_settings_include_test_llm_button_and_handler():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="testLlmBtn"' in script
+    assert 'addEventListener("click", testLlm);' in script
+    assert 'async function testLlm(event)' in script
+    assert '"/api/config/test-llm"' in script

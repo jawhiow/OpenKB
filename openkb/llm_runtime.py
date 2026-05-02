@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import litellm
+import requests
 from agents import set_default_openai_api, set_default_openai_client
 from agents.model_settings import ModelSettings
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, OpenAI
@@ -73,11 +74,17 @@ def get_base_url(model: str | None = None) -> str | None:
 
 def normalize_model_name(model: str) -> str:
     normalized = model.strip()
-    if not normalized or "/" in normalized or uses_responses_api(normalized):
+    if not normalized or uses_responses_api(normalized):
         return normalized
-    if get_base_url(normalized):
-        return f"openai/{normalized}"
+    if normalized.startswith("openai/") and get_base_url(normalized):
+        return normalized.split("/", 1)[1]
+    if "/" in normalized:
+        return normalized
     return normalized
+
+
+def is_custom_openai_compatible(model: str | None = None) -> bool:
+    return bool(get_base_url(model)) and not uses_responses_api(model)
 
 
 def get_reasoning_effort() -> str | None:
@@ -133,6 +140,57 @@ def _apply_default_timeout(kwargs: dict[str, Any]) -> dict[str, Any]:
         if timeout is not None:
             kwargs["timeout"] = timeout
     return kwargs
+
+
+def _custom_openai_payload(model: str, messages: list[dict], **kwargs) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": normalize_model_name(model),
+        "messages": messages,
+        "stream": False,
+    }
+    for key in (
+        "max_tokens",
+        "temperature",
+        "top_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "response_format",
+        "stop",
+        "seed",
+        "user",
+        "tools",
+        "tool_choice",
+    ):
+        value = kwargs.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def _custom_openai_completion_via_requests(model: str, messages: list[dict], **kwargs) -> CompletionResult:
+    timeout = _apply_default_timeout(kwargs).get("timeout")
+    api_key = get_api_key()
+    base_url = get_base_url(model)
+    if not api_key:
+        raise ValueError("Missing API key for custom OpenAI-compatible endpoint.")
+    if not base_url:
+        raise ValueError("Missing base URL for custom OpenAI-compatible endpoint.")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    response = requests.post(
+        f"{base_url.rstrip('/')}/chat/completions",
+        headers=headers,
+        json=_custom_openai_payload(model, messages, **kwargs),
+        stream=False,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+    text = data["choices"][0]["message"]["content"] or ""
+    return CompletionResult(text=text.strip(), usage=data.get("usage"))
 
 
 def _status_code(exc: Exception) -> int | None:
@@ -221,7 +279,11 @@ def configure_runtime(model: str | None = None) -> None:
 
 def resolve_agent_model(model: str) -> str:
     normalized = normalize_model_name(model)
-    return normalized if uses_responses_api(normalized) else f"litellm/{normalized}"
+    if uses_responses_api(normalized):
+        return normalized
+    if is_custom_openai_compatible(normalized):
+        return f"litellm/custom_openai/{normalized}"
+    return f"litellm/{normalized}"
 
 
 def build_agent_model_settings(*, parallel_tool_calls: bool | None = None, model: str | None = None) -> ModelSettings:
@@ -261,7 +323,14 @@ def _responses_request_kwargs(model: str, messages: list[dict], **kwargs) -> dic
 
 def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     if not uses_responses_api(model):
-        response = litellm.completion(model=normalize_model_name(model), messages=messages, **_apply_default_timeout(kwargs))
+        normalized_model = normalize_model_name(model)
+        if is_custom_openai_compatible(normalized_model):
+            return _custom_openai_completion_via_requests(normalized_model, messages, **kwargs)
+        response = litellm.completion(
+            model=normalized_model,
+            messages=messages,
+            **_apply_default_timeout(kwargs),
+        )
         text = response.choices[0].message.content or ""
         return CompletionResult(text=text.strip(), usage=response.usage)
 
@@ -281,8 +350,11 @@ def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
 
 async def acompletion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     if not uses_responses_api(model):
+        normalized_model = normalize_model_name(model)
+        if is_custom_openai_compatible(normalized_model):
+            return await asyncio.to_thread(_custom_openai_completion_via_requests, normalized_model, messages, **kwargs)
         response = await litellm.acompletion(
-            model=normalize_model_name(model),
+            model=normalized_model,
             messages=messages,
             **_apply_default_timeout(kwargs),
         )
