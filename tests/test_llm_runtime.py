@@ -26,6 +26,17 @@ def _fake_response(text: str) -> SimpleNamespace:
     return SimpleNamespace(output_text=text, usage=SimpleNamespace())
 
 
+def _fake_chat_response(text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=text),
+            )
+        ],
+        usage=SimpleNamespace(),
+    )
+
+
 def test_completion_retries_retryable_responses_error(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "responses")
 
@@ -87,30 +98,30 @@ def test_completion_does_not_retry_bad_request(monkeypatch):
     mock_sleep.assert_not_called()
 
 
-def test_gpt5_uses_responses_api_even_if_chat_completions_is_configured(monkeypatch):
+def test_gpt5_respects_explicit_chat_completions_configuration(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
 
-    assert uses_responses_api("gpt-5.4")
-    assert resolve_agent_model("gpt-5.4") == "gpt-5.4"
+    assert not uses_responses_api("gpt-5.4")
+    assert resolve_agent_model("gpt-5.4") == "litellm/gpt-5.4"
     assert not uses_responses_api("anthropic/claude-sonnet-4-6")
 
 
-def test_completion_routes_gpt5_to_responses_api_when_chat_completions_is_configured(monkeypatch):
+def test_completion_routes_gpt5_to_chat_when_chat_completions_is_configured(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
 
     mock_client = MagicMock()
-    mock_client.responses.create.return_value = _fake_response("OK")
+    mock_chat_completion = MagicMock(return_value=_fake_chat_response("OK"))
 
     with patch("openkb.llm_runtime._get_sync_openai_client", return_value=mock_client), \
-         patch("openkb.llm_runtime.litellm.completion") as mock_chat_completion:
+         patch("openkb.llm_runtime.litellm.completion", mock_chat_completion):
         result = completion(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Reply with OK"}],
         )
 
     assert result.text == "OK"
-    mock_client.responses.create.assert_called_once()
-    mock_chat_completion.assert_not_called()
+    mock_client.responses.create.assert_not_called()
+    mock_chat_completion.assert_called_once()
 
 
 def test_completion_passes_configured_timeout_to_responses_api(monkeypatch):

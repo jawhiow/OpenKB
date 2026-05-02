@@ -108,3 +108,30 @@ Use smaller PowerShell commands or a here-string script for multi-branch redacti
 - Related Files: none
 
 ---
+## [ERR-20260430-005] powershell_python_stdin_unicode_path
+
+**Logged**: 2026-04-30T13:42:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: infra
+
+### Summary
+Embedding a Chinese Windows path directly inside Python source piped through PowerShell stdin produced mojibake/question marks, causing diagnostics to inspect the wrong path.
+
+### Error
+```text
+D:\知识库\investment-kb became D:\???\investment-kb in Python diagnostic output.
+```
+
+### Context
+- Command attempted while diagnosing OpenKB config loading for a KB path with Chinese characters.
+- The bad diagnostic reported default config and missing API key because it looked at a non-existent path.
+
+### Suggested Fix
+Pass non-ASCII paths through environment variables or command-line arguments, and make Python print/read using UTF-8 or Windows Unicode APIs. Avoid embedding non-ASCII paths in PowerShell-piped Python source.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+---

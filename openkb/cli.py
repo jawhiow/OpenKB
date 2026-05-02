@@ -39,6 +39,27 @@ warnings.filterwarnings("ignore")
 load_dotenv()  # load from cwd (covers running inside the KB dir)
 
 
+_RUNTIME_ENV_KEYS = (
+    "LLM_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENKB_WIRE_API",
+    "OPENAI_WIRE_API",
+)
+_INITIAL_RUNTIME_ENV = {key: os.environ.get(key) for key in _RUNTIME_ENV_KEYS}
+
+
+def _restore_initial_runtime_env() -> None:
+    for key, value in _INITIAL_RUNTIME_ENV.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
 def _setup_llm_key(kb_dir: Path | None = None) -> None:
     """Set LiteLLM API key from LLM_API_KEY env var if present.
 
@@ -51,21 +72,22 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
     so that the Agents SDK litellm provider can pick them up.
     """
     model_name: str | None = None
+    _restore_initial_runtime_env()
 
     if kb_dir is not None:
         env_file = kb_dir / ".env"
         if env_file.exists():
-            load_dotenv(env_file, override=False)
+            load_dotenv(env_file, override=True)
 
         config_path = kb_dir / ".openkb" / "config.yaml"
         if config_path.exists():
             config = load_config(config_path)
             model_name = str(config.get("model", "")).strip() or None
             wire_api = str(config.get("wire_api", "")).strip().lower()
-            if wire_api and not os.environ.get("OPENKB_WIRE_API") and not os.environ.get("OPENAI_WIRE_API"):
+            if wire_api:
                 os.environ["OPENKB_WIRE_API"] = wire_api
             base_url = str(config.get("base_url", "")).strip().rstrip("/")
-            if base_url and not os.environ.get("OPENAI_BASE_URL") and not os.environ.get("OPENAI_API_BASE"):
+            if base_url:
                 os.environ["OPENAI_BASE_URL"] = base_url
                 os.environ["OPENAI_API_BASE"] = base_url
 
@@ -88,8 +110,7 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
     else:
         litellm.api_key = api_key
         for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
-            if not os.environ.get(env_var):
-                os.environ[env_var] = api_key
+            os.environ[env_var] = api_key
 
     normalized_base = get_base_url(model_name)
     if normalized_base:

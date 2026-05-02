@@ -123,6 +123,51 @@ def test_setup_llm_key_reads_base_url_from_kb_config(tmp_path, monkeypatch):
     mock_configure.assert_called_once_with("gpt-5.4")
 
 
+def test_setup_llm_key_refreshes_runtime_env_for_each_kb(tmp_path, monkeypatch):
+    from openkb import config as config_module
+    from openkb.cli import _setup_llm_key
+
+    kb_responses = tmp_path / "kb-responses"
+    kb_responses_openkb = kb_responses / ".openkb"
+    kb_responses_openkb.mkdir(parents=True)
+    (kb_responses_openkb / "config.yaml").write_text(
+        "model: gpt-5.4\nwire_api: responses\nbase_url: https://responses.example.com\n",
+        encoding="utf-8",
+    )
+    (kb_responses / ".env").write_text("LLM_API_KEY=sk-responses\n", encoding="utf-8")
+
+    kb_chat = tmp_path / "kb-chat"
+    kb_chat_openkb = kb_chat / ".openkb"
+    kb_chat_openkb.mkdir(parents=True)
+    (kb_chat_openkb / "config.yaml").write_text(
+        "model: gpt-5.4\nwire_api: chat_completions\nbase_url: https://chat.example.com/v1\n",
+        encoding="utf-8",
+    )
+    (kb_chat / ".env").write_text("LLM_API_KEY=sk-chat\n", encoding="utf-8")
+
+    for name in [
+        "OPENKB_WIRE_API",
+        "OPENAI_WIRE_API",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "LLM_API_KEY",
+        "OPENAI_API_KEY",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(config_module, "GLOBAL_CONFIG_DIR", tmp_path / "global-config")
+
+    with patch("openkb.cli.configure_runtime"):
+        _setup_llm_key(kb_responses)
+        assert os.environ["OPENKB_WIRE_API"] == "responses"
+        assert os.environ["OPENAI_BASE_URL"] == "https://responses.example.com/v1"
+        assert os.environ["OPENAI_API_KEY"] == "sk-responses"
+
+        _setup_llm_key(kb_chat)
+        assert os.environ["OPENKB_WIRE_API"] == "chat_completions"
+        assert os.environ["OPENAI_BASE_URL"] == "https://chat.example.com/v1"
+        assert os.environ["OPENAI_API_KEY"] == "sk-chat"
+
+
 def test_init_keeps_chat_completions_for_non_gpt5_models(tmp_path):
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path), \

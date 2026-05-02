@@ -48,8 +48,8 @@ def model_prefers_responses_api(model: str | None) -> bool:
 
 def get_wire_api(model: str | None = None) -> str:
     configured = _configured_wire_api()
-    if configured == "chat_completions" and model_prefers_responses_api(model):
-        return "responses"
+    if configured == "auto":
+        return "responses" if model_prefers_responses_api(model) else "chat_completions"
     return configured
 
 
