@@ -8,6 +8,7 @@ import pytest
 from openkb.lint import (
     check_index_sync,
     find_broken_links,
+    find_investment_quality_issues,
     find_missing_entries,
     find_orphans,
     run_structural_lint,
@@ -190,6 +191,35 @@ class TestCheckIndexSync:
         assert any("does not exist" in issue for issue in result)
 
 
+class TestInvestmentQualityIssues:
+    def test_detects_company_like_concept_page(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "concepts" / "台积电.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n"
+            "# 台积电\n\n台积电是全球最大晶圆代工厂，大摩给予超配评级，目标价 NT$2588。",
+            encoding="utf-8",
+        )
+
+        issues = find_investment_quality_issues(wiki)
+
+        assert any("company-like concept page" in issue for issue in issues)
+        assert any("concepts/台积电.md" in issue for issue in issues)
+
+    def test_detects_concept_explosion_from_one_summary(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "summaries" / "report.md").write_text("# Report", encoding="utf-8")
+        for i in range(16):
+            (wiki / "concepts" / f"company{i}.md").write_text(
+                f"---\nsources: [summaries/report.md]\n---\n\n# Company {i}",
+                encoding="utf-8",
+            )
+
+        issues = find_investment_quality_issues(wiki, max_concepts_per_summary=12)
+
+        assert any("concept explosion" in issue for issue in issues)
+        assert any("summaries/report.md" in issue for issue in issues)
+
+
 class TestRunStructuralLint:
     def test_returns_markdown_report(self, tmp_path):
         wiki = _make_wiki(tmp_path)
@@ -224,3 +254,17 @@ class TestRunStructuralLint:
         report = run_structural_lint(tmp_path)
 
         assert "missing" in report
+
+    def test_report_includes_investment_quality_section(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        (wiki / "concepts" / "台积电.md").write_text(
+            "# 台积电\n\n台积电是全球最大晶圆代工厂，大摩给予超配评级。",
+            encoding="utf-8",
+        )
+
+        report = run_structural_lint(tmp_path)
+
+        assert "Investment KB Quality" in report
+        assert "company-like concept page" in report

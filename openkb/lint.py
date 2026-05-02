@@ -13,6 +13,16 @@ from pathlib import Path
 
 # Matches [[wikilink]] or [[subdir/link]]
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+_SOURCE_LIST_RE = re.compile(r"^sources:\s*\[([^\]]*)\]\s*$", re.MULTILINE)
+_TICKER_RE = re.compile(r"\b\d{4,6}\.(?:TW|TWO|HK|SS|SZ|KS|KQ)\b", re.IGNORECASE)
+_RATING_RE = re.compile(
+    r"(目标价|评级|超配|低配|等权|持股观望|Overweight|Equal-weight|Underweight|\bOW\b|\bEW\b|\bUW\b)",
+    re.IGNORECASE,
+)
+_COMPANY_DESCRIPTOR_RE = re.compile(
+    r"(公司|厂商|供应商|制造商|代工厂|设计服务|龙头|semiconductor company|foundry|supplier)",
+    re.IGNORECASE,
+)
 
 # Files to exclude from lint scanning (schema, logs, etc.)
 _EXCLUDED_FILES = {"AGENTS.md", "SCHEMA.md", "log.md"}
@@ -49,6 +59,27 @@ def _extract_wikilinks(text: str) -> list[str]:
     """
     raw = _WIKILINK_RE.findall(text)
     return [link.split("|")[0].strip() for link in raw]
+
+
+def _frontmatter_sources(text: str) -> list[str]:
+    """Extract source paths from simple ``sources: [a, b]`` frontmatter."""
+    match = _SOURCE_LIST_RE.search(text)
+    if not match:
+        return []
+    return [
+        item.strip()
+        for item in match.group(1).split(",")
+        if item.strip()
+    ]
+
+
+def _looks_like_company_concept(stem: str, text: str) -> bool:
+    """Heuristic for company pages that were accidentally put in concepts/."""
+    sample = text[:1600]
+    has_rating_or_ticker = bool(_RATING_RE.search(sample) or _TICKER_RE.search(sample))
+    has_company_descriptor = bool(_COMPANY_DESCRIPTOR_RE.search(sample))
+    title_repeats_stem = stem in sample[:300]
+    return has_rating_or_ticker and has_company_descriptor and title_repeats_stem
 
 
 def find_broken_links(wiki: Path) -> list[str]:
@@ -207,6 +238,46 @@ def check_index_sync(wiki: Path) -> list[str]:
     return sorted(issues)
 
 
+def find_investment_quality_issues(
+    wiki: Path,
+    *,
+    max_concepts_per_summary: int = 12,
+) -> list[str]:
+    """Find investment-specific wiki quality risks.
+
+    These checks are intentionally report-only. They flag patterns that usually
+    indicate noisy investment KB generation, especially company pages being
+    routed into ``concepts/`` and a single report spawning too many concepts.
+    """
+    issues: list[str] = []
+    concepts_dir = wiki / "concepts"
+    if not concepts_dir.exists():
+        return issues
+
+    concepts_by_summary: dict[str, list[str]] = {}
+    for md in sorted(concepts_dir.glob("*.md")):
+        text = _read_md(md)
+        rel = str(md.relative_to(wiki)).replace("\\", "/")
+        if _looks_like_company_concept(md.stem, text):
+            issues.append(
+                f"company-like concept page: {rel} appears to describe a company; "
+                "route this content to companies/ when the investment schema is enabled."
+            )
+        for source in _frontmatter_sources(text):
+            if source.startswith("summaries/"):
+                concepts_by_summary.setdefault(source, []).append(rel)
+
+    for source, pages in sorted(concepts_by_summary.items()):
+        if len(pages) > max_concepts_per_summary:
+            issues.append(
+                f"concept explosion: {source} is linked as a source for {len(pages)} "
+                f"concept pages; expected <= {max_concepts_per_summary}. "
+                "This often means company names were generated as concepts."
+            )
+
+    return sorted(issues)
+
+
 def run_structural_lint(kb_dir: Path) -> str:
     """Run all structural lint checks and return a formatted Markdown report.
 
@@ -223,6 +294,7 @@ def run_structural_lint(kb_dir: Path) -> str:
     orphans = find_orphans(wiki)
     missing = find_missing_entries(raw, wiki)
     sync_issues = check_index_sync(wiki)
+    investment_issues = find_investment_quality_issues(wiki)
 
     lines = ["## Structural Lint Report\n"]
 
@@ -260,5 +332,14 @@ def run_structural_lint(kb_dir: Path) -> str:
             lines.append(f"- {issue}")
     else:
         lines.append("Index is in sync.")
+    lines.append("")
+
+    # Investment-specific quality
+    lines.append(f"### Investment KB Quality ({len(investment_issues)})")
+    if investment_issues:
+        for issue in investment_issues:
+            lines.append(f"- {issue}")
+    else:
+        lines.append("No investment-specific quality issues found.")
 
     return "\n".join(lines)

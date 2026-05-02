@@ -408,7 +408,9 @@ def _write_summary(wiki_dir: Path, doc_name: str, summary: str,
 
 
 _SAFE_NAME_RE = re.compile(r'[^\w\-]')
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
 _CONCEPT_WIKILINK_RE = re.compile(r"\[\[concepts/([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
+DEFAULT_SUMMARY_LINK_FALLBACK_LIMIT = 8
 
 
 def _sanitize_concept_name(name: str) -> str:
@@ -505,7 +507,53 @@ def _normalize_concept_links(
     return _CONCEPT_WIKILINK_RE.sub(replace, text)
 
 
-def _ensure_summary_links_in_plan(wiki_dir: Path, summary: str, plan: dict) -> dict:
+def _known_wiki_pages(wiki_dir: Path) -> set[str]:
+    """Return existing wiki page IDs without .md suffix."""
+    if not wiki_dir.exists():
+        return set()
+    return {
+        str(path.relative_to(wiki_dir)).replace("\\", "/")[:-3]
+        for path in wiki_dir.rglob("*.md")
+    }
+
+
+def _normalize_wiki_links(
+    text: str,
+    aliases: dict[str, str],
+    allowed_slugs: set[str],
+    valid_pages: set[str],
+) -> str:
+    """Normalize concept links and unlink unresolved bare wiki links."""
+    def replace(match: re.Match) -> str:
+        raw_target = match.group(1).strip().replace("\\", "/")
+        label = (match.group(2) or raw_target).strip()
+
+        slug = aliases.get(_concept_alias_key(raw_target))
+        if slug in allowed_slugs:
+            return f"[[concepts/{slug}]]"
+
+        if raw_target.startswith("concepts/"):
+            candidate = _sanitize_concept_name(raw_target[len("concepts/"):])
+            if candidate in allowed_slugs:
+                return f"[[concepts/{candidate}]]"
+            return label
+
+        if raw_target in valid_pages:
+            if match.group(2):
+                return f"[[{raw_target}|{label}]]"
+            return f"[[{raw_target}]]"
+
+        return label
+
+    return _WIKILINK_RE.sub(replace, text)
+
+
+def _ensure_summary_links_in_plan(
+    wiki_dir: Path,
+    summary: str,
+    plan: dict,
+    max_new_links: int = DEFAULT_SUMMARY_LINK_FALLBACK_LIMIT,
+) -> dict:
     """Ensure every summary concept link is represented by create/update/related."""
     normalized = {
         "create": list(plan.get("create", [])),
@@ -524,6 +572,8 @@ def _ensure_summary_links_in_plan(wiki_dir: Path, summary: str, plan: dict) -> d
         normalized["related"],
     )
 
+    missing_targets: list[str] = []
+    seen_missing: set[str] = set()
     for target in _extract_concept_link_targets(summary):
         key = _concept_alias_key(target)
         existing_slug = aliases.get(key)
@@ -532,6 +582,21 @@ def _ensure_summary_links_in_plan(wiki_dir: Path, summary: str, plan: dict) -> d
         slug = _sanitize_concept_name(target)
         if slug in planned:
             continue
+        if key in seen_missing:
+            continue
+        missing_targets.append(target)
+        seen_missing.add(key)
+
+    if len(missing_targets) > max_new_links:
+        logger.warning(
+            "Summary contains %d unplanned concept links; unlinking them instead of "
+            "creating a noisy concept batch.",
+            len(missing_targets),
+        )
+        return normalized
+
+    for target in missing_targets:
+        slug = _sanitize_concept_name(target)
         normalized["create"].append({"name": slug, "title": target})
         aliases[_concept_alias_key(target)] = slug
         aliases[_concept_alias_key(slug)] = slug
@@ -545,13 +610,14 @@ def _rewrite_summary_links(
     doc_name: str,
     aliases: dict[str, str],
     allowed_slugs: set[str],
+    valid_pages: set[str],
 ) -> None:
     """Normalize concept wikilinks in an already-written summary page."""
     summary_path = wiki_dir / "summaries" / f"{doc_name}.md"
     if not summary_path.exists():
         return
     text = summary_path.read_text(encoding="utf-8")
-    normalized = _normalize_concept_links(text, aliases, allowed_slugs)
+    normalized = _normalize_wiki_links(text, aliases, allowed_slugs, valid_pages)
     if normalized != text:
         summary_path.write_text(normalized, encoding="utf-8")
 
@@ -833,8 +899,7 @@ async def _compile_concepts(
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("Failed to parse concepts plan: %s", exc)
         logger.debug("Raw: %s", plan_raw)
-        _update_index(wiki_dir, doc_name, [], doc_brief=doc_brief, doc_type=doc_type)
-        return
+        parsed = {"create": [], "update": [], "related": []}
 
     # Fallback: if LLM returns a flat list, treat all items as "create"
     if isinstance(parsed, list):
@@ -852,8 +917,13 @@ async def _compile_concepts(
     related_items = plan["related"]
     concept_aliases = _build_concept_aliases(wiki_dir, create_items, update_items, related_items)
     allowed_concept_slugs = _planned_concept_slugs(create_items, update_items, related_items)
-    summary = _normalize_concept_links(summary, concept_aliases, allowed_concept_slugs)
-    _rewrite_summary_links(wiki_dir, doc_name, concept_aliases, allowed_concept_slugs)
+    valid_pages = (
+        _known_wiki_pages(wiki_dir)
+        | {f"concepts/{slug}" for slug in allowed_concept_slugs}
+        | {f"summaries/{doc_name}"}
+    )
+    summary = _normalize_wiki_links(summary, concept_aliases, allowed_concept_slugs, valid_pages)
+    _rewrite_summary_links(wiki_dir, doc_name, concept_aliases, allowed_concept_slugs, valid_pages)
 
     if not create_items and not update_items and not related_items:
         _update_index(wiki_dir, doc_name, [], doc_brief=doc_brief, doc_type=doc_type)
@@ -938,6 +1008,12 @@ async def _compile_concepts(
                 concept_aliases,
                 allowed_concept_slugs,
             )
+            page_content = _normalize_wiki_links(
+                page_content,
+                concept_aliases,
+                allowed_concept_slugs,
+                valid_pages,
+            )
             _write_concept(wiki_dir, name, page_content, source_file, is_update, brief=brief)
             safe_name = _sanitize_concept_name(name)
             concept_names.append(safe_name)
@@ -950,6 +1026,34 @@ async def _compile_concepts(
         _add_related_link(wiki_dir, slug, doc_name, source_file)
 
     # --- Step 3c: Backlink — summary ↔ concepts (code only) ---
+    successful_concept_slugs = set(concept_names + sanitized_related)
+    final_valid_pages = _known_wiki_pages(wiki_dir) | {f"summaries/{doc_name}"}
+    final_aliases = {
+        key: slug
+        for key, slug in concept_aliases.items()
+        if slug in successful_concept_slugs
+    }
+    _rewrite_summary_links(
+        wiki_dir,
+        doc_name,
+        final_aliases,
+        successful_concept_slugs,
+        final_valid_pages,
+    )
+    for slug in concept_names:
+        concept_path = wiki_dir / "concepts" / f"{slug}.md"
+        if not concept_path.exists():
+            continue
+        text = concept_path.read_text(encoding="utf-8")
+        normalized_text = _normalize_wiki_links(
+            text,
+            final_aliases,
+            successful_concept_slugs,
+            final_valid_pages,
+        )
+        if normalized_text != text:
+            concept_path.write_text(normalized_text, encoding="utf-8")
+
     all_concept_slugs = concept_names + sanitized_related
     if all_concept_slugs:
         _backlink_summary(wiki_dir, doc_name, all_concept_slugs)

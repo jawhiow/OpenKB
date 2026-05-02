@@ -14,6 +14,7 @@ from openkb.agent.compiler import (
     _compile_concepts,
     _ensure_summary_links_in_plan,
     _normalize_concept_links,
+    _normalize_wiki_links,
     _parse_json,
     _sanitize_concept_name,
     _write_summary,
@@ -68,6 +69,27 @@ class TestParseConceptsPlan:
 
 
 class TestConceptLinkNormalization:
+    def test_bare_unknown_wiki_links_are_unlinked(self):
+        aliases = {
+            "ai半导体投资框架": "AI半导体投资框架",
+        }
+        text = (
+            "[[台积电]] benefits from [[AI半导体投资框架]] and "
+            "[[summaries/report]]."
+        )
+
+        normalized = _normalize_wiki_links(
+            text,
+            aliases,
+            {"AI半导体投资框架"},
+            {"summaries/report", "concepts/AI半导体投资框架"},
+        )
+
+        assert "[[台积电]]" not in normalized
+        assert "台积电 benefits" in normalized
+        assert "[[concepts/AI半导体投资框架]]" in normalized
+        assert "[[summaries/report]]" in normalized
+
     def test_summary_links_are_added_to_plan_when_missing(self, tmp_path):
         wiki = tmp_path / "wiki"
         (wiki / "concepts").mkdir(parents=True)
@@ -920,6 +942,100 @@ class TestCompileConceptsPlan:
         transformer_text = (wiki / "concepts" / "transformer.md").read_text()
         assert "[[summaries/test-doc]]" in transformer_text
         assert "summaries/test-doc.md" in transformer_text
+
+    @pytest.mark.asyncio
+    async def test_invalid_plan_falls_back_to_summary_concept_links(self, tmp_path):
+        """If plan JSON is invalid, linked summary concepts are still materialized."""
+        wiki = self._setup_wiki(tmp_path)
+
+        concept_page_response = json.dumps({
+            "brief": "Durable AI semiconductor concept",
+            "content": "# Concept\n\n[[台积电]] ties to [[HBM]].",
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = "The report depends on [[concepts/HBM]] and [[concepts/CPO-共封装光学]]."
+
+        with (
+            patch("openkb.agent.compiler.completion", side_effect=_mock_completion(["not json"])),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_page_response, concept_page_response]),
+            ) as mock_acompletion,
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert mock_acompletion.await_count == 2
+        assert (wiki / "concepts" / "HBM.md").exists()
+        assert (wiki / "concepts" / "CPO-共封装光学.md").exists()
+        hbm_text = (wiki / "concepts" / "HBM.md").read_text(encoding="utf-8")
+        assert "[[台积电]]" not in hbm_text
+        assert "台积电 ties to [[concepts/HBM]]" in hbm_text
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[concepts/HBM]]" in index_text
+        assert "[[concepts/CPO-共封装光学]]" in index_text
+
+    @pytest.mark.asyncio
+    async def test_invalid_plan_with_many_summary_links_unlinks_instead_of_exploding(self, tmp_path):
+        """A bad plan plus many summary links should not create dozens of concepts."""
+        wiki = self._setup_wiki(tmp_path)
+        summary = " ".join(f"[[concepts/Company{i}]]" for i in range(12))
+        (wiki / "summaries" / "test-doc.md").write_text(summary, encoding="utf-8")
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        mock_acompletion = AsyncMock()
+
+        with (
+            patch("openkb.agent.compiler.completion", side_effect=_mock_completion(["not json"])),
+            patch("openkb.agent.compiler.acompletion", mock_acompletion),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        mock_acompletion.assert_not_called()
+        assert list((wiki / "concepts").glob("*.md")) == []
+        rewritten_summary = (wiki / "summaries" / "test-doc.md").read_text(encoding="utf-8")
+        assert "[[concepts/" not in rewritten_summary
+        assert "Company0" in rewritten_summary
+
+    @pytest.mark.asyncio
+    async def test_failed_concept_generation_unlinks_failed_summary_link(self, tmp_path):
+        """A failed concept write should not leave a broken summary wikilink."""
+        wiki = self._setup_wiki(tmp_path)
+        summary = "This links [[concepts/HBM]]."
+        (wiki / "summaries" / "test-doc.md").write_text(summary, encoding="utf-8")
+
+        plan_response = json.dumps({
+            "create": [{"name": "HBM", "title": "HBM"}],
+            "update": [],
+            "related": [],
+        })
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+
+        async def failing_acompletion(*args, **kwargs):
+            raise RuntimeError("network down")
+
+        with (
+            patch("openkb.agent.compiler.completion", side_effect=_mock_completion([plan_response])),
+            patch("openkb.agent.compiler.acompletion", side_effect=failing_acompletion),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert not (wiki / "concepts" / "HBM.md").exists()
+        rewritten_summary = (wiki / "summaries" / "test-doc.md").read_text(encoding="utf-8")
+        assert "[[concepts/HBM]]" not in rewritten_summary
+        assert "HBM" in rewritten_summary
 
     @pytest.mark.asyncio
     async def test_fallback_list_format(self, tmp_path):
