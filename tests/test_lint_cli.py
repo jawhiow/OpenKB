@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from openkb.cli import cli
+from openkb.cli import _safe_echo, cli
 
 
 def _setup_kb(tmp_path: Path) -> Path:
@@ -29,6 +29,20 @@ def _setup_kb(tmp_path: Path) -> Path:
 
 
 class TestLintCommand:
+    def test_safe_echo_replaces_unencodable_text(self, monkeypatch):
+        calls = []
+
+        def fake_echo(text="", **kwargs):
+            calls.append(str(text))
+            if "🔍" in str(text):
+                raise UnicodeEncodeError("gbk", "🔍", 0, 1, "illegal multibyte sequence")
+
+        monkeypatch.setattr("openkb.cli.click.echo", fake_echo)
+
+        _safe_echo("🔍 issue")
+
+        assert calls == ["🔍 issue", "? issue"]
+
     def test_lint_empty_kb_skips(self, tmp_path):
         """Lint on an empty KB (no indexed docs) should exit early."""
         kb_dir = _setup_kb(tmp_path)

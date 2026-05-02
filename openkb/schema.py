@@ -9,6 +9,7 @@ AGENTS_MD = """\
 - sources/ - Document content. Short docs as .md, long docs as .json (per-page). Do not modify directly.
 - sources/images/ - Extracted images from documents, referenced by sources.
 - summaries/ - One per source document. Summary of key content.
+- companies/ - Company-specific investment pages with ratings, valuation context, exposures, catalysts, risks, and source evidence.
 - concepts/ - Cross-document topic synthesis. Created when a theme spans multiple documents.
 - explorations/ - Saved query results, analyses, and comparisons worth keeping.
 - reports/ - Lint health check reports. Auto-generated.
@@ -19,13 +20,15 @@ AGENTS_MD = """\
 
 ## Page Types
 - **Summary Page** (summaries/): Key content of a single source document.
+- **Company Page** (companies/): Company-specific investment evidence, not generic concepts.
 - **Concept Page** (concepts/): Cross-document topic synthesis with [[wikilinks]].
 - **Exploration Page** (explorations/): Saved query results, analyses, comparisons, syntheses.
 - **Index Page** (index.md): One-liner summary of every page in the wiki. Auto-maintained.
 
 ## Index Page Format
-index.md lists all documents, concepts, and explorations with metadata:
+index.md lists all documents, companies, concepts, and explorations with metadata:
 - Documents: name, one-liner description, type (short|pageindex|local-long), detail access path
+- Companies: company name, one-liner investment relevance
 - Concepts: name, one-liner description
 - Explorations: name, one-liner description
 
@@ -34,7 +37,8 @@ For broker research, earnings notes, industry reports, or other investment docum
 - Preserve key companies, ratings, target prices, dates, forecasts, valuation context, and units.
 - Capture the investment thesis, catalysts, risks, disconfirming evidence, and monitoring indicators.
 - Prefer durable concept pages for reusable cross-document themes such as supply-chain bottlenecks, pricing power, cost curves, TAM, capital intensity, and policy risk.
-- Keep company-specific claims traceable to the source summary or page evidence.
+- Route company-specific claims to `companies/` pages when company pages are generated; keep them traceable to the source summary or page evidence.
+- Do not create company pages under `concepts/`; concepts should be reusable mechanisms, themes, risks, metrics, or industry structures.
 
 ## Log Format
 Each log entry: `## [YYYY-MM-DD HH:MM:SS] operation | description`

@@ -73,12 +73,23 @@ def _frontmatter_sources(text: str) -> list[str]:
     ]
 
 
+def _strip_frontmatter(text: str) -> str:
+    """Remove leading YAML-style frontmatter when present."""
+    if not text.startswith("---"):
+        return text
+    end = text.find("---", 3)
+    if end == -1:
+        return text
+    return text[end + 3:].lstrip()
+
+
 def _looks_like_company_concept(stem: str, text: str) -> bool:
     """Heuristic for company pages that were accidentally put in concepts/."""
-    sample = text[:1600]
-    has_rating_or_ticker = bool(_RATING_RE.search(sample) or _TICKER_RE.search(sample))
-    has_company_descriptor = bool(_COMPANY_DESCRIPTOR_RE.search(sample))
-    title_repeats_stem = stem in sample[:300]
+    body = _strip_frontmatter(text)
+    intro = body.split("\n## ", 1)[0][:900]
+    has_rating_or_ticker = bool(_RATING_RE.search(intro) or _TICKER_RE.search(intro))
+    has_company_descriptor = bool(_COMPANY_DESCRIPTOR_RE.search(intro))
+    title_repeats_stem = stem in intro[:300]
     return has_rating_or_ticker and has_company_descriptor and title_repeats_stem
 
 
@@ -226,7 +237,7 @@ def check_index_sync(wiki: Path) -> list[str]:
     index_stems = {Path(lnk.strip()).stem for lnk in index_links}
     index_text_lower = index_text.lower()
 
-    for subdir in ("summaries", "concepts"):
+    for subdir in ("summaries", "companies", "concepts"):
         subdir_path = wiki / subdir
         if not subdir_path.exists():
             continue

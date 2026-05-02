@@ -50,6 +50,11 @@ class TestBuildLintAgent:
         agent = build_lint_agent(str(tmp_path), "gpt-4o-mini")
         assert "Gaps" in agent.instructions or "gaps" in agent.instructions
 
+    def test_instructions_audit_company_pages(self, tmp_path):
+        agent = build_lint_agent(str(tmp_path), "gpt-4o-mini")
+        assert "Company boundary" in agent.instructions
+        assert "companies/" in agent.instructions
+
 
 class TestRunKnowledgeLint:
     @pytest.mark.asyncio

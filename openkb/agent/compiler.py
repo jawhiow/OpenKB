@@ -69,6 +69,34 @@ Return ONLY valid JSON, no fences.
 """
 
 
+_COMPANIES_PLAN_USER = """\
+Based on the summary above, decide which company-specific investment pages
+should be created or updated.
+
+Existing company pages:
+{company_briefs}
+
+Return a JSON object with one key:
+
+1. "companies" - public companies or clearly named investable businesses with
+material evidence in this document. Array of objects:
+   {{"name": "company-slug", "title": "Human-Readable Company Name", "action": "create"}}
+
+Rules:
+- Include only company-specific entities with investment relevance, such as
+  ratings, target prices, valuation context, AI exposure, catalysts, risks, or
+  supply-chain position.
+- Do NOT include products, technologies, countries, markets, concepts, or broad
+  industry themes; those belong in `concepts/`.
+- Prefer 3-8 high-signal companies when the report supports it.
+- Use "action": "update" for an existing company page and "create" otherwise.
+- If the report does not contain material company evidence, return
+  {{"companies": []}}.
+
+Return ONLY valid JSON, no fences, no explanation.
+"""
+
+
 _CONCEPTS_PLAN_USER = """\
 Based on the summary above, decide how to update the wiki's concept pages.
 
@@ -116,6 +144,27 @@ Return a JSON object with two keys:
 - "content": The full concept page in Markdown. Include clear explanation, \
 key details from the source document, and [[wikilinks]] to related concepts \
 and [[summaries/{doc_name}]]
+
+Return ONLY valid JSON, no fences.
+"""
+
+_COMPANY_PAGE_USER = """\
+Write the company page for: {title}
+
+This company relates to the document "{doc_name}" summarized above.
+{update_instruction}
+
+Structure the page for long-term investment research: business role in the
+report, rating / target price / valuation context when available, AI or industry
+exposure, forecasts and key numbers, catalysts, risks / bear-case evidence,
+monitoring indicators, source evidence, related concepts, and
+[[summaries/{doc_name}]].
+
+Return a JSON object with two keys:
+- "brief": A single sentence (under 100 chars) describing this company's
+  investment relevance in this document
+- "content": The full company page in Markdown. Use [[concepts/...]] for
+  reusable concepts and [[summaries/{doc_name}]] for the source summary.
 
 Return ONLY valid JSON, no fences.
 """
@@ -298,20 +347,20 @@ def _read_wiki_context(wiki_dir: Path) -> tuple[str, list[str]]:
     return index_content, existing
 
 
-def _read_concept_briefs(wiki_dir: Path) -> str:
-    """Read existing concept pages and return compact one-line summaries.
+def _read_page_briefs(wiki_dir: Path, subdir: str) -> str:
+    """Read existing wiki pages in a subdirectory as compact one-line summaries.
 
-    For each concept, reads the ``brief:`` field from YAML frontmatter if
+    For each page, reads the ``brief:`` field from YAML frontmatter if
     present; otherwise falls back to truncating the first 150 chars of the body
     (newlines collapsed to spaces).  Formats each as ``- {slug}: {brief}``.
 
-    Returns "(none yet)" if the concepts directory is missing or empty.
+    Returns "(none yet)" if the directory is missing or empty.
     """
-    concepts_dir = wiki_dir / "concepts"
-    if not concepts_dir.exists():
+    pages_dir = wiki_dir / subdir
+    if not pages_dir.exists():
         return "(none yet)"
 
-    md_files = sorted(concepts_dir.glob("*.md"))
+    md_files = sorted(pages_dir.glob("*.md"))
     if not md_files:
         return "(none yet)"
 
@@ -335,6 +384,16 @@ def _read_concept_briefs(wiki_dir: Path) -> str:
             lines.append(f"- {path.stem}: {brief}")
 
     return "\n".join(lines) or "(none yet)"
+
+
+def _read_concept_briefs(wiki_dir: Path) -> str:
+    """Read existing concept pages and return compact one-line summaries."""
+    return _read_page_briefs(wiki_dir, "concepts")
+
+
+def _read_company_briefs(wiki_dir: Path) -> str:
+    """Read existing company pages and return compact one-line summaries."""
+    return _read_page_briefs(wiki_dir, "companies")
 
 
 def _get_section_bounds(lines: list[str], heading: str) -> tuple[int, int] | None:
@@ -388,6 +447,26 @@ def _insert_section_entry(lines: list[str], heading: str, entry: str) -> bool:
     return True
 
 
+def _ensure_index_section(lines: list[str], heading: str, before_heading: str | None = None) -> None:
+    """Ensure an H2 index section exists, inserting before another H2 if possible."""
+    if _get_section_bounds(lines, heading) is not None:
+        return
+
+    insert_at = len(lines)
+    if before_heading is not None:
+        for i, line in enumerate(lines):
+            if line == before_heading:
+                insert_at = i
+                break
+
+    block = [heading, ""]
+    if insert_at > 0 and lines[insert_at - 1] != "":
+        block.insert(0, "")
+    if insert_at < len(lines) and lines[insert_at] != "":
+        block.append("")
+    lines[insert_at:insert_at] = block
+
+
 
 def _write_summary(wiki_dir: Path, doc_name: str, summary: str,
                     doc_type: str = "short") -> None:
@@ -429,6 +508,215 @@ def _concept_alias_key(value: str) -> str:
     if value.endswith(".md"):
         value = value[:-3]
     return re.sub(r"[\s_\-]+", "", value).casefold()
+
+
+_COMPANY_FALLBACK_SIGNAL_RE = re.compile(
+    r"首选|受益|看好|谨慎|Overweight|Underweight|Equal-Weight|Top Pick",
+    re.IGNORECASE,
+)
+_COMPANY_RATING_TERMS = {
+    "top pick",
+    "overweight",
+    "equal-weight",
+    "underweight",
+    "attractive",
+}
+_COMPANY_EXCLUDED_NAMES = {
+    "AI",
+    "GPU",
+    "CPU",
+    "ASIC",
+    "HBM",
+    "CPO",
+    "CoWoS",
+    "SoIC",
+    "CSP",
+    "P/E",
+    "P/B",
+    "EBITDA",
+    "CAGR",
+    "Top Pick",
+    "Overweight",
+    "Equal-Weight",
+    "Underweight",
+    "Attractive",
+}
+
+
+def _clean_company_fragment(value: str) -> str:
+    """Normalize a possible company fragment from an investment summary line."""
+    value = re.sub(r"\[\[([^\]|]+)\|?([^\]]*)\]\]", lambda m: m.group(2) or m.group(1), value)
+    value = re.sub(r"\*\*|__|`", "", value)
+    value = value.strip(" \t\r\n-*•:：,，;；.。、")
+    return value.strip()
+
+
+def _is_rating_term(value: str) -> bool:
+    key = value.strip().casefold()
+    return key in _COMPANY_RATING_TERMS or any(term in key for term in _COMPANY_RATING_TERMS)
+
+
+def _looks_like_company_name(value: str) -> bool:
+    value = _clean_company_fragment(value)
+    if not value or value in _COMPANY_EXCLUDED_NAMES or _is_rating_term(value):
+        return False
+    if len(value) > 48:
+        return False
+    if re.search(r"\d{4}|CAGR|P/[EB]|EBITDA|kwpm|Gb", value, re.IGNORECASE):
+        return False
+    return bool(re.search(r"[A-Za-z]{2,}|[\u4e00-\u9fff]{2,}", value))
+
+
+def _company_item_from_fragment(fragment: str) -> dict[str, str] | None:
+    """Convert one split summary fragment into a company plan item."""
+    fragment = _clean_company_fragment(fragment)
+    if not fragment:
+        return None
+
+    paren = re.match(r"(?P<outer>.+?)[（(](?P<inner>[^）)]+)[）)]", fragment)
+    if paren:
+        outer = _clean_company_fragment(paren.group("outer"))
+        inner = _clean_company_fragment(paren.group("inner"))
+        inner_primary = _clean_company_fragment(re.split(r"[,，;/]", inner, 1)[0])
+        if inner_primary and not _is_rating_term(inner_primary):
+            if _looks_like_company_name(inner_primary):
+                title = f"{outer} ({inner_primary})" if outer else inner_primary
+                return {"name": inner_primary, "title": title, "action": "create"}
+        if _looks_like_company_name(outer):
+            return {"name": outer, "title": outer, "action": "create"}
+        return None
+
+    if _looks_like_company_name(fragment):
+        return {"name": fragment, "title": fragment, "action": "create"}
+    return None
+
+
+def _extract_company_candidates_from_summary(summary: str, max_companies: int = 12) -> list[dict[str, str]]:
+    """Fallback extraction of high-signal company names from investment summaries."""
+    if summary.startswith("---"):
+        end = summary.find("---", 3)
+        if end != -1:
+            summary = summary[end + 3:].lstrip("\n")
+
+    companies: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for line in summary.splitlines():
+        if not _COMPANY_FALLBACK_SIGNAL_RE.search(line):
+            continue
+        if "：" in line:
+            line = line.split("：", 1)[1]
+        elif ":" in line:
+            line = line.split(":", 1)[1]
+        for fragment in re.split(r"[、;；]", line):
+            item = _company_item_from_fragment(fragment)
+            if item is None:
+                continue
+            key = _concept_alias_key(item["name"])
+            if key in seen:
+                continue
+            seen.add(key)
+            companies.append(item)
+            if len(companies) >= max_companies:
+                return companies
+    return companies
+
+
+_CONCEPT_FALLBACK_PATTERNS: list[tuple[str, str, str]] = [
+    (r"云.*资本支出|Cloud\s*CAPEX|CSP", "Cloud_CAPEX", "Cloud CAPEX"),
+    (r"先进封装|Advanced\s*Packaging|CoWoS|SoIC", "Advanced_Packaging", "Advanced Packaging"),
+    (r"CoWoS", "CoWoS", "CoWoS"),
+    (r"SoIC", "SoIC", "SoIC"),
+    (r"AI\s*ASIC|定制芯片|定制化", "AI_ASIC", "AI ASIC"),
+    (r"HBM|高带宽内存", "HBM", "HBM"),
+    (r"NOR|Flash", "NOR_Flash", "NOR Flash"),
+    (r"中国.*AI.*芯片|国产.*AI.*芯片|China.*AI.*GPU", "China_AI_GPU", "China AI GPU"),
+    (r"测试设备|测试耗材|Semiconductor\s*Testing|探针|测试插座", "Semiconductor_Testing", "Semiconductor Testing"),
+    (r"CPO|共封装光学", "CPO", "CPO"),
+    (r"光引擎|光芯片|Optical", "Optical_Engines", "Optical Engines"),
+    (r"出口管制|地缘|Export\s*Control", "Export_Controls", "Export Controls"),
+    (r"半导体景气|景气周期|cycle", "Semiconductor_Cycle", "Semiconductor Cycle"),
+]
+
+
+def _extract_concept_candidates_from_summary(summary: str, max_concepts: int = 10) -> list[dict[str, str]]:
+    """Fallback extraction of durable investment concepts from summary headings."""
+    if summary.startswith("---"):
+        end = summary.find("---", 3)
+        if end != -1:
+            summary = summary[end + 3:].lstrip("\n")
+
+    concepts: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for pattern, name, title in _CONCEPT_FALLBACK_PATTERNS:
+        if not re.search(pattern, summary, re.IGNORECASE):
+            continue
+        slug = _sanitize_concept_name(name)
+        if slug in seen:
+            continue
+        seen.add(slug)
+        concepts.append({"name": slug, "title": title})
+        if len(concepts) >= max_concepts:
+            return concepts
+    return concepts
+
+
+_CONCEPT_PLAN_NAME_ALIASES = {
+    "asic": ("AI_ASIC", "AI ASIC"),
+    "aiasic": ("AI_ASIC", "AI ASIC"),
+    "ai定制芯片asic": ("AI_ASIC", "AI ASIC"),
+    "定制芯片": ("AI_ASIC", "AI ASIC"),
+}
+
+
+def _company_alias_keys(company_items: list[dict]) -> set[str]:
+    """Return normalized aliases for companies that must not become concepts."""
+    keys: set[str] = set()
+    for item in company_items:
+        for field in ("name", "title"):
+            value = str(item.get(field, "")).strip()
+            if value:
+                keys.add(_concept_alias_key(value))
+                paren = re.search(r"[（(]([^）)]+)[）)]", value)
+                if paren:
+                    keys.add(_concept_alias_key(paren.group(1)))
+    return keys
+
+
+def _canonicalize_concept_item(item: dict) -> dict | None:
+    """Normalize concept plan items to canonical durable slugs."""
+    name = str(item.get("name", "")).strip()
+    if not name:
+        return None
+    title = str(item.get("title", name)).strip() or name
+    alias = _CONCEPT_PLAN_NAME_ALIASES.get(_concept_alias_key(name))
+    if alias is not None:
+        name, title = alias
+    return {"name": _sanitize_concept_name(name), "title": title}
+
+
+def _filter_concept_plan_against_companies(plan: dict, company_keys: set[str]) -> dict:
+    """Remove company names from concept plan and canonicalize remaining concepts."""
+    filtered = {"create": [], "update": [], "related": []}
+
+    for action in ("create", "update"):
+        for item in plan.get(action, []):
+            if not isinstance(item, dict):
+                continue
+            raw_name = str(item.get("name", "")).strip()
+            raw_title = str(item.get("title", raw_name)).strip()
+            if _concept_alias_key(raw_name) in company_keys or _concept_alias_key(raw_title) in company_keys:
+                continue
+            canonical = _canonicalize_concept_item(item)
+            if canonical is not None:
+                filtered[action].append(canonical)
+
+    for related in plan.get("related", []):
+        raw = str(related).strip()
+        if raw and _concept_alias_key(raw) not in company_keys:
+            alias = _CONCEPT_PLAN_NAME_ALIASES.get(_concept_alias_key(raw))
+            filtered["related"].append(alias[0] if alias else raw)
+
+    return filtered
 
 
 def _extract_concept_link_targets(text: str) -> list[str]:
@@ -685,6 +973,121 @@ def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is
         path.write_text(frontmatter + content, encoding="utf-8")
 
 
+def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is_update: bool, brief: str = "") -> None:
+    """Write or update a company page, managing the sources frontmatter."""
+    companies_dir = wiki_dir / "companies"
+    companies_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _sanitize_concept_name(name)
+    path = (companies_dir / f"{safe_name}.md").resolve()
+    if not path.is_relative_to(companies_dir.resolve()):
+        logger.warning("Company name escapes companies dir: %s", name)
+        return
+
+    if is_update and path.exists():
+        existing = path.read_text(encoding="utf-8")
+        if source_file not in existing:
+            if existing.startswith("---"):
+                end = existing.find("---", 3)
+                if end != -1:
+                    fm = existing[:end + 3]
+                    body = existing[end + 3:]
+                    if "sources:" in fm:
+                        fm = fm.replace("sources: [", f"sources: [{source_file}, ")
+                    else:
+                        fm = fm.replace("---\n", f"---\nsources: [{source_file}]\n", 1)
+                    existing = fm + body
+            else:
+                existing = f"---\nsources: [{source_file}]\n---\n\n" + existing
+        clean = content
+        if clean.startswith("---"):
+            end = clean.find("---", 3)
+            if end != -1:
+                clean = clean[end + 3:].lstrip("\n")
+        if existing.startswith("---"):
+            end = existing.find("---", 3)
+            if end != -1:
+                existing = existing[:end + 3] + "\n\n" + clean
+            else:
+                existing = clean
+        else:
+            existing = clean
+        if brief and existing.startswith("---"):
+            end = existing.find("---", 3)
+            if end != -1:
+                fm = existing[:end + 3]
+                body = existing[end + 3:]
+                if "brief:" in fm:
+                    fm = re.sub(r"brief:.*", f"brief: {brief}", fm)
+                else:
+                    fm = fm.replace("---\n", f"---\nbrief: {brief}\n", 1)
+                existing = fm + body
+        path.write_text(existing, encoding="utf-8")
+    else:
+        if content.startswith("---"):
+            end = content.find("---", 3)
+            if end != -1:
+                content = content[end + 3:].lstrip("\n")
+        fm_lines = [f"sources: [{source_file}]"]
+        if brief:
+            fm_lines.append(f"brief: {brief}")
+        frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n"
+        path.write_text(frontmatter + content, encoding="utf-8")
+
+
+def _frontmatter_source_entries(text: str) -> list[str]:
+    """Return source entries from a generated page frontmatter block."""
+    if not text.startswith("---"):
+        return []
+    end = text.find("---", 3)
+    if end == -1:
+        return []
+    frontmatter = text[:end + 3]
+    match = re.search(r"^sources:\s*\[(.*?)\]\s*$", frontmatter, re.MULTILINE)
+    if not match:
+        return []
+    return [
+        item.strip()
+        for item in match.group(1).split(",")
+        if item.strip()
+    ]
+
+
+def _remove_index_entries(wiki_dir: Path, page_ids: set[str]) -> None:
+    """Remove index rows for deleted generated pages."""
+    if not page_ids:
+        return
+    index_path = wiki_dir / "index.md"
+    if not index_path.exists():
+        return
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    filtered = [
+        line for line in lines
+        if not any(line.startswith(f"- [[{page_id}]]") for page_id in page_ids)
+    ]
+    if filtered != lines:
+        index_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+
+
+def cleanup_generated_pages_for_source(wiki_dir: Path, doc_name: str) -> list[str]:
+    """Delete generated company/concept pages whose only source is this document."""
+    source_file = f"summaries/{doc_name}.md"
+    removed: list[str] = []
+
+    for subdir in ("companies", "concepts"):
+        pages_dir = wiki_dir / subdir
+        if not pages_dir.exists():
+            continue
+        for path in sorted(pages_dir.glob("*.md")):
+            sources = _frontmatter_source_entries(path.read_text(encoding="utf-8"))
+            if sources == [source_file]:
+                page_id = f"{subdir}/{path.stem}"
+                path.unlink()
+                removed.append(page_id)
+
+    _remove_index_entries(wiki_dir, set(removed))
+    return removed
+
+
 def _add_related_link(wiki_dir: Path, concept_slug: str, doc_name: str, source_file: str) -> None:
     """Add a cross-reference link to an existing concept page (no LLM call)."""
     concepts_dir = wiki_dir / "concepts"
@@ -772,9 +1175,11 @@ def _backlink_concepts(wiki_dir: Path, doc_name: str, concept_slugs: list[str]) 
 def _update_index(
     wiki_dir: Path, doc_name: str, concept_names: list[str],
     doc_brief: str = "", concept_briefs: dict[str, str] | None = None,
+    company_names: list[str] | None = None,
+    company_briefs: dict[str, str] | None = None,
     doc_type: str = "short",
 ) -> None:
-    """Append document and concept entries to index.md.
+    """Append document, company, and concept entries to index.md.
 
     When ``doc_brief`` or entries in ``concept_briefs`` are provided, entries
     are written as ``- [[link]] (type) - brief text``. Existing entries are
@@ -785,15 +1190,22 @@ def _update_index(
     """
     if concept_briefs is None:
         concept_briefs = {}
+    if company_names is None:
+        company_names = []
+    if company_briefs is None:
+        company_briefs = {}
 
     index_path = wiki_dir / "index.md"
     if not index_path.exists():
         index_path.write_text(
-            "# Knowledge Base Index\n\n## Documents\n\n## Concepts\n\n## Explorations\n",
+            "# Knowledge Base Index\n\n## Documents\n\n## Companies\n\n## Concepts\n\n## Explorations\n",
             encoding="utf-8",
         )
 
     lines = index_path.read_text(encoding="utf-8").split("\n")
+    _ensure_index_section(lines, "## Documents", before_heading="## Companies")
+    _ensure_index_section(lines, "## Companies", before_heading="## Concepts")
+    _ensure_index_section(lines, "## Concepts", before_heading="## Explorations")
 
     doc_link = f"[[summaries/{doc_name}]]"
     if not _section_contains_link(lines, "## Documents", doc_link):
@@ -801,6 +1213,17 @@ def _update_index(
         if doc_brief:
             doc_entry += f" - {doc_brief}"
         _insert_section_entry(lines, "## Documents", doc_entry)
+
+    for name in company_names:
+        company_link = f"[[companies/{name}]]"
+        company_entry = f"- {company_link}"
+        if name in company_briefs:
+            company_entry += f" - {company_briefs[name]}"
+        if _section_contains_link(lines, "## Companies", company_link):
+            if name in company_briefs:
+                _replace_section_entry(lines, "## Companies", company_link, company_entry)
+        else:
+            _insert_section_entry(lines, "## Companies", company_entry)
 
     for name in concept_names:
         concept_link = f"[[concepts/{name}]]"
@@ -882,7 +1305,45 @@ async def _compile_concepts(
     """
     source_file = f"summaries/{doc_name}.md"
 
-    # --- Step 2: Get concepts plan (A cached) ---
+    # --- Step 2a: Get company plan (A cached) ---
+    company_briefs = _read_company_briefs(wiki_dir)
+    company_plan_raw = _llm_call(model, [
+        system_msg,
+        doc_msg,
+        {"role": "assistant", "content": summary},
+        {"role": "user", "content": _COMPANIES_PLAN_USER.format(
+            company_briefs=company_briefs,
+        )},
+    ], "companies-plan", max_tokens=1024)
+
+    try:
+        company_parsed = _parse_json(company_plan_raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Failed to parse companies plan: %s", exc)
+        logger.debug("Raw: %s", company_plan_raw)
+        company_parsed = {
+            "companies": _extract_company_candidates_from_summary(summary),
+        }
+
+    fallback_company_items = _extract_company_candidates_from_summary(summary)
+    company_items: list[dict] = []
+    if isinstance(company_parsed, dict):
+        raw_company_items = company_parsed.get("companies", [])
+        if isinstance(raw_company_items, list):
+            company_items = [
+                item for item in raw_company_items
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ]
+    if not company_items:
+        company_items = fallback_company_items
+    company_keys = _company_alias_keys(company_items + fallback_company_items)
+
+    planned_company_slugs = {
+        _sanitize_concept_name(str(item["name"]))
+        for item in company_items
+    }
+
+    # --- Step 2b: Get concepts plan (A cached) ---
     concept_briefs = _read_concept_briefs(wiki_dir)
 
     plan_raw = _llm_call(model, [
@@ -911,7 +1372,20 @@ async def _compile_concepts(
             "related": parsed.get("related", []),
         }
 
+    summary_concept_targets = _extract_concept_link_targets(summary)
+    plan = _filter_concept_plan_against_companies(plan, company_keys)
     plan = _ensure_summary_links_in_plan(wiki_dir, summary, plan)
+    planned_after_filter = _planned_concept_slugs(plan["create"], plan["update"], plan["related"])
+    if len(planned_after_filter) < 5 and not summary_concept_targets:
+        for item in _extract_concept_candidates_from_summary(summary):
+            slug = _sanitize_concept_name(str(item["name"]))
+            if slug in planned_after_filter:
+                continue
+            if (wiki_dir / "concepts" / f"{slug}.md").exists():
+                plan["update"].append(item)
+            else:
+                plan["create"].append(item)
+            planned_after_filter.add(slug)
     create_items = plan["create"]
     update_items = plan["update"]
     related_items = plan["related"]
@@ -919,18 +1393,58 @@ async def _compile_concepts(
     allowed_concept_slugs = _planned_concept_slugs(create_items, update_items, related_items)
     valid_pages = (
         _known_wiki_pages(wiki_dir)
+        | {f"companies/{slug}" for slug in planned_company_slugs}
         | {f"concepts/{slug}" for slug in allowed_concept_slugs}
         | {f"summaries/{doc_name}"}
     )
     summary = _normalize_wiki_links(summary, concept_aliases, allowed_concept_slugs, valid_pages)
     _rewrite_summary_links(wiki_dir, doc_name, concept_aliases, allowed_concept_slugs, valid_pages)
 
-    if not create_items and not update_items and not related_items:
+    if not company_items and not create_items and not update_items and not related_items:
         _update_index(wiki_dir, doc_name, [], doc_brief=doc_brief, doc_type=doc_type)
         return
 
-    # --- Step 3: Generate/update concept pages concurrently (A cached) ---
+    # --- Step 3: Generate/update company and concept pages concurrently (A cached) ---
     semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def _gen_company(company: dict) -> tuple[str, str, bool, str]:
+        name = str(company["name"]).strip()
+        title = str(company.get("title", name)).strip() or name
+        safe_name = _sanitize_concept_name(name)
+        company_path = wiki_dir / "companies" / f"{safe_name}.md"
+        requested_action = str(company.get("action", "")).lower()
+        is_update = requested_action == "update" or company_path.exists()
+        if is_update and company_path.exists():
+            raw_text = company_path.read_text(encoding="utf-8")
+            if raw_text.startswith("---"):
+                parts = raw_text.split("---", 2)
+                existing_content = parts[2].strip() if len(parts) >= 3 else raw_text
+            else:
+                existing_content = raw_text
+            update_instruction = (
+                "Current content of this company page:\n"
+                f"{existing_content}\n\n"
+                "Integrate the new document evidence naturally; do not just append."
+            )
+        else:
+            update_instruction = ""
+        async with semaphore:
+            raw = await _llm_call_async(model, [
+                system_msg,
+                doc_msg,
+                {"role": "assistant", "content": summary},
+                {"role": "user", "content": _COMPANY_PAGE_USER.format(
+                    title=title, doc_name=doc_name,
+                    update_instruction=update_instruction,
+                )},
+            ], f"company: {name}")
+        try:
+            parsed = _parse_json(raw)
+            brief = parsed.get("brief", "")
+            content = parsed.get("content", raw)
+        except (json.JSONDecodeError, ValueError):
+            brief, content = "", raw
+        return name, content, is_update, brief
 
     async def _gen_create(concept: dict) -> tuple[str, str, bool, str]:
         name = concept["name"]
@@ -984,12 +1498,39 @@ async def _compile_concepts(
             brief, content = "", raw
         return name, content, True, brief
 
+    company_tasks = [_gen_company(c) for c in company_items]
+
     tasks = []
     tasks.extend(_gen_create(c) for c in create_items)
     tasks.extend(_gen_update(c) for c in update_items)
 
+    company_names: list[str] = []
+    company_briefs_map: dict[str, str] = {}
     concept_names: list[str] = []
     concept_briefs_map: dict[str, str] = {}
+
+    if company_tasks:
+        total = len(company_tasks)
+        sys.stdout.write(f"    Generating {total} company page(s) (concurrency={max_concurrency})...\n")
+        sys.stdout.flush()
+
+        company_results = await asyncio.gather(*company_tasks, return_exceptions=True)
+        for r in company_results:
+            if isinstance(r, Exception):
+                logger.warning("Company generation failed: %s", r)
+                continue
+            name, page_content, is_update, brief = r
+            page_content = _normalize_wiki_links(
+                page_content,
+                concept_aliases,
+                allowed_concept_slugs,
+                valid_pages,
+            )
+            _write_company(wiki_dir, name, page_content, source_file, is_update, brief=brief)
+            safe_name = _sanitize_concept_name(name)
+            company_names.append(safe_name)
+            if brief:
+                company_briefs_map[safe_name] = brief
 
     if tasks:
         total = len(tasks)
@@ -1053,6 +1594,19 @@ async def _compile_concepts(
         )
         if normalized_text != text:
             concept_path.write_text(normalized_text, encoding="utf-8")
+    for slug in company_names:
+        company_path = wiki_dir / "companies" / f"{slug}.md"
+        if not company_path.exists():
+            continue
+        text = company_path.read_text(encoding="utf-8")
+        normalized_text = _normalize_wiki_links(
+            text,
+            final_aliases,
+            successful_concept_slugs,
+            final_valid_pages,
+        )
+        if normalized_text != text:
+            company_path.write_text(normalized_text, encoding="utf-8")
 
     all_concept_slugs = concept_names + sanitized_related
     if all_concept_slugs:
@@ -1062,6 +1616,7 @@ async def _compile_concepts(
     # --- Step 4: Update index (code only) ---
     _update_index(wiki_dir, doc_name, concept_names,
                   doc_brief=doc_brief, concept_briefs=concept_briefs_map,
+                  company_names=company_names, company_briefs=company_briefs_map,
                   doc_type=doc_type)
 
 

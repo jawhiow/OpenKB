@@ -21,6 +21,7 @@ def _make_wiki(tmp_path: Path) -> Path:
     (wiki / "sources").mkdir(parents=True)
     (wiki / "summaries").mkdir(parents=True)
     (wiki / "concepts").mkdir(parents=True)
+    (wiki / "companies").mkdir(parents=True)
     (wiki / "reports").mkdir(parents=True)
     (wiki / "index.md").write_text(
         "# Index\n\n## Documents\n\n## Concepts\n", encoding="utf-8"
@@ -182,6 +183,14 @@ class TestCheckIndexSync:
 
         assert any("unlisted" in issue for issue in result)
 
+    def test_company_page_not_in_index(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "companies" / "tsmc.md").write_text("# TSMC")
+
+        result = check_index_sync(wiki)
+
+        assert any("companies/tsmc.md not mentioned in index.md" in issue for issue in result)
+
     def test_missing_index_md(self, tmp_path):
         wiki = tmp_path / "wiki"
         wiki.mkdir()
@@ -204,6 +213,23 @@ class TestInvestmentQualityIssues:
 
         assert any("company-like concept page" in issue for issue in issues)
         assert any("concepts/台积电.md" in issue for issue in issues)
+
+    def test_does_not_flag_theme_page_with_company_exposure_section(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "concepts" / "CoWoS.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n"
+            "# CoWoS\n\n"
+            "CoWoS is an advanced packaging technology for AI accelerators.\n\n"
+            "## Why It Matters\n"
+            "It connects compute chiplets and HBM through an interposer.\n\n"
+            "## Company Exposure\n"
+            "TSMC (2330.TW, OW) 是主要代工厂，ASE (3711.TW, OW) 是后段封装供应商。",
+            encoding="utf-8",
+        )
+
+        issues = find_investment_quality_issues(wiki)
+
+        assert not any("company-like concept page" in issue for issue in issues)
 
     def test_detects_concept_explosion_from_one_summary(self, tmp_path):
         wiki = _make_wiki(tmp_path)

@@ -26,11 +26,16 @@ for quality issues that structural tools cannot detect.
    could be merged?
 5. **Concept coverage** — Are important themes in the summaries missing concept pages?
 
+6. **Company boundary** - Are company-specific pages placed in `companies/`
+   while `concepts/` stays focused on reusable mechanisms, risks, metrics, and themes?
+
 ## Process
 1. Start with index.md to understand scope.
 2. Read summary pages to understand document content.
-3. Read concept pages to check for contradictions and gaps.
-4. Produce a structured Markdown report listing issues found with references
+3. Read company pages to check company-specific evidence, valuation context,
+   catalysts, and risks.
+4. Read concept pages to check for contradictions and gaps.
+5. Produce a structured Markdown report listing issues found with references
    to the specific pages where each issue occurs.
 
 Be thorough but concise. If the wiki is small or sparse, say so.

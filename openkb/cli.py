@@ -10,6 +10,7 @@ warnings.filterwarnings("ignore")
 import asyncio
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import Callable
@@ -181,6 +182,21 @@ def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> 
         progress_callback(message)
 
 
+def _safe_echo(message: object = "", **kwargs) -> None:
+    """Echo text without crashing on narrow Windows console encodings."""
+    try:
+        click.echo(message, **kwargs)
+        return
+    except UnicodeEncodeError:
+        text = str(message)
+        encoding = getattr(sys.exc_info()[1], "encoding", None) or getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            safe_text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        except LookupError:
+            safe_text = text.encode("ascii", errors="replace").decode("ascii")
+        click.echo(safe_text, **kwargs)
+
+
 def add_single_file(
     file_path: Path,
     kb_dir: Path,
@@ -197,7 +213,12 @@ def add_single_file(
     3. If long doc: run PageIndex then compile_long_doc.
     4. Else: compile_short_doc.
     """
-    from openkb.agent.compiler import compile_local_long_doc, compile_long_doc, compile_short_doc
+    from openkb.agent.compiler import (
+        cleanup_generated_pages_for_source,
+        compile_local_long_doc,
+        compile_long_doc,
+        compile_short_doc,
+    )
     from openkb.state import HashRegistry
 
     logger = logging.getLogger(__name__)
@@ -225,6 +246,10 @@ def add_single_file(
         return
 
     doc_name = file_path.stem
+    if force:
+        removed = cleanup_generated_pages_for_source(kb_dir / "wiki", doc_name)
+        if removed:
+            click.echo(f"  Removed {len(removed)} stale generated page(s) for recompilation.")
 
     # 3/4. Index and compile
     if result.is_long_doc and result.local_long_doc:
@@ -380,12 +405,13 @@ def init():
     Path("raw").mkdir(exist_ok=True)
     Path("wiki/sources/images").mkdir(parents=True, exist_ok=True)
     Path("wiki/summaries").mkdir(parents=True, exist_ok=True)
+    Path("wiki/companies").mkdir(parents=True, exist_ok=True)
     Path("wiki/concepts").mkdir(parents=True, exist_ok=True)
 
     # Write wiki files
     Path("wiki/AGENTS.md").write_text(AGENTS_MD, encoding="utf-8")
     Path("wiki/index.md").write_text(
-        "# Knowledge Base Index\n\n## Documents\n\n## Concepts\n\n## Explorations\n",
+        "# Knowledge Base Index\n\n## Documents\n\n## Companies\n\n## Concepts\n\n## Explorations\n",
         encoding="utf-8",
     )
     Path("wiki/log.md").write_text("# Operations Log\n\n", encoding="utf-8")
@@ -667,16 +693,16 @@ async def run_lint(kb_dir: Path) -> Path | None:
     _setup_llm_key(kb_dir)
     model: str = config.get("model", DEFAULT_CONFIG["model"])
 
-    click.echo("Running structural lint...")
+    _safe_echo("Running structural lint...")
     structural_report = run_structural_lint(kb_dir)
-    click.echo(structural_report)
+    _safe_echo(structural_report)
 
-    click.echo("Running knowledge lint...")
+    _safe_echo("Running knowledge lint...")
     try:
         knowledge_report = await run_knowledge_lint(kb_dir, model)
     except Exception as exc:
         knowledge_report = f"Knowledge lint failed: {exc}"
-    click.echo(knowledge_report)
+    _safe_echo(knowledge_report)
 
     # Write combined report
     reports_dir = kb_dir / "wiki" / "reports"
@@ -687,7 +713,7 @@ async def run_lint(kb_dir: Path) -> Path | None:
     report_content = f"# Lint Report — {timestamp}\n\n## Structural\n\n{structural_report}\n\n## Semantic\n\n{knowledge_report}\n"
     report_path.write_text(report_content, encoding="utf-8")
     append_log(kb_dir / "wiki", "lint", f"report → {report_path.name}")
-    click.echo(f"\nReport written to {report_path}")
+    _safe_echo(f"\nReport written to {report_path}")
     return report_path
 
 
@@ -740,6 +766,15 @@ def print_list(kb_dir: Path) -> None:
             for s in summaries:
                 click.echo(f"  - {s}")
 
+    # Display companies
+    companies_dir = kb_dir / "wiki" / "companies"
+    if companies_dir.exists():
+        companies = sorted(p.stem for p in companies_dir.glob("*.md"))
+        if companies:
+            click.echo(f"\nCompanies ({len(companies)}):")
+            for c in companies:
+                click.echo(f"  - {c}")
+
     # Display concepts
     concepts_dir = kb_dir / "wiki" / "concepts"
     if concepts_dir.exists():
@@ -773,7 +808,7 @@ def list_cmd(ctx):
 def print_status(kb_dir: Path) -> None:
     """Print knowledge base status. Usable from CLI and chat REPL."""
     wiki_dir = kb_dir / "wiki"
-    subdirs = ["sources", "summaries", "concepts", "reports"]
+    subdirs = ["sources", "summaries", "companies", "concepts", "reports"]
 
     click.echo("Knowledge Base Status:")
     click.echo(f"  {'Directory':<20} {'Files':<10}")

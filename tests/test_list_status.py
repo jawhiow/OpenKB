@@ -18,6 +18,7 @@ def _setup_kb(tmp_path: Path) -> Path:
     (kb_dir / "wiki" / "sources" / "images").mkdir(parents=True)
     (kb_dir / "wiki" / "summaries").mkdir(parents=True)
     (kb_dir / "wiki" / "concepts").mkdir(parents=True)
+    (kb_dir / "wiki" / "companies").mkdir(parents=True)
     (kb_dir / "wiki" / "reports").mkdir(parents=True)
     openkb_dir = kb_dir / ".openkb"
     openkb_dir.mkdir()
@@ -102,6 +103,21 @@ class TestListCommand:
         # No concepts in output since none exist
         assert "Concepts:" not in result.output
 
+    def test_list_shows_companies(self, tmp_path):
+        kb_dir = _setup_kb(tmp_path)
+        hashes = {"abc": {"name": "paper.pdf", "type": "pdf"}}
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes))
+        (kb_dir / "wiki" / "companies" / "tsmc.md").write_text("# TSMC")
+        (kb_dir / "wiki" / "companies" / "smic.md").write_text("# SMIC")
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["list"])
+
+        assert "Companies (2):" in result.output
+        assert "tsmc" in result.output
+        assert "smic" in result.output
+
 
 class TestStatusCommand:
     def test_status_no_kb(self, tmp_path):
@@ -118,6 +134,7 @@ class TestStatusCommand:
         (kb_dir / "wiki" / "sources" / "doc2.md").write_text("# Doc 2")
         (kb_dir / "wiki" / "summaries" / "sum1.md").write_text("# Sum 1")
         (kb_dir / "wiki" / "concepts" / "concept1.md").write_text("# Concept")
+        (kb_dir / "wiki" / "companies" / "company1.md").write_text("# Company")
 
         runner = CliRunner()
         with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
@@ -126,6 +143,7 @@ class TestStatusCommand:
         assert "sources" in result.output
         assert "summaries" in result.output
         assert "concepts" in result.output
+        assert "companies" in result.output
         assert "reports" in result.output
 
     def test_status_shows_total_indexed(self, tmp_path):

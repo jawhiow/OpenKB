@@ -233,7 +233,9 @@ class TestAddCommand:
         )
 
         with patch("openkb.cli.convert_document", return_value=mock_result) as mock_convert, \
+             patch("openkb.agent.compiler.cleanup_generated_pages_for_source") as mock_cleanup, \
              patch("openkb.agent.compiler.compile_short_doc", new_callable=AsyncMock):
             add_single_file(doc, kb_dir, force=True)
 
         mock_convert.assert_called_once_with(doc, kb_dir, force=True)
+        mock_cleanup.assert_called_once_with(kb_dir / "wiki", "test")

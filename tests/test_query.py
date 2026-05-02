@@ -36,6 +36,10 @@ class TestBuildQueryAgent:
         assert "local-long" in agent.instructions
         assert "get_page_content(doc_name, pages)" in agent.instructions
 
+    def test_instructions_read_company_pages(self, tmp_path):
+        agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
+        assert "Read company pages (companies/)" in agent.instructions
+
     def test_schema_in_instructions(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
         assert SCHEMA_MD in agent.instructions

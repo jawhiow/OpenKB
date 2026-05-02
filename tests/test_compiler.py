@@ -17,11 +17,16 @@ from openkb.agent.compiler import (
     _normalize_wiki_links,
     _parse_json,
     _sanitize_concept_name,
+    _extract_company_candidates_from_summary,
+    _extract_concept_candidates_from_summary,
     _write_summary,
     _write_concept,
+    _write_company,
+    cleanup_generated_pages_for_source,
     _update_index,
     _read_wiki_context,
     _read_concept_briefs,
+    _read_company_briefs,
     _add_related_link,
     _backlink_summary,
     _backlink_concepts,
@@ -243,6 +248,26 @@ class TestWriteConcept:
         assert "New info from paper2." in text
 
 
+class TestWriteCompany:
+    def test_new_company_with_brief(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+        _write_company(
+            wiki,
+            "TSMC",
+            "# TSMC\n\nAI foundry exposure.",
+            "summaries/report.md",
+            False,
+            brief="AI foundry bellwether",
+        )
+        path = wiki / "companies" / "TSMC.md"
+        assert path.exists()
+        text = path.read_text()
+        assert "sources: [summaries/report.md]" in text
+        assert "brief: AI foundry bellwether" in text
+        assert "# TSMC" in text
+
+
 class TestUpdateIndex:
     def test_appends_entries_with_briefs(self, tmp_path):
         wiki = tmp_path / "wiki"
@@ -258,6 +283,25 @@ class TestUpdateIndex:
         assert "[[summaries/my-doc]] (short) - Introduces transformers" in text
         assert "[[concepts/attention]] - Focus mechanism" in text
         assert "[[concepts/transformer]] - NN architecture" in text
+
+    def test_appends_company_entries_with_briefs(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+        (wiki / "index.md").write_text(
+            "# Index\n\n## Documents\n\n## Companies\n\n## Concepts\n\n## Explorations\n",
+            encoding="utf-8",
+        )
+        _update_index(
+            wiki,
+            "report",
+            [],
+            doc_brief="AI semiconductor report",
+            company_names=["TSMC"],
+            company_briefs={"TSMC": "AI foundry bellwether"},
+        )
+        text = (wiki / "index.md").read_text()
+        assert "[[summaries/report]] (short) - AI semiconductor report" in text
+        assert "[[companies/TSMC]] - AI foundry bellwether" in text
 
     def test_updates_only_exact_concept_row(self, tmp_path):
         wiki = tmp_path / "wiki"
@@ -455,6 +499,120 @@ class TestReadConceptBriefs:
         )
         result = _read_concept_briefs(wiki)
         assert "- old: Old concept without brief field." in result
+
+
+class TestReadCompanyBriefs:
+    def test_reads_company_briefs_with_frontmatter(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        companies = wiki / "companies"
+        companies.mkdir(parents=True)
+        (companies / "TSMC.md").write_text(
+            "---\nsources: [report.md]\nbrief: AI foundry bellwether\n---\n\n# TSMC",
+            encoding="utf-8",
+        )
+
+        result = _read_company_briefs(wiki)
+
+        assert "- TSMC: AI foundry bellwether" in result
+
+
+class TestCleanupGeneratedPagesForSource:
+    def test_removes_single_source_pages_and_index_entries(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        (wiki / "concepts").mkdir(parents=True)
+        (wiki / "companies").mkdir(parents=True)
+        (wiki / "index.md").write_text(
+            "# Index\n\n"
+            "## Documents\n- [[summaries/report]] (local-long) - Report\n\n"
+            "## Companies\n- [[companies/TSMC]] - Old company\n\n"
+            "## Concepts\n"
+            "- [[concepts/HBM]] - Old concept\n"
+            "- [[concepts/Shared]] - Shared concept\n\n",
+            encoding="utf-8",
+        )
+        (wiki / "concepts" / "HBM.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n# HBM",
+            encoding="utf-8",
+        )
+        (wiki / "companies" / "TSMC.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n# TSMC",
+            encoding="utf-8",
+        )
+        (wiki / "concepts" / "Shared.md").write_text(
+            "---\nsources: [summaries/other.md, summaries/report.md]\n---\n\n# Shared",
+            encoding="utf-8",
+        )
+
+        removed = cleanup_generated_pages_for_source(wiki, "report")
+
+        assert removed == ["companies/TSMC", "concepts/HBM"]
+        assert not (wiki / "concepts" / "HBM.md").exists()
+        assert not (wiki / "companies" / "TSMC.md").exists()
+        assert (wiki / "concepts" / "Shared.md").exists()
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[companies/TSMC]]" not in index_text
+        assert "[[concepts/HBM]]" not in index_text
+        assert "[[concepts/Shared]]" in index_text
+
+
+class TestCompanyFallbackExtraction:
+    def test_extracts_companies_from_investment_summary_lines(self):
+        summary = (
+            "- **首选股**（Overweight）：台积电（Top Pick）、世芯（Alchip）、"
+            "创意（GUC）、FOCI。\n"
+            "- **主要受益者**：京元电（KYEC）。"
+        )
+
+        companies = _extract_company_candidates_from_summary(summary, max_companies=5)
+
+        assert companies == [
+            {"name": "台积电", "title": "台积电", "action": "create"},
+            {"name": "Alchip", "title": "世芯 (Alchip)", "action": "create"},
+            {"name": "GUC", "title": "创意 (GUC)", "action": "create"},
+            {"name": "FOCI", "title": "FOCI", "action": "create"},
+            {"name": "KYEC", "title": "京元电 (KYEC)", "action": "create"},
+        ]
+
+
+class TestConceptFallbackExtraction:
+    def test_extracts_durable_investment_concepts_from_summary_headings(self):
+        summary = (
+            "## 先进封装：CoWoS与SoIC——算力核心\n"
+            "## AI ASIC：定制化浪潮\n"
+            "## 存储：HBM、DDR4与NOR短缺\n"
+            "## 中国AI芯片生态\n"
+            "## 测试设备与耗材：大封装+CPO的受益者\n"
+        )
+
+        concepts = _extract_concept_candidates_from_summary(summary, max_concepts=8)
+        names = [item["name"] for item in concepts]
+
+        assert names == [
+            "Advanced_Packaging",
+            "CoWoS",
+            "SoIC",
+            "AI_ASIC",
+            "HBM",
+            "NOR_Flash",
+            "China_AI_GPU",
+            "Semiconductor_Testing",
+        ]
+
+    def test_extracts_macro_cpu_gpu_and_policy_concepts(self):
+        summary = (
+            "## 宏观需求与供应链动态\n云资本支出和CSP CAPEX继续扩张。\n"
+            "## AI CPU与全球AI GPU\nNVIDIA Grace CPU、GB300和Rubin路线图。\n"
+            "## 风险与监测\n出口管制、地缘政治与非AI半导体景气周期。"
+        )
+
+        concepts = _extract_concept_candidates_from_summary(summary, max_concepts=20)
+        names = [item["name"] for item in concepts]
+
+        assert "Cloud_CAPEX" in names
+        assert "AI_CPU" in names
+        assert "AI_GPU" in names
+        assert "Export_Controls" in names
+        assert "Semiconductor_Cycle" in names
 
 
 class TestBacklinkSummary:
@@ -826,9 +984,10 @@ class TestCompileConceptsPlan:
         """Helper to set up a wiki directory with optional existing concepts."""
         wiki = tmp_path / "wiki"
         (wiki / "summaries").mkdir(parents=True)
+        (wiki / "companies").mkdir(parents=True)
         (wiki / "concepts").mkdir(parents=True)
         (wiki / "index.md").write_text(
-            "# Index\n\n## Documents\n\n## Concepts\n",
+            "# Index\n\n## Documents\n\n## Companies\n\n## Concepts\n",
             encoding="utf-8",
         )
         (tmp_path / "raw").mkdir(exist_ok=True)
@@ -908,6 +1067,238 @@ class TestCompileConceptsPlan:
         index_text = (wiki / "index.md").read_text()
         assert "[[concepts/flash-attention]]" in index_text
         assert "[[concepts/attention]]" in index_text
+
+    @pytest.mark.asyncio
+    async def test_company_plan_creates_company_pages_and_index(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "test-doc.md").write_text(
+            "TSMC benefits from [[companies/TSMC]] and [[concepts/HBM]].",
+            encoding="utf-8",
+        )
+
+        company_plan_response = json.dumps({
+            "companies": [
+                {"name": "TSMC", "title": "TSMC", "action": "create"},
+            ],
+        })
+        concept_plan_response = json.dumps({
+            "create": [{"name": "HBM", "title": "HBM"}],
+            "update": [],
+            "related": [],
+        })
+        company_page_response = json.dumps({
+            "brief": "AI foundry bellwether",
+            "content": "# TSMC\n\nAI exposure via [[concepts/HBM]] and [[summaries/test-doc]].",
+        })
+        concept_page_response = json.dumps({
+            "brief": "Memory bottleneck for AI accelerators",
+            "content": "# HBM\n\nUsed by [[companies/TSMC]] customers.",
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = "TSMC benefits from [[companies/TSMC]] and [[concepts/HBM]]."
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([company_plan_response, concept_plan_response]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([company_page_response, concept_page_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert (wiki / "companies" / "TSMC.md").exists()
+        assert (wiki / "concepts" / "HBM.md").exists()
+        summary_text = (wiki / "summaries" / "test-doc.md").read_text(encoding="utf-8")
+        assert "[[companies/TSMC]]" in summary_text
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[companies/TSMC]] - AI foundry bellwether" in index_text
+        assert "[[concepts/HBM]] - Memory bottleneck for AI accelerators" in index_text
+
+    @pytest.mark.asyncio
+    async def test_invalid_company_plan_falls_back_to_summary_companies(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "test-doc.md").write_text(
+            "首选股（Overweight）：台积电（Top Pick）、世芯（Alchip）。",
+            encoding="utf-8",
+        )
+
+        concept_plan_response = json.dumps({
+            "create": [],
+            "update": [],
+            "related": [],
+        })
+        company_page_response = json.dumps({
+            "brief": "Company evidence from the report",
+            "content": "# Company\n\nLinked to [[summaries/test-doc]].",
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = "首选股（Overweight）：台积电（Top Pick）、世芯（Alchip）。"
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion(["not json", concept_plan_response]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([company_page_response, company_page_response]),
+            ) as mock_acompletion,
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert mock_acompletion.await_count == 2
+        assert (wiki / "companies" / "台积电.md").exists()
+        assert (wiki / "companies" / "Alchip.md").exists()
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[companies/台积电]] - Company evidence from the report" in index_text
+        assert "[[companies/Alchip]] - Company evidence from the report" in index_text
+
+    @pytest.mark.asyncio
+    async def test_invalid_concept_plan_falls_back_to_summary_headings(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+
+        empty_company_plan = json.dumps({"companies": []})
+        concept_page_response = json.dumps({
+            "brief": "Durable investment concept",
+            "content": "# Concept\n\nLinked to [[summaries/test-doc]].",
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = (
+            "## 先进封装：CoWoS与SoIC——算力核心\n"
+            "## AI ASIC：定制化浪潮\n"
+            "## 存储：HBM、DDR4与NOR短缺\n"
+        )
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([empty_company_plan, "not json"]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_page_response] * 6),
+            ) as mock_acompletion,
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert mock_acompletion.await_count == 6
+        assert (wiki / "concepts" / "Advanced_Packaging.md").exists()
+        assert (wiki / "concepts" / "CoWoS.md").exists()
+        assert (wiki / "concepts" / "SoIC.md").exists()
+        assert (wiki / "concepts" / "AI_ASIC.md").exists()
+        assert (wiki / "concepts" / "HBM.md").exists()
+        assert (wiki / "concepts" / "NOR_Flash.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_concept_plan_filters_company_names_and_adds_fallback_concepts(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+
+        company_plan_response = json.dumps({
+            "companies": [
+                {"name": "TSMC", "title": "台积电", "action": "create"},
+                {"name": "MPI", "title": "MPI", "action": "create"},
+            ],
+        })
+        concept_plan_response = json.dumps({
+            "create": [
+                {"name": "台积电", "title": "台积电"},
+                {"name": "MPI", "title": "MPI"},
+                {"name": "ASIC", "title": "ASIC"},
+            ],
+            "update": [],
+            "related": [],
+        })
+        page_response = json.dumps({
+            "brief": "Generated page",
+            "content": "# Page\n\nLinked to [[summaries/test-doc]].",
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = (
+            "首选股：台积电（Top Pick）、MPI。\n"
+            "## AI ASIC：定制化浪潮\n"
+            "## 存储：HBM、NOR短缺\n"
+        )
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([company_plan_response, concept_plan_response]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([page_response] * 6),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert (wiki / "companies" / "TSMC.md").exists()
+        assert (wiki / "companies" / "MPI.md").exists()
+        assert not (wiki / "concepts" / "台积电.md").exists()
+        assert not (wiki / "concepts" / "MPI.md").exists()
+        assert not (wiki / "concepts" / "ASIC.md").exists()
+        assert (wiki / "concepts" / "AI_ASIC.md").exists()
+        assert (wiki / "concepts" / "HBM.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_empty_company_plan_falls_back_to_summary_companies(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+
+        empty_company_plan = json.dumps({"companies": []})
+        concept_plan_response = json.dumps({
+            "create": [],
+            "update": [],
+            "related": [],
+        })
+        company_page_response = json.dumps({
+            "brief": "Company evidence from the report",
+            "content": "# Company\n\nLinked to [[summaries/test-doc]].",
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = "首选增持（OW）包括：台积电（Top Pick）、Alchip。"
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([empty_company_plan, concept_plan_response]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([company_page_response, company_page_response]),
+            ) as mock_acompletion,
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert mock_acompletion.await_count == 2
+        assert (wiki / "companies" / "台积电.md").exists()
+        assert (wiki / "companies" / "Alchip.md").exists()
 
     @pytest.mark.asyncio
     async def test_related_adds_link_no_llm(self, tmp_path):

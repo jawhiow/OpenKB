@@ -25,6 +25,7 @@ def test_init_creates_structure(tmp_path):
         assert (cwd / "wiki" / "sources" / "images").is_dir()
         assert (cwd / "wiki" / "summaries").is_dir()
         assert (cwd / "wiki" / "concepts").is_dir()
+        assert (cwd / "wiki" / "companies").is_dir()
         assert (cwd / ".openkb").is_dir()
 
         # Files
@@ -43,7 +44,7 @@ def test_init_creates_structure(tmp_path):
 
         # index.md header
         index_content = (cwd / "wiki" / "index.md").read_text()
-        assert index_content == "# Knowledge Base Index\n\n## Documents\n\n## Concepts\n\n## Explorations\n"
+        assert index_content == "# Knowledge Base Index\n\n## Documents\n\n## Companies\n\n## Concepts\n\n## Explorations\n"
 
 
 def test_init_schema_content(tmp_path):
@@ -56,6 +57,8 @@ def test_init_schema_content(tmp_path):
         from pathlib import Path
         agents_content = Path("wiki/AGENTS.md").read_text(encoding="utf-8")
         assert agents_content == AGENTS_MD
+        assert "companies/" in agents_content
+        assert "Company Page" in agents_content
 
 
 def test_init_already_exists(tmp_path):
