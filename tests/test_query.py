@@ -31,6 +31,11 @@ class TestBuildQueryAgent:
         assert "get_page_content" in agent.instructions
         assert "pageindex_retrieve" not in agent.instructions
 
+    def test_instructions_cover_local_long_docs(self, tmp_path):
+        agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
+        assert "local-long" in agent.instructions
+        assert "get_page_content(doc_name, pages)" in agent.instructions
+
     def test_schema_in_instructions(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
         assert SCHEMA_MD in agent.instructions

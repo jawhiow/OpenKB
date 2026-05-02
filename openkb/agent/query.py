@@ -19,7 +19,7 @@ You are OpenKB, a knowledge-base Q&A agent. You answer questions by searching th
 
 ## Search strategy
 1. Read index.md to see all documents and concepts with brief summaries.
-   Each document is marked (short) or (pageindex) to indicate its type.
+   Each document is marked (short), (pageindex), or (local-long) to indicate its type.
 2. Read relevant summary pages (summaries/) for document overviews.
    Summaries may omit details — if you need more, follow the summary's
    `full_text` frontmatter field to the source (see step 4).
@@ -29,7 +29,10 @@ You are OpenKB, a knowledge-base Q&A agent. You answer questions by searching th
    - Short documents (doc_type: short): read_file with that path.
    - PageIndex documents (doc_type: pageindex): use get_page_content(doc_name, pages)
      with tight page ranges. The summary shows document tree structure with page
-     ranges to help you target. Never fetch the whole document.
+     ranges to help you target.
+   - Local long documents (doc_type: local-long): use get_page_content(doc_name, pages)
+     with tight page ranges. These are locally extracted per-page JSON files.
+   Never fetch the whole long document when a tight page range is enough.
 5. Source content may reference images (e.g. ![image](sources/images/doc/file.png)).
    Use the get_image tool to view them when needed.
 6. Synthesize a clear, concise, well-cited answer grounded in wiki content.
@@ -57,9 +60,9 @@ def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent
 
     @function_tool
     def get_page_content(doc_name: str, pages: str) -> str:
-        """Get text content of specific pages from a PageIndex (long) document.
-        Only use for documents with doc_type: pageindex. For short documents,
-        use read_file instead.
+        """Get text content of specific pages from a long document.
+        Use for documents with doc_type: pageindex or local-long. For short
+        documents, use read_file instead.
         Args:
             doc_name: Document name (e.g. 'attention-is-all-you-need').
             pages: Page specification (e.g. '3-5,7,10-12').

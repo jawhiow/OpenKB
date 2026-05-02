@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import os
 import shutil
@@ -12,7 +13,12 @@ import pymupdf
 from markitdown import MarkItDown
 
 from openkb.config import load_config
-from openkb.images import copy_relative_images, extract_base64_images, convert_pdf_with_images
+from openkb.images import (
+    copy_relative_images,
+    extract_base64_images,
+    convert_pdf_to_pages,
+    convert_pdf_with_images,
+)
 from openkb.state import HashRegistry
 
 logger = logging.getLogger(__name__)
@@ -25,6 +31,7 @@ class ConvertResult:
     raw_path: Path | None = None
     source_path: Path | None = None
     is_long_doc: bool = False
+    local_long_doc: bool = False
     skipped: bool = False
     file_hash: str | None = None  # For deferred hash registration
 
@@ -61,7 +68,7 @@ def _pageindex_long_doc_available() -> bool:
     )
 
 
-def convert_document(src: Path, kb_dir: Path) -> ConvertResult:
+def convert_document(src: Path, kb_dir: Path, *, force: bool = False) -> ConvertResult:
     """Convert a document and integrate it into the knowledge base.
 
     Steps:
@@ -84,7 +91,7 @@ def convert_document(src: Path, kb_dir: Path) -> ConvertResult:
     # 1. Hash check
     # ------------------------------------------------------------------
     file_hash = HashRegistry.hash_file(src)
-    if registry.is_known(file_hash):
+    if registry.is_known(file_hash) and not force:
         logger.info("Skipping already-known file: %s", src.name)
         return ConvertResult(skipped=True)
 
@@ -100,6 +107,8 @@ def convert_document(src: Path, kb_dir: Path) -> ConvertResult:
     # ------------------------------------------------------------------
     # 3. PDF long-doc detection
     # ------------------------------------------------------------------
+    doc_name = src.stem
+
     if src.suffix.lower() == ".pdf":
         page_count = get_pdf_page_count(src)
         if page_count >= threshold:
@@ -114,8 +123,25 @@ def convert_document(src: Path, kb_dir: Path) -> ConvertResult:
 
             logger.info(
                 "Long PDF detected but no compatible PageIndex long-doc backend is available; "
-                "falling back to direct PDF conversion: %s",
+                "using local page JSON fallback: %s",
                 src.name,
+            )
+            sources_dir = kb_dir / "wiki" / "sources"
+            sources_dir.mkdir(parents=True, exist_ok=True)
+            images_dir = kb_dir / "wiki" / "sources" / "images" / doc_name
+            images_dir.mkdir(parents=True, exist_ok=True)
+            pages = convert_pdf_to_pages(src, doc_name, images_dir)
+            dest_json = sources_dir / f"{doc_name}.json"
+            dest_json.write_text(
+                json.dumps(pages, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return ConvertResult(
+                raw_path=raw_dest,
+                source_path=dest_json,
+                is_long_doc=True,
+                local_long_doc=True,
+                file_hash=file_hash,
             )
 
     # ------------------------------------------------------------------
@@ -125,8 +151,6 @@ def convert_document(src: Path, kb_dir: Path) -> ConvertResult:
     sources_dir.mkdir(parents=True, exist_ok=True)
     images_dir = kb_dir / "wiki" / "sources" / "images" / src.stem
     images_dir.mkdir(parents=True, exist_ok=True)
-
-    doc_name = src.stem
 
     if src.suffix.lower() == ".md":
         markdown = src.read_text(encoding="utf-8")

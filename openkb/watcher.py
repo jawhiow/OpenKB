@@ -57,12 +57,13 @@ class DebouncedHandler(FileSystemEventHandler):
         """Add the event's source path to pending if it's a supported file."""
         if event.is_directory:
             return
-        path = Path(event.src_path)
+        path = str(event.src_path)
+        name = path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
         # Ignore hidden/dotfiles
-        if path.name.startswith("."):
+        if name.startswith("."):
             return
         with self._lock:
-            self._pending.add(str(path))
+            self._pending.add(path)
         self._schedule_flush()
 
     def on_created(self, event) -> None:

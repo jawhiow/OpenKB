@@ -53,6 +53,11 @@ def _fake_requests_response(text: str) -> MagicMock:
     return response
 
 
+def _clear_gateway_env(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+
+
 def test_completion_retries_retryable_responses_error(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "responses")
 
@@ -116,6 +121,7 @@ def test_completion_does_not_retry_bad_request(monkeypatch):
 
 def test_gpt5_respects_explicit_chat_completions_configuration(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    _clear_gateway_env(monkeypatch)
 
     assert not uses_responses_api("gpt-5.4")
     assert resolve_agent_model("gpt-5.4") == "litellm/gpt-5.4"
@@ -124,6 +130,7 @@ def test_gpt5_respects_explicit_chat_completions_configuration(monkeypatch):
 
 def test_completion_routes_gpt5_to_chat_when_chat_completions_is_configured(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    _clear_gateway_env(monkeypatch)
 
     mock_client = MagicMock()
     mock_chat_completion = MagicMock(return_value=_fake_chat_response("OK"))

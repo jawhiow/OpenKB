@@ -128,6 +128,7 @@ SUPPORTED_EXTENSIONS = {
 # Map raw doc types to display types
 _TYPE_DISPLAY_MAP = {
     "long_pdf": "pageindex",
+    "local_long_pdf": "local-long",
 }
 
 _SHORT_DOC_TYPES = {"pdf", "docx", "md", "markdown", "html", "htm", "txt", "csv", "pptx", "xlsx"}
@@ -184,6 +185,7 @@ def add_single_file(
     file_path: Path,
     kb_dir: Path,
     *,
+    force: bool = False,
     strict: bool = False,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
@@ -195,7 +197,7 @@ def add_single_file(
     3. If long doc: run PageIndex then compile_long_doc.
     4. Else: compile_short_doc.
     """
-    from openkb.agent.compiler import compile_long_doc, compile_short_doc
+    from openkb.agent.compiler import compile_local_long_doc, compile_long_doc, compile_short_doc
     from openkb.state import HashRegistry
 
     logger = logging.getLogger(__name__)
@@ -209,7 +211,7 @@ def add_single_file(
     click.echo(f"Adding: {file_path.name}")
     _emit_progress(progress_callback, f"Converting: {file_path.name}")
     try:
-        result = convert_document(file_path, kb_dir)
+        result = convert_document(file_path, kb_dir, force=force)
     except Exception as exc:
         click.echo(f"  [ERROR] Conversion failed: {exc}")
         logger.debug("Conversion traceback:", exc_info=True)
@@ -225,7 +227,24 @@ def add_single_file(
     doc_name = file_path.stem
 
     # 3/4. Index and compile
-    if result.is_long_doc:
+    if result.is_long_doc and result.local_long_doc:
+        click.echo(f"  Long document detected - compiling with local page index...")
+        _emit_progress(progress_callback, f"Compiling local long document: {file_path.name}")
+        for attempt in range(2):
+            try:
+                asyncio.run(compile_local_long_doc(doc_name, result.source_path, kb_dir, model))
+                break
+            except Exception as exc:
+                if attempt == 0:
+                    click.echo(f"  Retrying compilation in 2s...")
+                    time.sleep(2)
+                else:
+                    click.echo(f"  [ERROR] Compilation failed: {exc}")
+                    logger.debug("Compilation traceback:", exc_info=True)
+                    if strict:
+                        raise RuntimeError(f"Compilation failed: {exc}") from exc
+                    return
+    elif result.is_long_doc:
         click.echo(f"  Long document detected — indexing with PageIndex...")
         _emit_progress(progress_callback, f"Indexing long document: {file_path.name}")
         try:
@@ -279,7 +298,12 @@ def add_single_file(
     # Register hash only after successful compilation
     if result.file_hash:
         _emit_progress(progress_callback, f"Registering document: {file_path.name}")
-        doc_type = "long_pdf" if result.is_long_doc else file_path.suffix.lstrip(".")
+        if result.local_long_doc:
+            doc_type = "local_long_pdf"
+        elif result.is_long_doc:
+            doc_type = "long_pdf"
+        else:
+            doc_type = file_path.suffix.lstrip(".")
         registry.add(result.file_hash, {"name": file_path.name, "type": doc_type})
 
     append_log(kb_dir / "wiki", "ingest", file_path.name)
@@ -395,9 +419,10 @@ def init():
 
 
 @cli.command()
+@click.option("--force", is_flag=True, default=False, help="Recompile even if the document hash is already indexed.")
 @click.argument("path")
 @click.pass_context
-def add(ctx, path):
+def add(ctx, force, path):
     """Add a document or directory of documents at PATH to the knowledge base."""
     kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
     if kb_dir is None:
@@ -421,7 +446,10 @@ def add(ctx, path):
         click.echo(f"Found {total} supported file(s) in {path}.")
         for i, f in enumerate(files, 1):
             click.echo(f"\n[{i}/{total}] ", nl=False)
-            add_single_file(f, kb_dir)
+            if force:
+                add_single_file(f, kb_dir, force=True)
+            else:
+                add_single_file(f, kb_dir)
     else:
         if target.suffix.lower() not in SUPPORTED_EXTENSIONS:
             click.echo(
@@ -429,7 +457,10 @@ def add(ctx, path):
                 f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
             )
             return
-        add_single_file(target, kb_dir)
+        if force:
+            add_single_file(target, kb_dir, force=True)
+        else:
+            add_single_file(target, kb_dir)
 
 
 @cli.command()

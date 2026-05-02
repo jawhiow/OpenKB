@@ -47,6 +47,19 @@ Full text:
 
 Write a summary page for this document in Markdown.
 
+If this is an investment research report, use an investment-research structure:
+- Core thesis and conclusion
+- Ratings / top ideas / company table when available
+- Key numbers, assumptions, forecasts, and valuation context
+- Industry chain map and bottlenecks
+- Catalysts and monitoring indicators
+- Risks, bear-case evidence, and disconfirming signals
+- Source evidence with page references when page markers are present
+
+Keep all material claims traceable to the source text. Preserve important
+numbers, dates, companies, and units. Use [[concepts/...]] only for concepts
+that deserve durable cross-document pages.
+
 Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) describing the document's main contribution
 - "content": The full summary in Markdown. Include key concepts, findings, ideas, \
@@ -75,7 +88,11 @@ this document worth integrating. Array of objects:
 not needing content changes, just a cross-reference link. Array of slug strings.
 
 Rules:
-- For the first few documents, create 2-3 foundational concepts at most.
+- Every [[concepts/...]] link used in the summary must appear in exactly one of
+  create, update, or related.
+- For investment research reports, create enough durable concepts to avoid
+  broken links and preserve reusable investment knowledge. Prefer 5-8
+  high-signal concepts over a shallow 2-3 concept cap when the report supports it.
 - Do NOT create a concept that overlaps with an existing one — use "update".
 - Do NOT create concepts that are just the document topic itself.
 - "related" is for lightweight cross-linking only, no content rewrite needed.
@@ -88,6 +105,11 @@ Write the concept page for: {title}
 
 This concept relates to the document "{doc_name}" summarized above.
 {update_instruction}
+
+If the source is investment research, structure the page as durable investment
+knowledge: definition, why it matters, source evidence, key metrics to track,
+company exposure, risks/contra-evidence, and related concepts. Include page
+references when available in the summary or source context.
 
 Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) defining this concept
@@ -125,6 +147,23 @@ Based on this structured summary, write a concise overview that captures \
 the key themes and findings. This will be used to generate concept pages.
 
 Return ONLY the Markdown content (no frontmatter, no code fences).
+"""
+
+_LOCAL_LONG_DOC_SUMMARY_USER = """\
+This is a page-indexed local extraction for long document "{doc_name}".
+
+{content}
+
+Based on this page-indexed extraction, write a high-signal summary page.
+For investment research reports, preserve ratings, company names, forecasts,
+valuation context, key numbers, catalysts, risks, and monitoring indicators.
+Use page references like "p.12" where evidence is available.
+
+Return a JSON object with two keys:
+- "brief": A single sentence (under 100 chars) describing the document's main contribution
+- "content": The full summary in Markdown with durable [[concepts/...]] links
+
+Return ONLY valid JSON, no fences.
 """
 
 
@@ -369,6 +408,7 @@ def _write_summary(wiki_dir: Path, doc_name: str, summary: str,
 
 
 _SAFE_NAME_RE = re.compile(r'[^\w\-]')
+_CONCEPT_WIKILINK_RE = re.compile(r"\[\[concepts/([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
 
 
 def _sanitize_concept_name(name: str) -> str:
@@ -376,6 +416,144 @@ def _sanitize_concept_name(name: str) -> str:
     name = unicodedata.normalize("NFKC", name)
     sanitized = _SAFE_NAME_RE.sub("-", name).strip("-")
     return sanitized or "unnamed-concept"
+
+
+def _concept_alias_key(value: str) -> str:
+    """Return a stable lookup key for a concept slug or title."""
+    value = unicodedata.normalize("NFKC", value)
+    value = value.replace("\\", "/").strip()
+    if value.startswith("concepts/"):
+        value = value[len("concepts/"):]
+    if value.endswith(".md"):
+        value = value[:-3]
+    return re.sub(r"[\s_\-]+", "", value).casefold()
+
+
+def _extract_concept_link_targets(text: str) -> list[str]:
+    """Return raw targets from [[concepts/...]] links."""
+    return [match.group(1).strip() for match in _CONCEPT_WIKILINK_RE.finditer(text)]
+
+
+def _build_concept_aliases(
+    wiki_dir: Path,
+    create_items: list[dict],
+    update_items: list[dict],
+    related_items: list[str],
+) -> dict[str, str]:
+    """Map concept titles, names, and existing stems to canonical slugs."""
+    aliases: dict[str, str] = {}
+
+    concepts_dir = wiki_dir / "concepts"
+    if concepts_dir.exists():
+        for path in concepts_dir.glob("*.md"):
+            aliases[_concept_alias_key(path.stem)] = path.stem
+
+    for item in create_items + update_items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        slug = _sanitize_concept_name(name)
+        aliases[_concept_alias_key(name)] = slug
+        aliases[_concept_alias_key(slug)] = slug
+        title = str(item.get("title", "")).strip()
+        if title:
+            aliases[_concept_alias_key(title)] = slug
+
+    for related in related_items:
+        slug = _sanitize_concept_name(str(related))
+        aliases[_concept_alias_key(str(related))] = slug
+        aliases[_concept_alias_key(slug)] = slug
+
+    return aliases
+
+
+def _planned_concept_slugs(
+    create_items: list[dict],
+    update_items: list[dict],
+    related_items: list[str],
+) -> set[str]:
+    """Return canonical slugs covered by a concept plan."""
+    slugs: set[str] = set()
+    for item in create_items + update_items:
+        if isinstance(item, dict) and item.get("name"):
+            slugs.add(_sanitize_concept_name(str(item["name"])))
+    for related in related_items:
+        slugs.add(_sanitize_concept_name(str(related)))
+    return slugs
+
+
+def _normalize_concept_links(
+    text: str,
+    aliases: dict[str, str],
+    allowed_slugs: set[str],
+) -> str:
+    """Rewrite known concept links to canonical slugs and unlink unknown ones."""
+    def replace(match: re.Match) -> str:
+        raw_target = match.group(1).strip()
+        label = (match.group(2) or raw_target).strip()
+        slug = aliases.get(_concept_alias_key(raw_target)) or aliases.get(raw_target)
+        if slug is None:
+            candidate = _sanitize_concept_name(raw_target)
+            if candidate in allowed_slugs:
+                slug = candidate
+        if slug in allowed_slugs:
+            return f"[[concepts/{slug}]]"
+        return label
+
+    return _CONCEPT_WIKILINK_RE.sub(replace, text)
+
+
+def _ensure_summary_links_in_plan(wiki_dir: Path, summary: str, plan: dict) -> dict:
+    """Ensure every summary concept link is represented by create/update/related."""
+    normalized = {
+        "create": list(plan.get("create", [])),
+        "update": list(plan.get("update", [])),
+        "related": list(plan.get("related", [])),
+    }
+    aliases = _build_concept_aliases(
+        wiki_dir,
+        normalized["create"],
+        normalized["update"],
+        normalized["related"],
+    )
+    planned = _planned_concept_slugs(
+        normalized["create"],
+        normalized["update"],
+        normalized["related"],
+    )
+
+    for target in _extract_concept_link_targets(summary):
+        key = _concept_alias_key(target)
+        existing_slug = aliases.get(key)
+        if existing_slug in planned:
+            continue
+        slug = _sanitize_concept_name(target)
+        if slug in planned:
+            continue
+        normalized["create"].append({"name": slug, "title": target})
+        aliases[_concept_alias_key(target)] = slug
+        aliases[_concept_alias_key(slug)] = slug
+        planned.add(slug)
+
+    return normalized
+
+
+def _rewrite_summary_links(
+    wiki_dir: Path,
+    doc_name: str,
+    aliases: dict[str, str],
+    allowed_slugs: set[str],
+) -> None:
+    """Normalize concept wikilinks in an already-written summary page."""
+    summary_path = wiki_dir / "summaries" / f"{doc_name}.md"
+    if not summary_path.exists():
+        return
+    text = summary_path.read_text(encoding="utf-8")
+    normalized = _normalize_concept_links(text, aliases, allowed_slugs)
+    if normalized != text:
+        summary_path.write_text(normalized, encoding="utf-8")
 
 
 def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is_update: bool, brief: str = "") -> None:
@@ -533,10 +711,10 @@ def _update_index(
     """Append document and concept entries to index.md.
 
     When ``doc_brief`` or entries in ``concept_briefs`` are provided, entries
-    are written as ``- [[link]] (type) — brief text``. Existing entries are
+    are written as ``- [[link]] (type) - brief text``. Existing entries are
     detected within their own section by exact entry prefix and skipped to
     avoid duplicates.
-    ``doc_type`` is ``"short"`` or ``"pageindex"`` — shown in the entry so the
+    ``doc_type`` is ``"short"`` or ``"pageindex"`` - shown in the entry so the
     query agent knows how to access detailed content.
     """
     if concept_briefs is None:
@@ -555,14 +733,14 @@ def _update_index(
     if not _section_contains_link(lines, "## Documents", doc_link):
         doc_entry = f"- {doc_link} ({doc_type})"
         if doc_brief:
-            doc_entry += f" — {doc_brief}"
+            doc_entry += f" - {doc_brief}"
         _insert_section_entry(lines, "## Documents", doc_entry)
 
     for name in concept_names:
         concept_link = f"[[concepts/{name}]]"
         concept_entry = f"- {concept_link}"
         if name in concept_briefs:
-            concept_entry += f" — {concept_briefs[name]}"
+            concept_entry += f" - {concept_briefs[name]}"
         if _section_contains_link(lines, "## Concepts", concept_link):
             if name in concept_briefs:
                 _replace_section_entry(lines, "## Concepts", concept_link, concept_entry)
@@ -577,6 +755,46 @@ def _update_index(
 # ---------------------------------------------------------------------------
 
 DEFAULT_COMPILE_CONCURRENCY = 5
+DEFAULT_LOCAL_LONG_PAGE_CHARS = 1800
+DEFAULT_LOCAL_LONG_TOTAL_CHARS = 65000
+
+
+def _build_local_long_doc_context(
+    source_path: Path,
+    page_chars: int = DEFAULT_LOCAL_LONG_PAGE_CHARS,
+    total_chars: int = DEFAULT_LOCAL_LONG_TOTAL_CHARS,
+) -> str:
+    """Build a compact page-indexed prompt context from local long-doc JSON."""
+    pages = json.loads(source_path.read_text(encoding="utf-8"))
+    if not isinstance(pages, list):
+        raise ValueError("Local long document source must be a JSON array of pages.")
+
+    parts: list[str] = []
+    used = 0
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_num = page.get("page", "?")
+        content = str(page.get("content", "")).strip()
+        if len(content) > page_chars:
+            content = content[:page_chars].rstrip() + "\n[truncated]"
+        images = page.get("images", [])
+        image_lines = ""
+        if isinstance(images, list) and images:
+            image_paths = []
+            for image in images[:6]:
+                if isinstance(image, dict) and image.get("path"):
+                    image_paths.append(str(image["path"]))
+            if image_paths:
+                image_lines = "\nImages: " + ", ".join(image_paths)
+        block = f"## Page {page_num}\n{content}{image_lines}\n"
+        if used + len(block) > total_chars:
+            parts.append("[Further pages omitted from prompt context.]")
+            break
+        parts.append(block)
+        used += len(block)
+
+    return "\n".join(parts)
 
 
 async def _compile_concepts(
@@ -628,9 +846,14 @@ async def _compile_concepts(
             "related": parsed.get("related", []),
         }
 
+    plan = _ensure_summary_links_in_plan(wiki_dir, summary, plan)
     create_items = plan["create"]
     update_items = plan["update"]
     related_items = plan["related"]
+    concept_aliases = _build_concept_aliases(wiki_dir, create_items, update_items, related_items)
+    allowed_concept_slugs = _planned_concept_slugs(create_items, update_items, related_items)
+    summary = _normalize_concept_links(summary, concept_aliases, allowed_concept_slugs)
+    _rewrite_summary_links(wiki_dir, doc_name, concept_aliases, allowed_concept_slugs)
 
     if not create_items and not update_items and not related_items:
         _update_index(wiki_dir, doc_name, [], doc_brief=doc_brief, doc_type=doc_type)
@@ -710,6 +933,11 @@ async def _compile_concepts(
                 logger.warning("Concept generation failed: %s", r)
                 continue
             name, page_content, is_update, brief = r
+            page_content = _normalize_concept_links(
+                page_content,
+                concept_aliases,
+                allowed_concept_slugs,
+            )
             _write_concept(wiki_dir, name, page_content, source_file, is_update, brief=brief)
             safe_name = _sanitize_concept_name(name)
             concept_names.append(safe_name)
@@ -779,6 +1007,48 @@ async def compile_short_doc(
         wiki_dir, kb_dir, model, system_msg, doc_msg,
         summary, doc_name, max_concurrency, doc_brief=doc_brief,
         doc_type="short",
+    )
+
+
+async def compile_local_long_doc(
+    doc_name: str,
+    source_path: Path,
+    kb_dir: Path,
+    model: str,
+    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+) -> None:
+    """Compile a long PDF converted to local page JSON."""
+    from openkb.config import load_config
+
+    openkb_dir = kb_dir / ".openkb"
+    config = load_config(openkb_dir / "config.yaml")
+    language: str = config.get("language", "en")
+
+    wiki_dir = kb_dir / "wiki"
+    schema_md = get_agents_md(wiki_dir)
+    content = _build_local_long_doc_context(source_path)
+
+    system_msg = {"role": "system", "content": _SYSTEM_TEMPLATE.format(
+        schema_md=schema_md, language=language,
+    )}
+    doc_msg = {"role": "user", "content": _LOCAL_LONG_DOC_SUMMARY_USER.format(
+        doc_name=doc_name, content=content,
+    )}
+
+    summary_raw = _llm_call(model, [system_msg, doc_msg], "local-long-summary")
+    try:
+        summary_parsed = _parse_json(summary_raw)
+        doc_brief = summary_parsed.get("brief", "")
+        summary = summary_parsed.get("content", summary_raw)
+    except (json.JSONDecodeError, ValueError):
+        doc_brief = ""
+        summary = summary_raw
+    _write_summary(wiki_dir, doc_name, summary, doc_type="local-long")
+
+    await _compile_concepts(
+        wiki_dir, kb_dir, model, system_msg, doc_msg,
+        summary, doc_name, max_concurrency, doc_brief=doc_brief,
+        doc_type="local-long",
     )
 
 

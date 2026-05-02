@@ -74,6 +74,17 @@ class TestAddCommand:
             result = runner.invoke(cli, ["add", str(doc)])
             mock_add.assert_called_once_with(doc, kb_dir)
 
+    def test_add_force_passes_force_to_helper(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+
+        runner = CliRunner()
+        with patch("openkb.cli.add_single_file") as mock_add, \
+             patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["add", "--force", str(doc)])
+            mock_add.assert_called_once_with(doc, kb_dir, force=True)
+
     def test_add_directory_calls_helper_for_each_file(self, tmp_path):
         kb_dir = self._setup_kb(tmp_path)
         docs_dir = tmp_path / "docs"
@@ -150,6 +161,36 @@ class TestAddCommand:
             mock_compile.assert_awaited_once()
             assert "OK" in result.output
 
+    def test_add_local_long_pdf_runs_local_compiler_and_registers_type(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF")
+
+        source_path = kb_dir / "wiki" / "sources" / "report.json"
+        source_path.write_text("[]", encoding="utf-8")
+
+        from openkb.converter import ConvertResult
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "report.pdf",
+            source_path=source_path,
+            is_long_doc=True,
+            local_long_doc=True,
+            file_hash="abc123",
+        )
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.cli.convert_document", return_value=mock_result), \
+             patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock) as mock_compile:
+            result = runner.invoke(cli, ["add", str(doc)])
+
+        mock_compile.assert_awaited_once_with("report", source_path, kb_dir, "gpt-4o-mini")
+        assert "local page index" in result.output
+        assert "OK" in result.output
+
+        hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+        assert hashes["abc123"]["type"] == "local_long_pdf"
+
     def test_add_single_file_strict_raises_compilation_failure_with_progress(self, tmp_path):
         from openkb.cli import add_single_file
         from openkb.converter import ConvertResult
@@ -174,3 +215,25 @@ class TestAddCommand:
 
         assert any("Converting" in event for event in events)
         assert any("Compiling short document" in event for event in events)
+
+    def test_add_single_file_force_passes_force_to_converter(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+        source_path = kb_dir / "wiki" / "sources" / "test.md"
+        source_path.write_text("# Hello converted")
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "test.md",
+            source_path=source_path,
+            is_long_doc=False,
+        )
+
+        with patch("openkb.cli.convert_document", return_value=mock_result) as mock_convert, \
+             patch("openkb.agent.compiler.compile_short_doc", new_callable=AsyncMock):
+            add_single_file(doc, kb_dir, force=True)
+
+        mock_convert.assert_called_once_with(doc, kb_dir, force=True)

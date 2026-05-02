@@ -63,6 +63,24 @@ class TestConvertDocumentMarkdown:
         assert result2.source_path is None
         assert result2.raw_path is None
 
+    def test_md_duplicate_can_be_forced(self, kb_dir):
+        """force=True bypasses the hash skip so known documents can be recompiled."""
+        from openkb.state import HashRegistry
+
+        src = kb_dir / "raw" / "notes.md"
+        src.write_text("# Notes\n\nSome content here.", encoding="utf-8")
+
+        result1 = convert_document(src, kb_dir)
+        registry = HashRegistry(kb_dir / ".openkb" / "hashes.json")
+        registry.add(result1.file_hash, {"name": src.name, "type": "md"})
+
+        result2 = convert_document(src, kb_dir, force=True)
+
+        assert result2.skipped is False
+        assert result2.file_hash == result1.file_hash
+        assert result2.source_path is not None
+        assert result2.source_path.exists()
+
     def test_md_raw_file_copied(self, kb_dir):
         """The original file should also be copied to raw/."""
         src = kb_dir / "input" / "notes.md"
@@ -134,14 +152,20 @@ class TestConvertDocumentPdfLong:
         assert result.raw_path is not None
 
     def test_long_pdf_falls_back_when_pageindex_unavailable(self, kb_dir, tmp_path):
-        """Long PDFs fall back to regular PDF conversion if no long-doc indexer is available."""
+        """Long PDFs use a local page JSON fallback when PageIndex is unavailable."""
         src = tmp_path / "fallback.pdf"
         src.write_bytes(b"%PDF-1.4 fake long content")
 
         with (
             patch("openkb.converter.pymupdf.open") as mock_mu,
             patch("openkb.converter._pageindex_long_doc_available", return_value=False),
-            patch("openkb.converter.convert_pdf_with_images", return_value="# Fallback PDF\n\nConverted.") as mock_cpwi,
+            patch(
+                "openkb.converter.convert_pdf_to_pages",
+                return_value=[
+                    {"page": 1, "content": "Investment thesis page.", "images": []},
+                    {"page": 2, "content": "Valuation table page.", "images": []},
+                ],
+            ) as mock_pages,
         ):
             fake_doc = MagicMock()
             fake_doc.page_count = 200
@@ -151,7 +175,10 @@ class TestConvertDocumentPdfLong:
 
             result = convert_document(src, kb_dir)
 
-        mock_cpwi.assert_called_once()
-        assert result.is_long_doc is False
+        mock_pages.assert_called_once()
+        assert result.is_long_doc is True
+        assert result.local_long_doc is True
         assert result.source_path is not None
         assert result.source_path.exists()
+        assert result.source_path.suffix == ".json"
+        assert "Investment thesis page" in result.source_path.read_text(encoding="utf-8")

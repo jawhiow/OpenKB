@@ -9,8 +9,11 @@ import pytest
 
 from openkb.agent.compiler import (
     compile_long_doc,
+    compile_local_long_doc,
     compile_short_doc,
     _compile_concepts,
+    _ensure_summary_links_in_plan,
+    _normalize_concept_links,
     _parse_json,
     _sanitize_concept_name,
     _write_summary,
@@ -22,6 +25,8 @@ from openkb.agent.compiler import (
     _backlink_summary,
     _backlink_concepts,
 )
+from openkb.lint import find_broken_links
+from openkb.llm_runtime import CompletionResult
 
 
 class TestParseJson:
@@ -60,6 +65,40 @@ class TestParseConceptsPlan:
         parsed = _parse_json(text)
         assert isinstance(parsed, dict)
         assert parsed["create"] == []
+
+
+class TestConceptLinkNormalization:
+    def test_summary_links_are_added_to_plan_when_missing(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        (wiki / "concepts").mkdir(parents=True)
+        plan = {"create": [], "update": [], "related": []}
+        summary = "AI depends on [[concepts/HBM高带宽内存]] and [[concepts/CoWoS先进封装]]."
+
+        updated = _ensure_summary_links_in_plan(wiki, summary, plan)
+
+        created = {item["name"]: item["title"] for item in updated["create"]}
+        assert created == {
+            "HBM高带宽内存": "HBM高带宽内存",
+            "CoWoS先进封装": "CoWoS先进封装",
+        }
+
+    def test_normalizes_known_aliases_and_unlinks_unknown_concepts(self):
+        text = (
+            "See [[concepts/AI半导体]], [[concepts/HBM高带宽内存]], "
+            "and [[summaries/report]]."
+        )
+        aliases = {"AI半导体": "ai-semiconductors"}
+
+        normalized = _normalize_concept_links(
+            text,
+            aliases,
+            allowed_slugs={"ai-semiconductors"},
+        )
+
+        assert "[[concepts/ai-semiconductors]]" in normalized
+        assert "HBM高带宽内存" in normalized
+        assert "[[concepts/HBM高带宽内存]]" not in normalized
+        assert "[[summaries/report]]" in normalized
 
 
 class TestParseBriefContent:
@@ -194,17 +233,17 @@ class TestUpdateIndex:
                        doc_brief="Introduces transformers",
                        concept_briefs={"attention": "Focus mechanism", "transformer": "NN architecture"})
         text = (wiki / "index.md").read_text()
-        assert "[[summaries/my-doc]] (short) — Introduces transformers" in text
-        assert "[[concepts/attention]] — Focus mechanism" in text
-        assert "[[concepts/transformer]] — NN architecture" in text
+        assert "[[summaries/my-doc]] (short) - Introduces transformers" in text
+        assert "[[concepts/attention]] - Focus mechanism" in text
+        assert "[[concepts/transformer]] - NN architecture" in text
 
     def test_updates_only_exact_concept_row(self, tmp_path):
         wiki = tmp_path / "wiki"
         wiki.mkdir()
         (wiki / "index.md").write_text(
             "# Index\n\n## Documents\n\n## Concepts\n"
-            "- [[concepts/transformer]] — Uses [[concepts/attention]] internally\n"
-            "- [[concepts/attention]] — Old brief\n\n## Explorations\n",
+            "- [[concepts/transformer]] - Uses [[concepts/attention]] internally\n"
+            "- [[concepts/attention]] - Old brief\n\n## Explorations\n",
             encoding="utf-8",
         )
         _update_index(
@@ -214,15 +253,15 @@ class TestUpdateIndex:
             concept_briefs={"attention": "New brief"},
         )
         text = (wiki / "index.md").read_text()
-        assert "- [[concepts/transformer]] — Uses [[concepts/attention]] internally" in text
-        assert "- [[concepts/attention]] — New brief" in text
-        assert text.count("[[concepts/attention]] — New brief") == 1
+        assert "- [[concepts/transformer]] - Uses [[concepts/attention]] internally" in text
+        assert "- [[concepts/attention]] - New brief" in text
+        assert text.count("[[concepts/attention]] - New brief") == 1
 
     def test_no_duplicates(self, tmp_path):
         wiki = tmp_path / "wiki"
         wiki.mkdir()
         (wiki / "index.md").write_text(
-            "# Index\n\n## Documents\n- [[summaries/my-doc]] — Old brief\n\n## Concepts\n",
+            "# Index\n\n## Documents\n- [[summaries/my-doc]] - Old brief\n\n## Concepts\n",
             encoding="utf-8",
         )
         _update_index(wiki, "my-doc", [], doc_brief="New brief")
@@ -247,9 +286,9 @@ class TestUpdateIndex:
         (wiki / "index.md").write_text(
             "# Index\n\n"
             "## Documents\n"
-            "- [[summaries/my-doc]] (short) — Mentions [[concepts/attention]] here\n\n"
+            "- [[summaries/my-doc]] (short) - Mentions [[concepts/attention]] here\n\n"
             "## Concepts\n"
-            "- [[concepts/attention]] — Old brief\n\n"
+            "- [[concepts/attention]] - Old brief\n\n"
             "## Explorations\n",
             encoding="utf-8",
         )
@@ -262,9 +301,9 @@ class TestUpdateIndex:
         )
 
         text = (wiki / "index.md").read_text()
-        assert "- [[summaries/my-doc]] (short) — Mentions [[concepts/attention]] here" in text
-        assert "- [[concepts/attention]] — New brief" in text
-        assert "- [[concepts/attention]] — Old brief" not in text
+        assert "- [[summaries/my-doc]] (short) - Mentions [[concepts/attention]] here" in text
+        assert "- [[concepts/attention]] - New brief" in text
+        assert "- [[concepts/attention]] - Old brief" not in text
 
     def test_adds_concept_entry_when_link_exists_outside_concepts_section(self, tmp_path):
         wiki = tmp_path / "wiki"
@@ -272,7 +311,7 @@ class TestUpdateIndex:
         (wiki / "index.md").write_text(
             "# Index\n\n"
             "## Documents\n"
-            "- [[summaries/my-doc]] (short) — Mentions [[concepts/attention]] here\n\n"
+            "- [[summaries/my-doc]] (short) - Mentions [[concepts/attention]] here\n\n"
             "## Concepts\n\n"
             "## Explorations\n",
             encoding="utf-8",
@@ -286,8 +325,8 @@ class TestUpdateIndex:
         )
 
         text = (wiki / "index.md").read_text()
-        assert "- [[summaries/my-doc]] (short) — Mentions [[concepts/attention]] here" in text
-        assert "- [[concepts/attention]] — New brief" in text
+        assert "- [[summaries/my-doc]] (short) - Mentions [[concepts/attention]] here" in text
+        assert "- [[concepts/attention]] - New brief" in text
 
 
 class TestReadWikiContext:
@@ -538,35 +577,29 @@ class TestAddRelatedLink:
 
 
 def _mock_completion(responses: list[str]):
-    """Create a mock for litellm.completion that returns responses in order."""
+    """Create a mock for compiler.completion that returns responses in order."""
     call_count = {"n": 0}
 
     def side_effect(*args, **kwargs):
         idx = min(call_count["n"], len(responses) - 1)
         call_count["n"] += 1
-        mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock()]
-        mock_resp.choices[0].message.content = responses[idx]
-        mock_resp.usage = MagicMock(prompt_tokens=100, completion_tokens=50)
-        mock_resp.usage.prompt_tokens_details = None
-        return mock_resp
+        usage = MagicMock(prompt_tokens=100, completion_tokens=50)
+        usage.prompt_tokens_details = None
+        return CompletionResult(text=responses[idx], usage=usage)
 
     return side_effect
 
 
 def _mock_acompletion(responses: list[str]):
-    """Create an async mock for litellm.acompletion."""
+    """Create an async mock for compiler.acompletion."""
     call_count = {"n": 0}
 
     async def side_effect(*args, **kwargs):
         idx = min(call_count["n"], len(responses) - 1)
         call_count["n"] += 1
-        mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock()]
-        mock_resp.choices[0].message.content = responses[idx]
-        mock_resp.usage = MagicMock(prompt_tokens=100, completion_tokens=50)
-        mock_resp.usage.prompt_tokens_details = None
-        return mock_resp
+        usage = MagicMock(prompt_tokens=100, completion_tokens=50)
+        usage.prompt_tokens_details = None
+        return CompletionResult(text=responses[idx], usage=usage)
 
     return side_effect
 
@@ -603,13 +636,16 @@ class TestCompileShortDoc:
             "content": "# Transformer\n\nA neural network architecture.",
         })
 
-        with patch("openkb.agent.compiler.litellm") as mock_litellm:
-            mock_litellm.completion = MagicMock(
-                side_effect=_mock_completion([summary_response, concepts_list_response])
-            )
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=_mock_acompletion([concept_page_response])
-            )
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([summary_response, concepts_list_response]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_page_response]),
+            ),
+        ):
             await compile_short_doc("test-doc", source_path, tmp_path, "gpt-4o-mini")
 
         # Verify summary written
@@ -640,10 +676,10 @@ class TestCompileShortDoc:
         source_path.write_text("Content", encoding="utf-8")
         (tmp_path / ".openkb").mkdir()
 
-        with patch("openkb.agent.compiler.litellm") as mock_litellm:
-            mock_litellm.completion = MagicMock(
-                side_effect=_mock_completion(["Plain summary text", "not valid json"])
-            )
+        with patch(
+            "openkb.agent.compiler.completion",
+            side_effect=_mock_completion(["Plain summary text", "not valid json"]),
+        ):
             # Should not raise
             await compile_short_doc("doc", source_path, tmp_path, "gpt-4o-mini")
 
@@ -680,13 +716,16 @@ class TestCompileLongDoc:
             "content": "# Deep Learning\n\nA subfield of ML.",
         })
 
-        with patch("openkb.agent.compiler.litellm") as mock_litellm:
-            mock_litellm.completion = MagicMock(
-                side_effect=_mock_completion([overview_response, concepts_list_response])
-            )
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=_mock_acompletion([concept_page_response])
-            )
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([overview_response, concepts_list_response]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_page_response]),
+            ),
+        ):
             await compile_long_doc(
                 "big-doc", summary_path, "doc-123", tmp_path, "gpt-4o-mini"
             )
@@ -698,6 +737,64 @@ class TestCompileLongDoc:
         index_text = (wiki / "index.md").read_text()
         assert "[[summaries/big-doc]]" in index_text
         assert "[[concepts/deep-learning]]" in index_text
+
+
+class TestCompileLocalLongDoc:
+    @pytest.mark.asyncio
+    async def test_full_pipeline_from_page_json(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        (wiki / "sources").mkdir(parents=True)
+        (wiki / "summaries").mkdir(parents=True)
+        (wiki / "concepts").mkdir(parents=True)
+        (wiki / "index.md").write_text(
+            "# Index\n\n## Documents\n\n## Concepts\n",
+            encoding="utf-8",
+        )
+        source_path = wiki / "sources" / "report.json"
+        source_path.write_text(
+            json.dumps([
+                {"page": 1, "content": "Top pick is TSMC.", "images": []},
+                {"page": 2, "content": "HBM demand reaches 32bn Gb.", "images": []},
+            ]),
+            encoding="utf-8",
+        )
+        openkb_dir = tmp_path / ".openkb"
+        openkb_dir.mkdir()
+        (openkb_dir / "config.yaml").write_text("model: gpt-4o-mini\n")
+
+        summary_response = json.dumps({
+            "brief": "Investment report on AI semiconductors",
+            "content": "# Summary\n\nEvidence from p.1 and p.2 links [[concepts/HBM]].",
+        })
+        concepts_list_response = json.dumps({
+            "create": [{"name": "hbm", "title": "HBM"}],
+            "update": [],
+            "related": [],
+        })
+        concept_page_response = json.dumps({
+            "brief": "High-bandwidth memory used by AI accelerators",
+            "content": "# HBM\n\nMemory bottleneck for AI accelerators.",
+        })
+
+        completion_side_effect = _mock_completion([summary_response, concepts_list_response])
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=completion_side_effect,
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_page_response]),
+            ),
+        ):
+            await compile_local_long_doc("report", source_path, tmp_path, "gpt-4o-mini")
+
+        summary_text = (wiki / "summaries" / "report.md").read_text(encoding="utf-8")
+        assert "doc_type: local-long" in summary_text
+        assert "full_text: sources/report.json" in summary_text
+        assert "[[concepts/hbm]]" in summary_text
+        assert (wiki / "concepts" / "hbm.md").exists()
 
 
 class TestCompileConceptsPlan:
@@ -753,24 +850,19 @@ class TestCompileConceptsPlan:
         async def ordered_acompletion(*args, **kwargs):
             idx = call_order["n"]
             call_order["n"] += 1
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
             # create tasks come first, then update tasks
             if idx == 0:
-                mock_resp.choices[0].message.content = create_page_response
+                text = create_page_response
             else:
-                mock_resp.choices[0].message.content = update_page_response
-            mock_resp.usage = MagicMock(prompt_tokens=100, completion_tokens=50)
-            mock_resp.usage.prompt_tokens_details = None
-            return mock_resp
+                text = update_page_response
+            usage = MagicMock(prompt_tokens=100, completion_tokens=50)
+            usage.prompt_tokens_details = None
+            return CompletionResult(text=text, usage=usage)
 
-        with patch("openkb.agent.compiler.litellm") as mock_litellm:
-            mock_litellm.completion = MagicMock(
-                side_effect=_mock_completion([plan_response])
-            )
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=ordered_acompletion
-            )
+        with (
+            patch("openkb.agent.compiler.completion", side_effect=_mock_completion([plan_response])),
+            patch("openkb.agent.compiler.acompletion", side_effect=ordered_acompletion),
+        ):
             await _compile_concepts(
                 wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
                 summary, "test-doc", 5,
@@ -812,17 +904,17 @@ class TestCompileConceptsPlan:
         doc_msg = {"role": "user", "content": "Document content."}
         summary = "Summary."
 
-        with patch("openkb.agent.compiler.litellm") as mock_litellm:
-            mock_litellm.completion = MagicMock(
-                side_effect=_mock_completion([plan_response])
-            )
-            mock_litellm.acompletion = AsyncMock()
+        mock_acompletion = AsyncMock()
+        with (
+            patch("openkb.agent.compiler.completion", side_effect=_mock_completion([plan_response])),
+            patch("openkb.agent.compiler.acompletion", mock_acompletion),
+        ):
             await _compile_concepts(
                 wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
                 summary, "test-doc", 5,
             )
             # acompletion should never be called — related is code-only
-            mock_litellm.acompletion.assert_not_called()
+            mock_acompletion.assert_not_called()
 
         # Verify link added to transformer page
         transformer_text = (wiki / "concepts" / "transformer.md").read_text()
@@ -846,13 +938,13 @@ class TestCompileConceptsPlan:
         doc_msg = {"role": "user", "content": "Document content."}
         summary = "Summary."
 
-        with patch("openkb.agent.compiler.litellm") as mock_litellm:
-            mock_litellm.completion = MagicMock(
-                side_effect=_mock_completion([plan_response])
-            )
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=_mock_acompletion([concept_page_response])
-            )
+        with (
+            patch("openkb.agent.compiler.completion", side_effect=_mock_completion([plan_response])),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_page_response]),
+            ),
+        ):
             await _compile_concepts(
                 wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
                 summary, "test-doc", 5,
@@ -897,13 +989,16 @@ class TestBriefIntegration:
             "content": "# Transformer\n\nA neural network architecture.",
         })
 
-        with patch("openkb.agent.compiler.litellm") as mock_litellm:
-            mock_litellm.completion = MagicMock(
-                side_effect=_mock_completion([summary_resp, plan_resp])
-            )
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=_mock_acompletion([concept_resp])
-            )
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([summary_resp, plan_resp]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_resp]),
+            ),
+        ):
             await compile_short_doc("test-doc", source_path, tmp_path, "gpt-4o-mini")
 
         # Summary frontmatter has doc_type and full_text
@@ -917,5 +1012,5 @@ class TestBriefIntegration:
 
         # Index has briefs
         index_text = (wiki / "index.md").read_text()
-        assert "— A paper about transformers" in index_text
-        assert "— NN architecture using self-attention" in index_text
+        assert "- A paper about transformers" in index_text
+        assert "- NN architecture using self-attention" in index_text

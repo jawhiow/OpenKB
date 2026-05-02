@@ -26,6 +26,33 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260502-001] rg_access_denied
+
+**Logged**: 2026-05-02T00:00:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+Running `rg` in the OpenKB workspace failed with Windows `Access is denied`, so repository search needed a PowerShell fallback.
+
+### Error
+```text
+Program 'rg.exe' failed to run: Access is denied
+```
+
+### Context
+- Commands attempted: `rg -n "PageIndex|page_index|sources/|source_json|local_long|long_doc|compile_local" openkb tests` and `rg --files openkb tests`.
+- Environment: Windows PowerShell in `D:\workspace\codex\jt-ai-tz\OpenKB`.
+
+### Suggested Fix
+Use `Get-ChildItem` plus `Select-String` as a fallback when `rg.exe` is blocked by the local environment.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: none
+
+---
 ## [ERR-20260502-001] rg_unicode_path_access_denied
 
 **Logged**: 2026-05-02T20:00:00+08:00

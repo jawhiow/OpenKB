@@ -61,6 +61,20 @@ class TestListCommand:
         assert "pdf" in result.output
         assert "md" in result.output
 
+    def test_list_displays_local_long_documents(self, tmp_path):
+        kb_dir = _setup_kb(tmp_path)
+        hashes = {
+            "abc123": {"name": "research.pdf", "type": "local_long_pdf"},
+        }
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes))
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["list"])
+
+        assert "research.pdf" in result.output
+        assert "local-long" in result.output
+
     def test_list_shows_concepts(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)
         hashes = {"abc": {"name": "paper.pdf", "type": "pdf"}}
