@@ -387,7 +387,7 @@ def _sync_staged_wiki(staged_wiki: Path, wiki_dir: Path) -> None:
         shutil.copy2(src, dest)
 
 
-async def _run_with_staged_wiki(kb_dir: Path, operation) -> None:
+async def _run_with_staged_wiki(kb_dir: Path, operation):
     """Run a compile operation against a staged wiki and commit on success."""
     wiki_dir = kb_dir / "wiki"
     staging_parent = kb_dir / ".openkb" / "staging"
@@ -399,8 +399,9 @@ async def _run_with_staged_wiki(kb_dir: Path, operation) -> None:
             shutil.copytree(wiki_dir, staged_wiki)
         else:
             staged_wiki.mkdir(parents=True, exist_ok=True)
-        await operation(staged_wiki)
+        result = await operation(staged_wiki)
         _sync_staged_wiki(staged_wiki, wiki_dir)
+        return result
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
 
@@ -1869,9 +1870,11 @@ async def compile_short_doc(
     kb_dir: Path,
     model: str,
     max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
-) -> None:
+    cleanup_existing: bool = False,
+) -> list[str]:
     """Compile a short document and commit generated wiki files atomically."""
-    async def operation(staged_wiki: Path) -> None:
+    async def operation(staged_wiki: Path) -> list[str]:
+        removed = cleanup_generated_pages_for_source(staged_wiki, doc_name) if cleanup_existing else []
         await _compile_short_doc_to_wiki(
             doc_name,
             source_path,
@@ -1880,8 +1883,9 @@ async def compile_short_doc(
             model,
             max_concurrency,
         )
+        return removed
 
-    await _run_with_staged_wiki(kb_dir, operation)
+    return await _run_with_staged_wiki(kb_dir, operation)
 
 
 async def _compile_local_long_doc_to_wiki(
@@ -1932,9 +1936,11 @@ async def compile_local_long_doc(
     kb_dir: Path,
     model: str,
     max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
-) -> None:
+    cleanup_existing: bool = False,
+) -> list[str]:
     """Compile a local-long document and commit generated wiki files atomically."""
-    async def operation(staged_wiki: Path) -> None:
+    async def operation(staged_wiki: Path) -> list[str]:
+        removed = cleanup_generated_pages_for_source(staged_wiki, doc_name) if cleanup_existing else []
         await _compile_local_long_doc_to_wiki(
             doc_name,
             source_path,
@@ -1943,8 +1949,9 @@ async def compile_local_long_doc(
             model,
             max_concurrency,
         )
+        return removed
 
-    await _run_with_staged_wiki(kb_dir, operation)
+    return await _run_with_staged_wiki(kb_dir, operation)
 
 
 async def _compile_long_doc_to_wiki(
@@ -2003,9 +2010,11 @@ async def compile_long_doc(
     model: str,
     doc_description: str = "",
     max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
-) -> None:
+    cleanup_existing: bool = False,
+) -> list[str]:
     """Compile a PageIndex long document and commit generated wiki files atomically."""
-    async def operation(staged_wiki: Path) -> None:
+    async def operation(staged_wiki: Path) -> list[str]:
+        removed = cleanup_generated_pages_for_source(staged_wiki, doc_name) if cleanup_existing else []
         await _compile_long_doc_to_wiki(
             doc_name,
             summary_path,
@@ -2016,5 +2025,6 @@ async def compile_long_doc(
             doc_description=doc_description,
             max_concurrency=max_concurrency,
         )
+        return removed
 
-    await _run_with_staged_wiki(kb_dir, operation)
+    return await _run_with_staged_wiki(kb_dir, operation)

@@ -89,6 +89,88 @@ function Get-PortOwner {
     }
 }
 
+function Get-ProcessCommandLine {
+    param([int]$ProcessId)
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        return [string]$process.CommandLine
+    }
+    catch {
+        return ""
+    }
+}
+
+function Test-OpenKbClientProcess {
+    param([int]$ProcessId)
+    $commandLine = Get-ProcessCommandLine -ProcessId $ProcessId
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $false
+    }
+    return (
+        (
+            $commandLine -like "* openkb client *" -or
+            $commandLine -like "* openkb client" -or
+            $commandLine -like "*-m openkb client*" -or
+            $commandLine -like "*openkb.client.server:create_app*"
+        ) -and
+        $commandLine -like "*--port*" -and
+        $commandLine -like "*$Port*"
+    )
+}
+
+function Stop-ProcessTree {
+    param([int]$RootProcessId)
+
+    $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $RootProcessId" -ErrorAction SilentlyContinue
+    foreach ($child in $children) {
+        Stop-ProcessTree -RootProcessId ([int]$child.ProcessId)
+    }
+
+    try {
+        Stop-Process -Id $RootProcessId -Force -ErrorAction Stop
+    }
+    catch {
+        # Process may have exited while we were stopping its children.
+    }
+}
+
+function Stop-OpenKbPortOwner {
+    $owner = Get-PortOwner
+    if ($null -eq $owner) {
+        return $false
+    }
+
+    $ownerPid = [int]$owner.OwningProcess
+    if (-not (Test-OpenKbClientProcess -ProcessId $ownerPid)) {
+        Write-Failure "Port $Port is used by PID $ownerPid, but it does not look like an OpenKB client process."
+        return $false
+    }
+
+    Write-Line "Stopping unmanaged OpenKB client on port $Port."
+    Write-Line "PID: $ownerPid"
+    try {
+        $ownerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction Stop
+        $parentPid = [int]$ownerProcess.ParentProcessId
+        if ($parentPid -gt 0 -and (Test-OpenKbClientProcess -ProcessId $parentPid)) {
+            $ownerPid = $parentPid
+        }
+    }
+    catch {
+        # Fall back to stopping the listening process itself.
+    }
+    Stop-ProcessTree -RootProcessId $ownerPid
+
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 200
+        if ($null -eq (Get-PortOwner)) {
+            return $true
+        }
+    }
+
+    return ($null -eq (Get-PortOwner))
+}
+
 function Show-Status {
     $managed = Get-ManagedProcess
     if ($null -ne $managed) {
@@ -174,11 +256,33 @@ function Start-ManagedClient {
 function Stop-ManagedClient {
     $managed = Get-ManagedProcess
     if ($null -eq $managed) {
+        if (Stop-OpenKbPortOwner) {
+            Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+            Write-Line "OpenKB client stopped."
+            return 0
+        }
+
+        if ($null -ne (Get-PortOwner)) {
+            return 2
+        }
+
         Write-Line "OpenKB client is not running."
         return 0
     }
 
     Stop-Process -Id $managed.Id -Force -ErrorAction Stop
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 200
+        if ($null -eq (Get-PortOwner)) {
+            break
+        }
+        $owner = Get-PortOwner
+        if ($null -ne $owner -and (Test-OpenKbClientProcess -ProcessId ([int]$owner.OwningProcess))) {
+            Stop-OpenKbPortOwner | Out-Null
+            break
+        }
+    }
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
     Write-Line "OpenKB client stopped."
     Write-Line "PID: $($managed.Id)"

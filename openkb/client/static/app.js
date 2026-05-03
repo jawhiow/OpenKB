@@ -5,6 +5,12 @@ const state = {
   documents: null,
   wikiTree: [],
   selectedWikiPath: "index.md",
+  selectedReport: null,
+  reportPreview: { path: null, content: "" },
+  reportPreviewLoading: null,
+  fixPlan: null,
+  selectedFixes: {},
+  lastFixApply: null,
   chats: [],
   jobs: [],
   selectedJobId: null,
@@ -24,13 +30,15 @@ const viewLabels = {
   documents: "Documents",
   wiki: "Wiki",
   sessions: "Sessions",
-  reports: "Reports",
+  reports: "Quality",
   settings: "Settings",
 };
 
 const jobLabels = {
   add: "Add",
   lint: "Lint",
+  lint_fix_plan: "Fix Plan",
+  lint_fix_apply: "Apply Fixes",
   query: "Query",
 };
 
@@ -85,6 +93,8 @@ function lastLogMessage(job) {
 function resultSummary(job) {
   if (job.error) return job.error;
   if (job.result?.added !== undefined) return `${job.result.added} file(s) added`;
+  if (job.result?.candidates) return `${job.result.candidates.length} fix candidate(s)`;
+  if (job.result?.created) return `${job.result.created.length} draft page(s) created`;
   if (job.result?.report) return job.result.report;
   if (job.result?.answer) return "Answer ready";
   return job.message || lastLogMessage(job) || job.id;
@@ -247,7 +257,13 @@ function handleJobTransitions(previousStatuses) {
     if (previous !== "running" || job.status === "running") return;
     if (job.status === "succeeded") {
       notify(`${jobLabels[job.type] || job.type} finished`, "success");
-      shouldRefresh = shouldRefresh || ["add", "lint", "query"].includes(job.type);
+      if (job.type === "lint_fix_plan") {
+        captureFixPlan(job.result);
+      }
+      if (job.type === "lint_fix_apply") {
+        state.lastFixApply = job.result || null;
+      }
+      shouldRefresh = shouldRefresh || ["add", "lint", "query", "lint_fix_apply"].includes(job.type);
     } else if (job.status === "failed") {
       notify(job.error || `${jobLabels[job.type] || job.type} failed`, "error");
     }
@@ -404,22 +420,60 @@ function render() {
 
 function renderOverview() {
   const dirs = state.status?.directories || {};
+  const cfg = state.config || {};
   mainView.innerHTML = `
     <div class="stats-grid">
       ${stat("Indexed", state.status?.total_indexed ?? 0)}
       ${stat("Raw", dirs.raw ?? 0)}
       ${stat("Summaries", dirs.summaries ?? 0)}
+      ${stat("Companies", dirs.companies ?? 0)}
       ${stat("Concepts", dirs.concepts ?? 0)}
       ${stat("Reports", dirs.reports ?? 0)}
     </div>
-    <div class="content-grid">
+    <div class="workbench-grid">
       <section class="section">
-        <header><h3>Documents</h3><button type="button" data-view-target="documents">Open</button></header>
-        <div class="section-body">${documentsTable(5)}</div>
+        <header>
+          <div>
+            <h3>Corpus</h3>
+            <span class="muted-text">${escapeHTML(state.status?.last_compile || "No compile yet")}</span>
+          </div>
+          <button type="button" data-view-target="documents">Open</button>
+        </header>
+        <div class="section-body">${documentsTable(6)}</div>
       </section>
       <section class="section">
-        <header><h3>Recent Jobs</h3><button type="button" data-view-target="reports">Reports</button></header>
-        <div class="section-body">${jobsSummary()}</div>
+        <header>
+          <div>
+            <h3>Investment Map</h3>
+            <span class="muted-text">Companies, themes, metrics, risks</span>
+          </div>
+          <button type="button" data-view-target="wiki">Open</button>
+        </header>
+        <div class="section-body">${investmentMap(dirs)}</div>
+      </section>
+      <section class="section">
+        <header>
+          <div>
+            <h3>Quality</h3>
+            <span class="muted-text">${escapeHTML(state.status?.last_lint || "No lint yet")}</span>
+          </div>
+          <button type="button" data-view-target="reports">Open</button>
+        </header>
+        <div class="section-body">${qualitySummary()}</div>
+      </section>
+      <section class="section">
+        <header>
+          <div>
+            <h3>Runtime</h3>
+            <span class="muted-text">${escapeHTML(cfg.wire_api || "responses")}</span>
+          </div>
+          ${cfg.api_key_configured ? `<span class="badge good">Key set</span>` : `<span class="badge warn">No key</span>`}
+        </header>
+        <div class="section-body runtime-list">
+          <div><span>Model</span><strong>${escapeHTML(cfg.model || "")}</strong></div>
+          <div><span>Language</span><strong>${escapeHTML(cfg.language || "")}</strong></div>
+          <div><span>Base URL</span><strong>${escapeHTML(cfg.base_url || "Default")}</strong></div>
+        </div>
       </section>
     </div>
   `;
@@ -428,6 +482,35 @@ function renderOverview() {
 
 function stat(label, value) {
   return `<div class="stat"><span class="muted-text">${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`;
+}
+
+function investmentMap(dirs) {
+  const rows = [
+    ["Companies", dirs.companies ?? 0],
+    ["Industries", dirs.industries ?? 0],
+    ["Themes", dirs.themes ?? 0],
+    ["Metrics", dirs.metrics ?? 0],
+    ["Risks", dirs.risks ?? 0],
+    ["Concepts", dirs.concepts ?? 0],
+  ];
+  return `
+    <div class="metric-list">
+      ${rows.map(([label, value]) => `<div><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`).join("")}
+    </div>
+  `;
+}
+
+function qualitySummary() {
+  const reports = state.documents?.reports || [];
+  const newest = reports[reports.length - 1] || "";
+  return `
+    <div class="quality-overview">
+      <div><span>Reports</span><strong>${escapeHTML(reports.length)}</strong></div>
+      <div><span>Latest</span><strong>${escapeHTML(newest || "None")}</strong></div>
+      <div><span>Fix plan</span><strong>${escapeHTML(state.fixPlan?.candidates?.length ?? 0)} candidate(s)</strong></div>
+    </div>
+    ${jobsSummary(3)}
+  `;
 }
 
 function documentsTable(limit) {
@@ -443,10 +526,10 @@ function documentsTable(limit) {
   `;
 }
 
-function jobsSummary() {
+function jobsSummary(limit = 5) {
   if (!state.jobs.length) return `<div class="empty">No jobs</div>`;
   return state.jobs
-    .slice(0, 5)
+    .slice(0, limit)
     .map(
       (job) => `
         <div class="job-item compact">
@@ -651,34 +734,183 @@ function renderSessions() {
 
 function renderReports() {
   const reports = state.documents?.reports || [];
+  syncSelectedReport(reports);
+  const candidates = state.fixPlan?.candidates || [];
+  const selectedCount = candidates.filter((item) => state.selectedFixes[item.name]).length;
+  const activeReportName = state.selectedReport ? state.selectedReport.replace(/^reports\//, "") : "";
   mainView.innerHTML = `
-    <section class="section">
-      <header>
-        <h3>Reports</h3>
-        <button id="runLintBtn" class="primary" type="button">Run Lint</button>
-      </header>
-      <div class="section-body">
-        <div class="report-list">
-          ${reports.map((name) => `<button type="button" data-report="${escapeHTML(`reports/${name}`)}">${escapeHTML(name)}</button>`).join(" ") || `<div class="empty">No reports</div>`}
+    <div class="quality-layout">
+      <section class="section quality-actions">
+        <header>
+          <div>
+            <h3>Quality Workflow</h3>
+            <span class="muted-text">${escapeHTML(activeReportName || "No report selected")}</span>
+          </div>
+          <div class="row-actions">
+            <button id="runLintBtn" type="button">Run Lint</button>
+            <button id="planFixBtn" class="primary" type="button" ${state.selectedReport ? "" : "disabled"}>Generate Fix Plan</button>
+            <button id="applyFixBtn" type="button" ${selectedCount ? "" : "disabled"}>Apply Approved</button>
+          </div>
+        </header>
+        <div class="section-body quality-strip">
+          ${qualityStat("Reports", reports.length)}
+          ${qualityStat("Candidates", candidates.length)}
+          ${qualityStat("Approved", selectedCount)}
+          ${qualityStat("Created", state.lastFixApply?.created?.length ?? 0)}
         </div>
-        <pre id="reportPreview" class="preview"></pre>
-      </div>
-    </section>
+      </section>
+
+      <section class="section report-browser">
+        <header>
+          <div>
+            <h3>Reports</h3>
+            <span class="muted-text">${escapeHTML(state.status?.last_lint || "")}</span>
+          </div>
+          ${activeReportName ? `<span class="badge muted">${escapeHTML(activeReportName)}</span>` : ""}
+        </header>
+        <div class="section-body report-browser-body">
+          <div class="report-list">
+            ${reports.map((name) => {
+              const path = `reports/${name}`;
+              const active = path === state.selectedReport ? " active" : "";
+              return `<button type="button" class="report-button${active}" data-report="${escapeHTML(path)}">${escapeHTML(name)}</button>`;
+            }).join("") || `<div class="empty">No reports</div>`}
+          </div>
+          <pre id="reportPreview" class="preview report-preview">${escapeHTML(reportPreviewText())}</pre>
+        </div>
+      </section>
+
+      <section class="section fix-panel">
+        <header>
+          <div>
+            <h3>Fix Plan</h3>
+            <span class="muted-text">${escapeHTML(state.fixPlan?.report || "")}</span>
+          </div>
+          <div class="row-actions">
+            <button id="selectAllFixesBtn" type="button" ${candidates.length ? "" : "disabled"}>All</button>
+            <button id="clearFixesBtn" type="button" ${candidates.length ? "" : "disabled"}>None</button>
+          </div>
+        </header>
+        <div class="section-body fix-list">
+          ${renderFixCandidates(candidates)}
+          ${renderCreatedFixes()}
+        </div>
+      </section>
+    </div>
   `;
   $("#runLintBtn").addEventListener("click", runLint);
+  $("#planFixBtn")?.addEventListener("click", generateFixPlan);
+  $("#applyFixBtn")?.addEventListener("click", applyApprovedFixes);
+  $("#selectAllFixesBtn")?.addEventListener("click", () => setAllFixes(true));
+  $("#clearFixesBtn")?.addEventListener("click", () => setAllFixes(false));
   mainView.querySelectorAll("[data-report]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      setButtonBusy(button, true, "Loading...");
-      try {
-        const file = await api(withKb(`/api/wiki/file?path=${encodeURIComponent(button.dataset.report)}`));
-        $("#reportPreview").textContent = file.content;
-      } catch (error) {
-        setError(error.message);
-      } finally {
-        setButtonBusy(button, false);
-      }
+    button.addEventListener("click", () => selectReport(button.dataset.report));
+  });
+  mainView.querySelectorAll("[data-fix-name]").forEach((input) => {
+    input.addEventListener("change", () => {
+      state.selectedFixes[input.dataset.fixName] = input.checked;
+      renderReports();
     });
   });
+  if (state.selectedReport && state.reportPreview.path !== state.selectedReport && state.reportPreviewLoading !== state.selectedReport) {
+    loadReportPreview(state.selectedReport);
+  }
+}
+
+function syncSelectedReport(reports) {
+  const paths = reports.map((name) => `reports/${name}`);
+  if (!paths.length) {
+    state.selectedReport = null;
+    state.reportPreview = { path: null, content: "" };
+    return;
+  }
+  if (!state.selectedReport || !paths.includes(state.selectedReport)) {
+    state.selectedReport = paths[paths.length - 1];
+  }
+}
+
+function qualityStat(label, value) {
+  return `<div><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`;
+}
+
+function reportPreviewText() {
+  if (!state.selectedReport) return "";
+  if (state.reportPreviewLoading === state.selectedReport) return "Loading...";
+  if (state.reportPreview.path === state.selectedReport) return state.reportPreview.content;
+  return "";
+}
+
+function renderFixCandidates(candidates) {
+  if (!candidates.length) return `<div class="empty">No fix candidates</div>`;
+  return candidates
+    .map((item) => {
+      const checked = state.selectedFixes[item.name] ? "checked" : "";
+      return `
+        <label class="fix-row">
+          <input type="checkbox" data-fix-name="${escapeHTML(item.name)}" ${checked} />
+          <span class="fix-main">
+            <strong>${escapeHTML(item.title || item.name)}</strong>
+            <span>${escapeHTML(item.path || `concepts/${item.name}.md`)}</span>
+          </span>
+          <span class="badge warn">${escapeHTML(item.action || "create")}</span>
+        </label>
+      `;
+    })
+    .join("");
+}
+
+function renderCreatedFixes() {
+  const created = state.lastFixApply?.created || [];
+  if (!created.length) return "";
+  return `
+    <div class="created-fixes">
+      ${created
+        .map(
+          (item) => `
+            <div class="created-fix">
+              <span>${escapeHTML(item.path)}</span>
+              <strong>${escapeHTML(item.title || item.name)}</strong>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+async function selectReport(reportPath) {
+  state.selectedReport = reportPath;
+  state.fixPlan = null;
+  state.selectedFixes = {};
+  state.lastFixApply = null;
+  state.reportPreviewLoading = reportPath;
+  renderReports();
+  await loadReportPreview(reportPath);
+}
+
+async function loadReportPreview(reportPath) {
+  if (!reportPath) return;
+  state.reportPreviewLoading = reportPath;
+  if ($("#reportPreview")) $("#reportPreview").textContent = "Loading...";
+  try {
+    const file = await api(withKb(`/api/wiki/file?path=${encodeURIComponent(reportPath)}`));
+    state.reportPreview = { path: file.path, content: file.content };
+    if ($("#reportPreview") && state.selectedReport === reportPath) {
+      $("#reportPreview").textContent = file.content;
+    }
+  } catch (error) {
+    notify(error.message, "error");
+    if ($("#reportPreview")) $("#reportPreview").textContent = error.message;
+  } finally {
+    if (state.reportPreviewLoading === reportPath) state.reportPreviewLoading = null;
+  }
+}
+
+function setAllFixes(value) {
+  (state.fixPlan?.candidates || []).forEach((item) => {
+    state.selectedFixes[item.name] = value;
+  });
+  renderReports();
 }
 
 async function runLint(event) {
@@ -759,6 +991,51 @@ function renderSettings() {
   $("#saveConfigBtn").addEventListener("click", saveConfig);
 }
 
+async function generateFixPlan(event) {
+  const button = event?.currentTarget;
+  if (!state.selectedReport) {
+    notify("Select a lint report first.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Queueing...");
+  try {
+    const result = await api("/api/lint/fix-plan", {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir, report: state.selectedReport }),
+    });
+    trackJob(result.job, "Fix plan queued");
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function applyApprovedFixes(event) {
+  const button = event?.currentTarget;
+  const candidates = (state.fixPlan?.candidates || []).map((item) => ({
+    ...item,
+    approved: Boolean(state.selectedFixes[item.name]),
+  }));
+  const approved = candidates.filter((item) => item.approved);
+  if (!approved.length) {
+    notify("Choose at least one fix candidate.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Queueing...");
+  try {
+    const result = await api("/api/lint/apply-fixes", {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir, candidates }),
+    });
+    trackJob(result.job, "Approved fixes queued");
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
 async function useKb(event) {
   const button = event?.currentTarget;
   const path = $("#kbPathInput").value.trim();
@@ -834,6 +1111,19 @@ async function saveConfig(event) {
     setError(error.message);
   } finally {
     setButtonBusy(button, false);
+  }
+}
+
+function captureFixPlan(result) {
+  const candidates = result?.candidates || [];
+  state.fixPlan = {
+    report: result?.report || state.selectedReport || null,
+    candidates,
+  };
+  state.selectedFixes = Object.fromEntries(candidates.map((item) => [item.name, false]));
+  state.lastFixApply = null;
+  if (state.view === "reports") {
+    renderReports();
   }
 }
 

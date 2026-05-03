@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from openkb.cli import cli
+from openkb.schema import AGENTS_MD
 
 
 def _setup_kb(tmp_path: Path) -> Path:
@@ -210,3 +211,35 @@ class TestStatusCommand:
             result = runner.invoke(cli, ["status"])
 
         assert result.exit_code == 0
+
+    def test_status_upgrades_legacy_schema_files(self, tmp_path):
+        kb_dir = tmp_path
+        (kb_dir / "raw").mkdir()
+        (kb_dir / "wiki" / "sources" / "images").mkdir(parents=True)
+        (kb_dir / "wiki" / "summaries").mkdir(parents=True)
+        (kb_dir / "wiki" / "concepts").mkdir(parents=True)
+        (kb_dir / "wiki" / "reports").mkdir(parents=True)
+        (kb_dir / "wiki" / "AGENTS.md").write_text(
+            "# Wiki Schema\n\n- concepts/ - Old concept schema.\n",
+            encoding="utf-8",
+        )
+        (kb_dir / "wiki" / "index.md").write_text(
+            "# Knowledge Base Index\n\n## Documents\n\n## Concepts\n\n## Explorations\n",
+            encoding="utf-8",
+        )
+        openkb_dir = kb_dir / ".openkb"
+        openkb_dir.mkdir()
+        (openkb_dir / "config.yaml").write_text("model: gpt-4o-mini\n")
+        (openkb_dir / "hashes.json").write_text(json.dumps({}))
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 0
+        assert (kb_dir / "wiki" / "companies").is_dir()
+        assert (kb_dir / "wiki" / "industries").is_dir()
+        assert (kb_dir / "wiki" / "themes").is_dir()
+        assert (kb_dir / "wiki" / "metrics").is_dir()
+        assert (kb_dir / "wiki" / "risks").is_dir()
+        assert (kb_dir / "wiki" / "AGENTS.md").read_text(encoding="utf-8") == AGENTS_MD

@@ -203,6 +203,85 @@ def write_wiki_file(kb_dir: Path, relative_path: str, content: str) -> dict[str,
     return {"path": full_path.relative_to((Path(kb_dir).resolve() / "wiki").resolve()).as_posix()}
 
 
+def _resolve_report_path(kb_dir: Path, report: str | None = None) -> tuple[Path, str]:
+    """Resolve a lint report path under ``wiki/reports``."""
+    kb_dir = require_kb_dir(kb_dir)
+    if report:
+        relative = str(report).replace("\\", "/").lstrip("/")
+        if not relative.startswith("reports/"):
+            raise PathSecurityError("Lint report must be under wiki/reports.")
+        full_path = _resolve_wiki_path(kb_dir, relative)
+    else:
+        reports_dir = kb_dir / "wiki" / "reports"
+        reports = sorted(
+            (path for path in reports_dir.glob("*.md") if path.is_file()),
+            key=lambda path: (path.stat().st_mtime, path.name),
+            reverse=True,
+        ) if reports_dir.exists() else []
+        if not reports:
+            raise FileNotFoundError("No lint reports found.")
+        full_path = reports[0]
+
+    reports_root = (kb_dir / "wiki" / "reports").resolve()
+    if not full_path.resolve().is_relative_to(reports_root):
+        raise PathSecurityError("Lint report must be under wiki/reports.")
+    if not full_path.exists() or not full_path.is_file():
+        raise FileNotFoundError(report or "lint report")
+    relative_path = full_path.relative_to((kb_dir / "wiki").resolve()).as_posix()
+    return full_path, relative_path
+
+
+def build_lint_fix_plan(kb_dir: Path, report: str | None = None) -> dict[str, Any]:
+    """Return safe lint fix candidates from a report without modifying the wiki."""
+    kb_dir = require_kb_dir(kb_dir)
+    report_path, relative_path = _resolve_report_path(kb_dir, report)
+    from openkb.agent.linter import extract_coverage_gap_concept_candidates
+
+    candidates = extract_coverage_gap_concept_candidates(
+        kb_dir / "wiki",
+        report_path.read_text(encoding="utf-8"),
+    )
+    return {"report": relative_path, "candidates": candidates}
+
+
+def _approved_lint_fix_candidates(candidates: Any) -> list[dict[str, Any]]:
+    if candidates is None:
+        return []
+    if not isinstance(candidates, list):
+        raise ClientError("Candidates must be a list.")
+
+    approved: list[dict[str, Any]] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        if item.get("approved") is not True:
+            continue
+        action = str(item.get("action") or "create").strip().lower()
+        if action != "create":
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        approved.append(
+            {
+                "name": name,
+                "title": str(item.get("title") or name.replace("_", " ")).strip(),
+                "action": "create",
+            }
+        )
+    return approved
+
+
+def apply_lint_fix_candidates(kb_dir: Path, candidates: Any) -> dict[str, Any]:
+    """Create approved lint draft pages while preserving existing pages."""
+    kb_dir = require_kb_dir(kb_dir)
+    approved = _approved_lint_fix_candidates(candidates)
+    from openkb.agent.linter import apply_coverage_gap_concept_candidates
+
+    created = apply_coverage_gap_concept_candidates(kb_dir / "wiki", approved)
+    return {"approved": approved, "created": created}
+
+
 def _api_key_configured(kb_dir: Path) -> bool:
     if any(os.environ.get(key) for key in ("LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")):
         return True

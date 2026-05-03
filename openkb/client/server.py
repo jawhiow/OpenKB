@@ -439,6 +439,40 @@ def create_app(registry: JobRegistry | None = None):
         job = registry.submit("lint", run, message="Running lint")
         return {"job": job.to_dict()}
 
+    @app.post("/api/lint/fix-plan")
+    def lint_fix_plan(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            report = str(payload["report"]) if payload.get("report") else None
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            job.add_log("Extracting safe fix candidates")
+            plan = kb_helpers.build_lint_fix_plan(target_kb, report)
+            job.add_log(f"Found {len(plan['candidates'])} candidate(s)")
+            return plan
+
+        job = registry.submit("lint_fix_plan", run, message="Generating lint fix plan")
+        return {"job": job.to_dict()}
+
+    @app.post("/api/lint/apply-fixes")
+    def lint_apply_fixes(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            candidates = payload.get("candidates")
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            job.add_log("Applying approved lint fixes")
+            result = kb_helpers.apply_lint_fix_candidates(target_kb, candidates)
+            job.add_log(f"Created {len(result['created'])} draft page(s)")
+            return result
+
+        job = registry.submit("lint_fix_apply", run, message="Applying approved lint fixes")
+        return {"job": job.to_dict()}
+
     @app.get("/api/jobs")
     def jobs() -> dict[str, Any]:
         return {"jobs": [job.to_dict() for job in registry.list_jobs()]}

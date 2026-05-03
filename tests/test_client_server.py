@@ -100,6 +100,119 @@ def test_upload_document_accepts_single_file_and_queues_add_job(tmp_path, monkey
     assert calls["strict"] is True
 
 
+def test_lint_fix_plan_job_extracts_candidates_without_writing_pages(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    report_path = kb_dir / "wiki" / "reports" / "lint.md"
+    report_path.write_text(
+        "## Gaps\n"
+        "- Missing concept page for AI CPU and global AI GPU.\n"
+        "- Export Controls are not covered.\n",
+        encoding="utf-8",
+    )
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/lint/fix-plan",
+        json={"kb_dir": str(kb_dir), "report": "reports/lint.md"},
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.result["report"] == "reports/lint.md"
+    assert [item["name"] for item in job.result["candidates"]] == [
+        "AI_CPU",
+        "AI_GPU",
+        "Export_Controls",
+    ]
+    assert not (kb_dir / "wiki" / "concepts" / "AI_CPU.md").exists()
+    assert not (kb_dir / "wiki" / "concepts" / "AI_GPU.md").exists()
+
+
+def test_lint_fix_plan_job_rejects_reports_outside_reports_dir(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/lint/fix-plan",
+        json={"kb_dir": str(kb_dir), "report": "index.md"},
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "failed"
+    assert "wiki/reports" in str(job.error)
+
+
+def test_lint_apply_fixes_job_creates_only_explicitly_approved_draft_pages(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / "wiki" / "concepts" / "AI_GPU.md").write_text("# Existing AI GPU", encoding="utf-8")
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/lint/apply-fixes",
+        json={
+            "kb_dir": str(kb_dir),
+            "candidates": [
+                {"name": "AI_CPU", "title": "AI CPU", "path": "concepts/AI_CPU.md", "action": "create", "approved": True},
+                {"name": "AI_GPU", "title": "AI GPU", "path": "concepts/AI_GPU.md", "action": "create", "approved": True},
+                {"name": "Cloud_CAPEX", "title": "Cloud CAPEX", "path": "concepts/Cloud_CAPEX.md", "action": "create"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.result["created"] == [
+        {"name": "AI_CPU", "title": "AI CPU", "path": "concepts/AI_CPU.md", "action": "created"}
+    ]
+    ai_cpu = (kb_dir / "wiki" / "concepts" / "AI_CPU.md").read_text(encoding="utf-8")
+    assert "status: draft" in ai_cpu
+    assert "# AI CPU" in ai_cpu
+    assert (kb_dir / "wiki" / "concepts" / "AI_GPU.md").read_text(encoding="utf-8") == "# Existing AI GPU"
+    assert not (kb_dir / "wiki" / "concepts" / "Cloud_CAPEX.md").exists()
+
+
+def test_lint_apply_fixes_job_ignores_unapproved_candidates(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/lint/apply-fixes",
+        json={
+            "kb_dir": str(kb_dir),
+            "candidates": [
+                {"name": "AI_CPU", "title": "AI CPU", "approved": True},
+                {"name": "AI_GPU", "title": "AI GPU", "approved": False},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert [item["name"] for item in job.result["created"]] == ["AI_CPU"]
+    assert (kb_dir / "wiki" / "concepts" / "AI_CPU.md").exists()
+    assert not (kb_dir / "wiki" / "concepts" / "AI_GPU.md").exists()
+
+
 def test_test_llm_endpoint_uses_current_form_values(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".env").write_text("LLM_API_KEY=saved-secret\n", encoding="utf-8")

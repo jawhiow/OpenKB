@@ -107,6 +107,14 @@ class TestFindOrphans:
 
         assert result == []
 
+    def test_reports_are_not_orphans(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "reports" / "lint_20260503_092920.md").write_text("# Lint Report")
+
+        result = find_orphans(wiki)
+
+        assert "reports/lint_20260503_092920" not in result
+
 
 class TestFindMissingEntries:
     def test_no_missing_entries(self, tmp_path):

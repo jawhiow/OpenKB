@@ -26,6 +26,61 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260503-001] rg_access_denied
+
+**Logged**: 2026-05-03T13:42:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+`rg.exe` failed with Access is denied in this PowerShell workspace while searching the OpenKB repo.
+
+### Error
+```text
+Program 'rg.exe' failed to run: Access is denied
+```
+
+### Context
+- Command attempted: `rg -n "extract_coverage_gap|Coverage Gap|Cloud_CAPEX|_extract_concept_candidates_from_summary|apply_coverage_gap" tests openkb`
+- Environment: Windows PowerShell in `D:\workspace\codex\jt-ai-tz\OpenKB`
+- The fallback is to use `Select-String` or direct targeted file reads.
+
+### Suggested Fix
+Use PowerShell `Select-String` when `rg.exe` is blocked, or inspect PATH/permissions for the installed ripgrep executable.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: none
+
+---
+## [ERR-20260503-006] rg_access_denied_on_windows
+
+**Logged**: 2026-05-03T09:20:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+Running `rg.exe` from PowerShell in this OpenKB workspace failed with `Access is denied`, so repository text search had to fall back to PowerShell-native commands.
+
+### Error
+```text
+Program 'rg.exe' failed to run: Access is denied
+```
+
+### Context
+- Command attempted while searching OpenKB source files for investment optimization code paths.
+- Environment: Windows PowerShell, workspace `D:\workspace\codex\jt-ai-tz\OpenKB`.
+
+### Suggested Fix
+Use `Select-String` / `Get-ChildItem` fallback when `rg.exe` is blocked, and investigate the local `rg.exe` path or endpoint security policy separately if this recurs.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: none
+
+---
 ## [ERR-20260502-001] rg_access_denied
 
 **Logged**: 2026-05-02T00:00:00+08:00

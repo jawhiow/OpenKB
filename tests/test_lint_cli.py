@@ -130,3 +130,12 @@ class TestLintCommand:
         reports = list((kb_dir / "wiki" / "reports").glob("lint_*.md"))
         report_text = reports[0].read_text(encoding="utf-8")
         assert "## Coverage Gap Fixes" in report_text
+
+    def test_lint_fix_help_describes_safe_draft_generation(self):
+        runner = CliRunner()
+
+        result = runner.invoke(cli, ["lint", "--help"])
+
+        assert result.exit_code == 0
+        assert "not yet implemented" not in result.output
+        assert "draft concept pages" in result.output

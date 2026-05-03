@@ -139,11 +139,11 @@ def find_orphans(wiki: Path) -> list[str]:
     Returns:
         List of relative page paths that are orphaned.
     """
-    # Exclude index, schema, log, and sources/ (sources are auto-generated, not expected to be linked)
+    # Exclude index, schema, log, and generated support folders.
     all_mds = [
         p for p in wiki.rglob("*.md")
         if p.name not in {"index.md", *_EXCLUDED_FILES}
-        and "sources" not in p.relative_to(wiki).parts
+        and not (set(p.relative_to(wiki).parts) & {"sources", "reports"})
     ]
     if not all_mds:
         return []

@@ -1,23 +1,25 @@
 :root {
   color-scheme: light;
-  --bg: #f6f7f4;
+  --bg: #f4f6f8;
   --panel: #ffffff;
-  --panel-alt: #f0f5f2;
-  --line: #d8ded9;
-  --text: #18221d;
-  --muted: #69756d;
-  --accent: #147a73;
-  --accent-strong: #0e5954;
-  --accent-soft: #dcefeb;
-  --info: #2c77b8;
-  --info-soft: #e2edf7;
-  --warn: #9b6a13;
-  --warn-soft: #fff1d6;
-  --bad: #a23b3b;
-  --bad-soft: #f8e3e3;
-  --good: #2d7a42;
-  --good-soft: #e1f1e5;
-  --focus: #2c77b8;
+  --panel-alt: #f7faf9;
+  --line: #d9e0e6;
+  --line-strong: #c2cbd3;
+  --text: #16202a;
+  --muted: #677482;
+  --accent: #0f766e;
+  --accent-strong: #0b5751;
+  --accent-soft: #dff1ef;
+  --info: #2563a7;
+  --info-soft: #e5eef8;
+  --warn: #9a6412;
+  --warn-soft: #fff0d3;
+  --bad: #aa3636;
+  --bad-soft: #fae2e2;
+  --good: #2f7d4f;
+  --good-soft: #e0f0e7;
+  --focus: #2563a7;
+  --shadow: 0 10px 26px rgba(22, 32, 42, 0.08);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -29,8 +31,10 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
+  font-size: 14px;
 }
 
 button,
@@ -48,10 +52,12 @@ button {
   min-height: 34px;
   padding: 0 12px;
   cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
 }
 
 button:hover {
   border-color: var(--accent);
+  box-shadow: 0 1px 0 rgba(22, 32, 42, 0.04);
 }
 
 button:disabled {
@@ -118,9 +124,11 @@ textarea {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 168px minmax(0, 1fr) 340px;
-  grid-template-rows: 64px minmax(0, 1fr) 250px;
+  grid-template-columns: 184px minmax(0, 1fr) 360px;
+  grid-template-rows: 64px minmax(0, 1fr) 270px;
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 .topbar {
@@ -132,6 +140,7 @@ textarea {
   padding: 10px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+  box-shadow: 0 1px 0 rgba(22, 32, 42, 0.02);
 }
 
 .brand {
@@ -147,7 +156,8 @@ textarea {
   width: 38px;
   height: 38px;
   border-radius: 8px;
-  background: var(--accent-soft);
+  border: 1px solid #b9d8d4;
+  background: #eef8f6;
   color: var(--accent-strong);
   font-weight: 700;
 }
@@ -197,10 +207,14 @@ h3 {
 }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
   width: 100%;
   justify-content: flex-start;
   margin-bottom: 6px;
   text-align: left;
+  color: #344252;
 }
 
 .nav-item.active {
@@ -215,6 +229,7 @@ h3 {
   grid-row: 2;
   min-width: 0;
   overflow: auto;
+  background: var(--bg);
 }
 
 .view-title {
@@ -226,7 +241,8 @@ h3 {
   gap: 16px;
   padding: 14px 18px;
   border-bottom: 1px solid var(--line);
-  background: rgba(246, 247, 244, 0.96);
+  background: rgba(244, 246, 248, 0.96);
+  backdrop-filter: blur(10px);
 }
 
 .main-view {
@@ -265,17 +281,18 @@ h3 {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(116px, 1fr));
+  grid-template-columns: repeat(6, minmax(104px, 1fr));
   gap: 10px;
   margin-bottom: 16px;
 }
 
 .stat {
-  min-height: 76px;
+  min-height: 74px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
-  padding: 12px;
+  padding: 11px 12px;
+  box-shadow: 0 1px 0 rgba(22, 32, 42, 0.03);
 }
 
 .stat strong {
@@ -291,11 +308,18 @@ h3 {
   gap: 14px;
 }
 
+.workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+  gap: 14px;
+}
+
 .section {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
   min-width: 0;
+  box-shadow: 0 1px 0 rgba(22, 32, 42, 0.03);
 }
 
 .section > header {
@@ -305,10 +329,64 @@ h3 {
   gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
+  min-height: 58px;
 }
 
 .section-body {
   padding: 12px;
+}
+
+.metric-list,
+.runtime-list,
+.quality-overview,
+.quality-strip {
+  display: grid;
+  gap: 8px;
+}
+
+.metric-list,
+.quality-overview {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric-list div,
+.runtime-list div,
+.quality-overview div,
+.quality-strip div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-alt);
+  padding: 8px 10px;
+}
+
+.metric-list span,
+.runtime-list span,
+.quality-overview span,
+.quality-strip span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.metric-list strong,
+.runtime-list strong,
+.quality-overview strong,
+.quality-strip strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quality-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .form-grid {
@@ -340,6 +418,12 @@ td {
   text-align: left;
   vertical-align: top;
   font-size: 13px;
+}
+
+td:first-child,
+th:first-child {
+  max-width: 360px;
+  overflow-wrap: anywhere;
 }
 
 th {
@@ -584,6 +668,7 @@ th {
   padding: 2px 9px;
   font-size: 12px;
   white-space: nowrap;
+  font-weight: 600;
 }
 
 .badge.good {
@@ -616,10 +701,124 @@ th {
 }
 
 .report-list {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 8px;
-  margin-bottom: 10px;
+  align-content: start;
+}
+
+.quality-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.7fr);
+  grid-template-areas:
+    "actions actions"
+    "reports fixes";
+  gap: 14px;
+}
+
+.quality-actions {
+  grid-area: actions;
+}
+
+.quality-actions > header {
+  align-items: flex-start;
+}
+
+.report-browser {
+  grid-area: reports;
+}
+
+.fix-panel {
+  grid-area: fixes;
+}
+
+.report-browser-body {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 12px;
+  height: min(560px, calc(100vh - 312px));
+  min-height: 420px;
+}
+
+.report-button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 36px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.report-button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.report-preview {
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+
+.fix-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.fix-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-alt);
+  padding: 10px;
+}
+
+.fix-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.fix-main strong,
+.fix-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fix-main span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.created-fixes {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.created-fix {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--good);
+  border-radius: 6px;
+  background: var(--good-soft);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.created-fix span {
+  color: var(--good);
+}
+
+.created-fix strong {
+  color: var(--text);
 }
 
 .toast-host {
@@ -706,14 +905,33 @@ th {
     grid-template-columns: repeat(3, minmax(116px, 1fr));
   }
 
-  .job-dock-body {
+  .job-dock-body,
+  .workbench-grid,
+  .quality-layout {
     grid-template-columns: 1fr;
+  }
+
+  .quality-layout {
+    grid-template-areas:
+      "actions"
+      "reports"
+      "fixes";
+  }
+
+  .report-browser-body {
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 }
 
 @media (max-width: 760px) {
+  body {
+    overflow: auto;
+  }
+
   .app-shell {
     display: block;
+    height: auto;
+    overflow: visible;
   }
 
   .topbar,
@@ -729,9 +947,12 @@ th {
     display: flex;
     overflow-x: auto;
     gap: 6px;
+    padding-bottom: 14px;
+    scrollbar-width: thin;
   }
 
   .nav-item {
+    flex: 0 0 auto;
     width: auto;
     white-space: nowrap;
     margin-bottom: 0;
@@ -739,17 +960,41 @@ th {
 
   .stats-grid,
   .content-grid,
+  .workbench-grid,
   .form-grid,
   .wiki-layout,
-  .job-dock-body {
+  .job-dock-body,
+  .quality-layout,
+  .quality-strip,
+  .metric-list,
+  .quality-overview,
+  .report-browser-body {
     grid-template-columns: 1fr;
+  }
+
+  .quality-layout {
+    grid-template-areas:
+      "actions"
+      "reports"
+      "fixes";
   }
 
   .topbar {
     align-items: flex-start;
+    flex-wrap: wrap;
   }
 
   .job-log {
     grid-template-columns: 1fr;
+  }
+
+  .quality-actions > header,
+  .section > header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .row-actions {
+    flex-wrap: wrap;
   }
 }

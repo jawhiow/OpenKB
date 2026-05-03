@@ -133,6 +133,18 @@ _TYPE_DISPLAY_MAP = {
 }
 
 _SHORT_DOC_TYPES = {"pdf", "docx", "md", "markdown", "html", "htm", "txt", "csv", "pptx", "xlsx"}
+_WIKI_SCHEMA_DIRS = (
+    "sources/images",
+    "summaries",
+    "companies",
+    "industries",
+    "themes",
+    "metrics",
+    "risks",
+    "concepts",
+    "explorations",
+    "reports",
+)
 
 
 def _display_type(raw_type: str) -> str:
@@ -142,6 +154,36 @@ def _display_type(raw_type: str) -> str:
     if raw_type in _SHORT_DOC_TYPES:
         return "short"
     return raw_type
+
+
+def _ensure_wiki_schema(kb_dir: Path) -> None:
+    """Ensure an existing KB has the current optional wiki schema scaffolding."""
+    wiki_dir = kb_dir / "wiki"
+    if not wiki_dir.exists():
+        return
+
+    for subdir in _WIKI_SCHEMA_DIRS:
+        (wiki_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    agents_path = wiki_dir / "AGENTS.md"
+    if not agents_path.exists():
+        agents_path.write_text(AGENTS_MD, encoding="utf-8")
+        return
+
+    try:
+        agents_text = agents_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    required_markers = (
+        "companies/",
+        "industries/",
+        "themes/",
+        "metrics/",
+        "risks/",
+        "Company Page",
+    )
+    if not all(marker in agents_text for marker in required_markers):
+        agents_path.write_text(AGENTS_MD, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +256,6 @@ def add_single_file(
     4. Else: compile_short_doc.
     """
     from openkb.agent.compiler import (
-        cleanup_generated_pages_for_source,
         compile_local_long_doc,
         compile_long_doc,
         compile_short_doc,
@@ -246,10 +287,7 @@ def add_single_file(
         return
 
     doc_name = file_path.stem
-    if force:
-        removed = cleanup_generated_pages_for_source(kb_dir / "wiki", doc_name)
-        if removed:
-            click.echo(f"  Removed {len(removed)} stale generated page(s) for recompilation.")
+    removed_stale_pages: list[str] = []
 
     # 3/4. Index and compile
     if result.is_long_doc and result.local_long_doc:
@@ -257,7 +295,15 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling local long document: {file_path.name}")
         for attempt in range(2):
             try:
-                asyncio.run(compile_local_long_doc(doc_name, result.source_path, kb_dir, model))
+                removed_stale_pages = asyncio.run(
+                    compile_local_long_doc(
+                        doc_name,
+                        result.source_path,
+                        kb_dir,
+                        model,
+                        cleanup_existing=force,
+                    )
+                )
                 break
             except Exception as exc:
                 if attempt == 0:
@@ -287,9 +333,16 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling long document: {file_path.name}")
         for attempt in range(2):
             try:
-                asyncio.run(
-                    compile_long_doc(doc_name, summary_path, index_result.doc_id, kb_dir, model,
-                                     doc_description=index_result.description)
+                removed_stale_pages = asyncio.run(
+                    compile_long_doc(
+                        doc_name,
+                        summary_path,
+                        index_result.doc_id,
+                        kb_dir,
+                        model,
+                        doc_description=index_result.description,
+                        cleanup_existing=force,
+                    )
                 )
                 break
             except Exception as exc:
@@ -307,7 +360,15 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling short document: {file_path.name}")
         for attempt in range(2):
             try:
-                asyncio.run(compile_short_doc(doc_name, result.source_path, kb_dir, model))
+                removed_stale_pages = asyncio.run(
+                    compile_short_doc(
+                        doc_name,
+                        result.source_path,
+                        kb_dir,
+                        model,
+                        cleanup_existing=force,
+                    )
+                )
                 break
             except Exception as exc:
                 if attempt == 0:
@@ -319,6 +380,9 @@ def add_single_file(
                     if strict:
                         raise RuntimeError(f"Compilation failed: {exc}") from exc
                     return
+
+    if removed_stale_pages:
+        click.echo(f"  Removed {len(removed_stale_pages)} stale generated page(s) for recompilation.")
 
     # Register hash only after successful compilation
     if result.file_hash:
@@ -466,6 +530,7 @@ def add(ctx, force, path):
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+    _ensure_wiki_schema(kb_dir)
 
     target = Path(path)
     if not target.exists():
@@ -510,6 +575,7 @@ def rebuild(ctx, strict):
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+    _ensure_wiki_schema(kb_dir)
 
     raw_dir = kb_dir / "raw"
     if not raw_dir.exists():
@@ -549,6 +615,7 @@ def query(ctx, question, save, raw):
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+    _ensure_wiki_schema(kb_dir)
 
     from openkb.agent.query import run_query
 
@@ -610,6 +677,7 @@ def chat(ctx, resume, list_sessions_flag, delete_id, no_color, raw):
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+    _ensure_wiki_schema(kb_dir)
 
     from openkb.agent.chat_session import (
         ChatSession,
@@ -691,6 +759,7 @@ def watch(ctx):
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+    _ensure_wiki_schema(kb_dir)
 
     from openkb.watcher import watch_directory
 
@@ -792,7 +861,12 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
 
 
 @cli.command()
-@click.option("--fix", is_flag=True, default=False, help="Automatically fix lint issues (not yet implemented).")
+@click.option(
+    "--fix",
+    is_flag=True,
+    default=False,
+    help="Create safe draft concept pages for lint coverage-gap candidates.",
+)
 @click.pass_context
 def lint(ctx, fix):
     """Lint the knowledge base for structural and semantic inconsistencies."""
@@ -800,6 +874,7 @@ def lint(ctx, fix):
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+    _ensure_wiki_schema(kb_dir)
     asyncio.run(run_lint(kb_dir, fix=fix))
 
 
@@ -888,6 +963,7 @@ def list_cmd(ctx):
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+    _ensure_wiki_schema(kb_dir)
     print_list(kb_dir)
 
 
@@ -960,6 +1036,7 @@ def status(ctx):
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
+    _ensure_wiki_schema(kb_dir)
     print_status(kb_dir)
 
 
