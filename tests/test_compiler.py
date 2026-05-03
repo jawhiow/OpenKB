@@ -195,6 +195,22 @@ class TestWriteSummary:
         assert "doc_type: short" in text
         assert "full_text: sources/my-doc.md" in text
 
+    def test_writes_summary_page_references_to_evidence_map(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+        _write_summary(
+            wiki,
+            "report",
+            "# Report\n\n## Source Evidence\n- p.3: HBM supply is a bottleneck.",
+            doc_type="local-long",
+        )
+
+        evidence = json.loads((wiki / "evidence_map.json").read_text(encoding="utf-8"))
+        assert evidence["summaries/report.md"][0]["source"] == "sources/report.json"
+        assert evidence["summaries/report.md"][0]["summary"] == "summaries/report"
+        assert evidence["summaries/report.md"][0]["page"] == "3"
+        assert "HBM supply is a bottleneck" in evidence["summaries/report.md"][0]["snippet"]
+
 
 class TestWriteConcept:
     def test_new_concept_with_brief(self, tmp_path):
@@ -844,6 +860,39 @@ class TestCompileShortDoc:
         assert "[[concepts/transformer]]" in index_text
 
     @pytest.mark.asyncio
+    async def test_rolls_back_summary_when_concept_planning_fails(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        (wiki / "sources").mkdir(parents=True)
+        (wiki / "summaries").mkdir(parents=True)
+        (wiki / "concepts").mkdir(parents=True)
+        original_index = "# Index\n\n## Documents\n\n## Concepts\n\n## Explorations\n"
+        (wiki / "index.md").write_text(original_index, encoding="utf-8")
+        source_path = wiki / "sources" / "test-doc.md"
+        source_path.write_text("# Test Doc\n\nSome content.", encoding="utf-8")
+        (tmp_path / ".openkb").mkdir()
+
+        summary_response = json.dumps({
+            "brief": "Temporary summary",
+            "content": "# Summary\n\nThis should not be committed if planning fails.",
+        })
+        usage = MagicMock(prompt_tokens=100, completion_tokens=50)
+        usage.prompt_tokens_details = None
+
+        with patch(
+            "openkb.agent.compiler.completion",
+            side_effect=[
+                CompletionResult(text=summary_response, usage=usage),
+                RuntimeError("planner down"),
+            ],
+        ):
+            with pytest.raises(RuntimeError, match="planner down"):
+                await compile_short_doc("test-doc", source_path, tmp_path, "gpt-4o-mini")
+
+        assert not (wiki / "summaries" / "test-doc.md").exists()
+        assert not (wiki / "evidence_map.json").exists()
+        assert (wiki / "index.md").read_text(encoding="utf-8") == original_index
+
+    @pytest.mark.asyncio
     async def test_handles_bad_json(self, tmp_path):
         wiki = tmp_path / "wiki"
         (wiki / "sources").mkdir(parents=True)
@@ -1121,6 +1170,69 @@ class TestCompileConceptsPlan:
         index_text = (wiki / "index.md").read_text(encoding="utf-8")
         assert "[[companies/TSMC]] - AI foundry bellwether" in index_text
         assert "[[concepts/HBM]] - Memory bottleneck for AI accelerators" in index_text
+
+    @pytest.mark.asyncio
+    async def test_generated_company_and_concept_pages_update_evidence_map(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "test-doc.md").write_text(
+            "TSMC benefits from [[companies/TSMC]] and [[concepts/HBM]].",
+            encoding="utf-8",
+        )
+
+        company_plan_response = json.dumps({
+            "companies": [
+                {"name": "TSMC", "title": "TSMC", "action": "create"},
+            ],
+        })
+        concept_plan_response = json.dumps({
+            "create": [{"name": "HBM", "title": "HBM"}],
+            "update": [],
+            "related": [],
+        })
+        company_page_response = json.dumps({
+            "brief": "AI foundry bellwether",
+            "content": (
+                "# TSMC\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/test-doc]] p.7: TSMC raises CoWoS capacity."
+            ),
+        })
+        concept_page_response = json.dumps({
+            "brief": "Memory bottleneck for AI accelerators",
+            "content": (
+                "# HBM\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/test-doc]] p.12: HBM supply is a bottleneck."
+            ),
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = "TSMC benefits from [[companies/TSMC]] and [[concepts/HBM]]."
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([company_plan_response, concept_plan_response]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([company_page_response, concept_page_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        evidence = json.loads((wiki / "evidence_map.json").read_text(encoding="utf-8"))
+        assert evidence["companies/TSMC.md"][0]["source"] == "summaries/test-doc.md"
+        assert evidence["companies/TSMC.md"][0]["summary"] == "summaries/test-doc"
+        assert evidence["companies/TSMC.md"][0]["page"] == "7"
+        assert "TSMC raises CoWoS capacity" in evidence["companies/TSMC.md"][0]["snippet"]
+        assert evidence["concepts/HBM.md"][0]["source"] == "summaries/test-doc.md"
+        assert evidence["concepts/HBM.md"][0]["page"] == "12"
+        assert "HBM supply is a bottleneck" in evidence["concepts/HBM.md"][0]["snippet"]
 
     @pytest.mark.asyncio
     async def test_invalid_company_plan_falls_back_to_summary_companies(self, tmp_path):

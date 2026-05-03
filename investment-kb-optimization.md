@@ -86,7 +86,30 @@ Latest regeneration status after the additional routing fixes:
   issues 0, investment quality issues 0.
 - Semantic lint still found higher-order knowledge gaps, especially
   `Cloud_CAPEX`, `AI_CPU`, global `AI_GPU`, `Export_Controls`, and
-  `Semiconductor_Cycle`.
+  `Semiconductor_Cycle`. The local concept fallback can now extract these
+  five concepts when summary text contains the relevant investment signals.
+  `openkb lint` can also surface them as coverage-gap concept candidates when
+  the semantic lint report flags the topics as missing or uncovered. With
+  `openkb lint --fix`, those candidates can now be materialized as reviewable
+  draft concept pages without overwriting existing pages, seeded with matching
+  source-summary evidence when available. For local-long summaries that point
+  to page-indexed JSON, draft evidence can now include page references such as
+  `p.2`.
+  Coverage-gap draft evidence is also written to `wiki/evidence_map.json` so
+  query/rebuild flows can reuse structured source and page references.
+  Regular compile output now also records structured evidence for generated
+  `concepts/` and `companies/` pages when their source-evidence lines contain
+  page references such as `p.7` or `page 12`. Generated summary pages now do
+  the same for their own page-referenced claims, pointing back to the
+  underlying `sources/<doc>.md` or `sources/<doc>.json` file.
+  Compile writes now run through a staging wiki and only commit generated
+  summaries, companies, concepts, index rows, and evidence-map changes after
+  the compile operation succeeds.
+  Existing KBs can now be rebuilt from `raw/` through `openkb rebuild`, which
+  reuses the safe `add --force` path for every supported raw document.
+  The expanded investment schema now recognizes `industries/`, `themes/`,
+  `metrics/`, and `risks/` as first-class optional wiki areas without forcing
+  the compiler to route pages there prematurely.
 
 ## Completed Optimizations
 
@@ -182,6 +205,90 @@ Latest regeneration status after the additional routing fixes:
     including advanced packaging, CoWoS, SoIC, AI ASIC, HBM, NOR Flash, China
     AI GPU, semiconductor testing, optical engines, and CPO.
 
+- [x] Added semantic coverage-gap candidate reporting.
+  - `openkb lint` now scans semantic lint report sections such as gaps,
+    coverage, missing pages, and Chinese missing-coverage phrasing.
+  - It maps recognized investment gaps to durable `concepts/` candidates,
+    filters out concept pages that already exist, and writes a
+    `Coverage Gap Candidates` section into the lint report.
+
+- [x] Added safe coverage-gap draft generation.
+  - `openkb lint --fix` now creates draft `concepts/` pages for semantic
+    coverage-gap candidates.
+  - Draft pages use `status: draft`, empty `sources: []`, and TODO sections for
+    source evidence, key metrics, risks, and related concepts.
+  - Existing concept pages are never overwritten, and new draft pages are added
+    to the `## Concepts` section of `index.md`.
+
+- [x] Seeded coverage-gap drafts with source-summary evidence.
+  - When `openkb lint --fix` creates a draft concept page, it scans existing
+    `summaries/` pages for matching fallback concept signals.
+  - Matching summaries are added to draft frontmatter `sources: [...]`.
+  - The `## Source Evidence` section starts with `[[summaries/...]]` links and
+    a short snippet instead of a blank TODO when evidence is available.
+
+- [x] Added page-level evidence for local-long coverage-gap drafts.
+  - If a matching summary has `full_text: sources/<doc>.json`, `openkb lint
+    --fix` scans the page-indexed JSON for the same durable concept signal.
+  - Draft `## Source Evidence` entries now prefer `[[summaries/...]] p.N:
+    snippet` when a matching page is found.
+  - This keeps draft pages reviewable while preserving tighter source context.
+
+- [x] Added a structured evidence map for coverage-gap drafts.
+  - `openkb lint --fix` now writes `wiki/evidence_map.json` entries for draft
+    concept pages that have matching summary or page evidence.
+  - Each evidence map entry includes the concept page path, source summary,
+    page number when available, and a short snippet.
+  - The query agent instructions now tell OpenKB to read `evidence_map.json`
+    when exact source support is needed.
+
+- [x] Extended the evidence map to generated concept and company pages.
+  - During normal compilation, generated `concepts/` and `companies/` pages are
+    scanned after final link normalization for source-evidence lines with page
+    references such as `p.N` or `page N`.
+  - Matching evidence is written to `wiki/evidence_map.json` with the generated
+    page path, source summary, page number, and cleaned claim snippet.
+  - Coverage-gap fixes and compiler output now share the same evidence-map
+    writer instead of maintaining separate JSON write logic.
+
+- [x] Added summary-page evidence map entries.
+  - `_write_summary` now records page-referenced summary claims into
+    `wiki/evidence_map.json`.
+  - Summary entries are keyed by `summaries/<doc>.md`, point to the underlying
+    `sources/<doc>.md` or `sources/<doc>.json`, and preserve the page number and
+    cleaned snippet.
+  - This completes structured evidence-map coverage for normal generated
+    summaries, concept pages, company pages, and coverage-gap drafts.
+
+- [x] Added atomic compile staging for generated wiki output.
+  - `compile_short_doc`, `compile_local_long_doc`, and `compile_long_doc` now
+    compile against a staged copy under `.openkb/staging`.
+  - On success, only compile-managed wiki outputs are synced back:
+    `summaries/`, `companies/`, `concepts/`, `index.md`, and
+    `evidence_map.json`.
+  - On failure, the staging directory is removed and the real wiki is left
+    unchanged, preventing half-written summaries or evidence maps after a later
+    planning/generation error.
+
+- [x] Added an investment KB rebuild command.
+  - `openkb rebuild` scans `raw/` for supported documents and recompiles each
+    one through `add_single_file(..., force=True)`.
+  - The command reuses existing conversion, stale-page cleanup, staged compile,
+    hash registration, and logging behavior instead of inventing a separate
+    rebuild path.
+  - `openkb rebuild --strict` passes `strict=True` into the helper so automated
+    rebuild jobs can fail fast on the first document error.
+
+- [x] Added the optional expanded investment schema.
+  - `openkb init` and client-side KB initialization now create `industries/`,
+    `themes/`, `metrics/`, and `risks/` directories and index sections.
+  - `AGENTS.md`, query instructions, semantic lint instructions, `list`,
+    `status`, client status/document data, and structural index-sync checks now
+    recognize those directories.
+  - The compiler preserves these sections in `index.md`, but page routing stays
+    conservative: regular generation still uses `companies/` and `concepts/`
+    unless a future task adds dedicated extraction with evidence.
+
 ## Current Quality Bar
 
 A generated investment KB should satisfy:
@@ -214,29 +321,52 @@ A generated investment KB should satisfy:
   - Company-specific pages go to `companies/`, not `concepts/`.
   - Concept and company page links are preserved only when target pages exist.
 
-- [ ] Expanded investment schema.
+- [x] Expanded investment schema.
   - Add `industries/`, `themes/`, `metrics/`, and `risks/` only where they
     remove real ambiguity beyond company and concept pages.
+  - Current implementation makes these optional directories first-class in the
+    wiki schema, UI/status surfaces, query/lint instructions, and structural
+    lint without adding noisy automatic extraction.
 
-- [ ] Coverage-gap generation.
+- [x] Coverage-gap generation.
   - Use semantic lint findings to propose or generate missing durable pages for
     gaps such as AI CPU, optical chips / CPO, SoIC, export controls, non-AI
     semiconductor cycle, and specialty memory.
-  - Current in-progress RED test expects fallback extraction for
-    `Cloud_CAPEX`, `AI_CPU`, `AI_GPU`, `Export_Controls`, and
-    `Semiconductor_Cycle`. Implementation is not finished yet.
+  - Current fallback extraction now covers `Cloud_CAPEX`, `AI_CPU`, global
+    `AI_GPU`, `Export_Controls`, and `Semiconductor_Cycle`.
+  - Semantic lint coverage gaps are now connected to report-level durable page
+    candidates.
+  - `openkb lint --fix` can now turn candidates into reviewable draft concept
+    pages.
+  - Draft pages are now seeded with matching summary evidence where available.
+  - Local-long draft evidence can now include page references from page-indexed
+    JSON.
+  - Structured evidence tracking has started to generalize beyond drafts into
+    normally generated concept and company pages.
+  - Broader existing-KB regeneration is now supported through `openkb rebuild`.
 
-- [ ] Atomic compile writes.
+- [x] Atomic compile writes.
   - Write summaries and concepts through a staging area.
   - Commit generated output only after the full compile succeeds.
+  - Current implementation stages all normal compile paths and commits only
+    managed generated wiki outputs after success.
 
-- [ ] Source-backed evidence map.
+- [x] Source-backed evidence map.
   - Track important claims to page references in a structured way.
   - Let query responses cite exact source pages more reliably.
+  - Current progress: coverage-gap draft pages now write structured evidence
+    into `wiki/evidence_map.json`, generated concept/company pages now add
+    page-reference evidence when the generated page includes `p.N` / `page N`
+    source evidence, generated summary pages now record their own page-backed
+    claims, and the query agent is aware of the map.
+  - Future integration work belongs with the rebuild/upgrade flow so existing
+    KBs can backfill or refresh the map safely.
 
-- [ ] Investment rebuild command.
+- [x] Investment rebuild command.
   - Provide a safer `openkb rebuild` or `openkb upgrade-wiki` flow for existing
     KBs.
+  - Current implementation provides `openkb rebuild` over `raw/`, using the
+    existing force-recompile path and strict mode when requested.
 
 ## Verification History
 
@@ -254,9 +384,83 @@ A generated investment KB should satisfy:
   company-page extraction and routing.
 - `python -m pytest -q` passed with `291 passed` after stale-page cleanup,
   company fallback, concept fallback, and company-name concept filtering.
-- Current interrupted state: after the `291 passed` run, a new RED test was
-  added for broader coverage-gap fallback extraction:
-  `tests/test_compiler.py::TestConceptFallbackExtraction::test_extracts_macro_cpu_gpu_and_policy_concepts`.
-  It currently fails because `AI_CPU` and global `AI_GPU` extraction have not
-  been implemented yet. Do not treat the current workspace as fully green until
-  that test is implemented and the suite is rerun.
+- `.\.venv\Scripts\python.exe -m pytest
+  tests/test_compiler.py::TestConceptFallbackExtraction -q` passed with
+  `2 passed` after adding `AI_CPU` and global `AI_GPU` fallback extraction.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_compiler.py -q` passed with
+  `76 passed` after the broader coverage-gap fallback extraction update.
+- `.\.venv\Scripts\python.exe -m pytest -q` passed with `292 passed` after the
+  coverage-gap fallback extraction update.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_linter.py tests/test_lint_cli.py
+  tests/test_lint.py -q` passed with `44 passed` after adding semantic
+  coverage-gap candidate reporting.
+- `.\.venv\Scripts\python.exe -m pytest -q` passed with `295 passed` after the
+  semantic coverage-gap candidate reporting update.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_linter.py tests/test_lint_cli.py
+  tests/test_lint.py -q` passed with `47 passed` after adding safe
+  `openkb lint --fix` coverage-gap draft generation.
+- `.\.venv\Scripts\python.exe -m pytest -q` passed with `298 passed` after the
+  safe coverage-gap draft generation update.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_linter.py tests/test_lint_cli.py
+  tests/test_lint.py -q` passed with `48 passed` after seeding coverage-gap
+  drafts with matching summary evidence.
+- `.\.venv\Scripts\python.exe -m pytest -q` passed with `299 passed` after the
+  source-summary evidence seeding update.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_linter.py tests/test_lint_cli.py
+  tests/test_lint.py -q` passed with `49 passed` after adding local-long
+  page-level evidence to coverage-gap drafts.
+- `.\.venv\Scripts\python.exe -m pytest -q` passed with `300 passed` after the
+  local-long page-level evidence update.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_linter.py tests/test_lint_cli.py
+  tests/test_lint.py tests/test_query.py -q` passed with `62 passed` after
+  adding `wiki/evidence_map.json` support for coverage-gap drafts.
+- `.\.venv\Scripts\python.exe -m pytest
+  tests/test_compiler.py::TestCompileConceptsPlan::test_generated_company_and_concept_pages_update_evidence_map
+  -q` first failed because generated concept/company pages did not create
+  `wiki/evidence_map.json`, then passed after compiler evidence-map support was
+  added.
+- `.\.venv\Scripts\python.exe -m pytest
+  tests/test_compiler.py::TestCompileConceptsPlan
+  tests/test_linter.py::TestCoverageGapCandidates tests/test_lint_cli.py
+  tests/test_query.py -q` passed with `38 passed` after extending the evidence
+  map to generated concept and company pages.
+- `.\.venv\Scripts\python.exe -m pytest
+  tests/test_compiler.py::TestWriteSummary::test_writes_summary_page_references_to_evidence_map
+  tests/test_compiler.py::TestCompileConceptsPlan::test_generated_company_and_concept_pages_update_evidence_map
+  -q` first failed for missing summary evidence-map output, then passed after
+  summary page-reference extraction was added.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_compiler.py
+  tests/test_linter.py::TestCoverageGapCandidates tests/test_lint_cli.py
+  tests/test_query.py -q` passed with `104 passed` after adding summary-page
+  evidence map entries.
+- `.\.venv\Scripts\python.exe -m pytest
+  tests/test_compiler.py::TestCompileShortDoc::test_rolls_back_summary_when_concept_planning_fails
+  -q` first failed because a later planning exception left
+  `wiki/summaries/test-doc.md` behind, then passed after compile staging was
+  added.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_compiler.py -q` passed with
+  `79 passed` after adding staged compile commits.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_add_command.py
+  tests/test_client_server.py tests/test_client_jobs.py -q` passed with
+  `26 passed` after confirming add/client callers still work with staged
+  compile wrappers.
+- `.\.venv\Scripts\python.exe -m pytest
+  tests/test_add_command.py::TestRebuildCommand -q` first failed because
+  `openkb rebuild` did not exist, then passed after adding the command.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_add_command.py -q` passed
+  with `21 passed` after adding `openkb rebuild`.
+- `.\.venv\Scripts\python.exe -m pytest
+  tests/test_cli.py::test_init_creates_structure
+  tests/test_cli.py::test_init_schema_content
+  tests/test_list_status.py::TestListCommand::test_list_shows_expanded_investment_schema_pages
+  tests/test_list_status.py::TestStatusCommand::test_status_shows_directory_counts
+  tests/test_lint.py::TestCheckIndexSync::test_expanded_investment_schema_page_not_in_index
+  tests/test_query.py::TestBuildQueryAgent::test_instructions_read_expanded_investment_schema_pages
+  -q` first failed because the expanded investment schema was not wired into
+  init/list/status/lint/query, then passed after schema support was added.
+- `.\.venv\Scripts\python.exe -m pytest tests/test_cli.py
+  tests/test_list_status.py tests/test_lint.py tests/test_query.py
+  tests/test_client_kb.py -q` passed with `63 passed` after adding the optional
+  expanded investment schema.
+- `.\.venv\Scripts\python.exe -m pytest -q` passed with `311 passed` after all
+  optimization roadmap items in this document were completed.

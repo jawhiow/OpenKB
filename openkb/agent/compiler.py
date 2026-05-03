@@ -13,7 +13,9 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -21,6 +23,7 @@ from pathlib import Path
 
 import litellm
 
+from openkb.agent.evidence import update_evidence_map
 from openkb.schema import get_agents_md
 from openkb.llm_runtime import acompletion, completion
 
@@ -347,6 +350,61 @@ def _read_wiki_context(wiki_dir: Path) -> tuple[str, list[str]]:
     return index_content, existing
 
 
+def _is_compile_managed_wiki_path(relative_path: Path) -> bool:
+    rel = relative_path.as_posix()
+    return (
+        rel in {"index.md", "evidence_map.json"}
+        or rel.startswith("summaries/")
+        or rel.startswith("companies/")
+        or rel.startswith("concepts/")
+    )
+
+
+def _sync_staged_wiki(staged_wiki: Path, wiki_dir: Path) -> None:
+    """Copy compile-managed staged wiki changes into the real wiki."""
+    staged_files = {
+        path.relative_to(staged_wiki)
+        for path in staged_wiki.rglob("*")
+        if path.is_file() and _is_compile_managed_wiki_path(path.relative_to(staged_wiki))
+    }
+
+    if wiki_dir.exists():
+        for path in sorted(wiki_dir.rglob("*"), reverse=True):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(wiki_dir)
+            if _is_compile_managed_wiki_path(rel) and rel not in staged_files:
+                path.unlink()
+    else:
+        wiki_dir.mkdir(parents=True, exist_ok=True)
+
+    for rel in sorted(staged_files):
+        src = staged_wiki / rel
+        dest = wiki_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists() and dest.read_bytes() == src.read_bytes():
+            continue
+        shutil.copy2(src, dest)
+
+
+async def _run_with_staged_wiki(kb_dir: Path, operation) -> None:
+    """Run a compile operation against a staged wiki and commit on success."""
+    wiki_dir = kb_dir / "wiki"
+    staging_parent = kb_dir / ".openkb" / "staging"
+    staging_parent.mkdir(parents=True, exist_ok=True)
+    staging_root = Path(tempfile.mkdtemp(prefix="compile-", dir=staging_parent))
+    staged_wiki = staging_root / "wiki"
+    try:
+        if wiki_dir.exists():
+            shutil.copytree(wiki_dir, staged_wiki)
+        else:
+            staged_wiki.mkdir(parents=True, exist_ok=True)
+        await operation(staged_wiki)
+        _sync_staged_wiki(staged_wiki, wiki_dir)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
 def _read_page_briefs(wiki_dir: Path, subdir: str) -> str:
     """Read existing wiki pages in a subdirectory as compact one-line summaries.
 
@@ -483,7 +541,14 @@ def _write_summary(wiki_dir: Path, doc_name: str, summary: str,
         f"full_text: sources/{doc_name}.{ext}",
     ]
     frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n"
-    (summaries_dir / f"{doc_name}.md").write_text(frontmatter + summary, encoding="utf-8")
+    summary_text = frontmatter + summary
+    (summaries_dir / f"{doc_name}.md").write_text(summary_text, encoding="utf-8")
+    _record_summary_page_evidence(
+        wiki_dir,
+        doc_name,
+        summary_text,
+        f"sources/{doc_name}.{ext}",
+    )
 
 
 _SAFE_NAME_RE = re.compile(r'[^\w\-]')
@@ -623,6 +688,8 @@ def _extract_company_candidates_from_summary(summary: str, max_companies: int = 
 
 _CONCEPT_FALLBACK_PATTERNS: list[tuple[str, str, str]] = [
     (r"云.*资本支出|Cloud\s*CAPEX|CSP", "Cloud_CAPEX", "Cloud CAPEX"),
+    (r"AI\s*CPU|Grace\s*CPU", "AI_CPU", "AI CPU"),
+    (r"全球.*AI\s*GPU|global.*AI\s*GPU|AI\s*GPU.*路线图|GB\d{3,4}|Rubin", "AI_GPU", "AI GPU"),
     (r"先进封装|Advanced\s*Packaging|CoWoS|SoIC", "Advanced_Packaging", "Advanced Packaging"),
     (r"CoWoS", "CoWoS", "CoWoS"),
     (r"SoIC", "SoIC", "SoIC"),
@@ -1052,6 +1119,107 @@ def _frontmatter_source_entries(text: str) -> list[str]:
     ]
 
 
+_GENERATED_PAGE_REF_RE = re.compile(r"\b(?:p\.?\s*|page\s+)(\d{1,4})\b", re.IGNORECASE)
+
+
+def _strip_frontmatter_block(text: str) -> str:
+    if not text.startswith("---"):
+        return text
+    end = text.find("---", 3)
+    if end == -1:
+        return text
+    return text[end + 3:].lstrip()
+
+
+def _clean_evidence_snippet(line: str, limit: int = 220) -> str:
+    snippet = " ".join(line.strip().split())
+    snippet = re.sub(r"^[-*+]\s+", "", snippet)
+    snippet = re.sub(r"^\d+[.)]\s+", "", snippet)
+    snippet = re.sub(r"\[\[summaries/[^|\]]+(?:\|[^\]]+)?\]\]", "", snippet)
+    snippet = _GENERATED_PAGE_REF_RE.sub("", snippet, count=1)
+    snippet = snippet.lstrip(" :-")
+    return snippet[:limit].rstrip()
+
+
+def _extract_page_reference_evidence(
+    content: str,
+    source_file: str,
+    source_link: str,
+    *,
+    max_items: int = 12,
+) -> list[dict[str, str]]:
+    """Extract page-reference evidence from generated Markdown content."""
+    evidence: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_line in _strip_frontmatter_block(content).splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line or line.startswith("#"):
+            continue
+        match = _GENERATED_PAGE_REF_RE.search(line)
+        if not match:
+            continue
+        page = match.group(1)
+        snippet = _clean_evidence_snippet(line)
+        if not snippet:
+            continue
+        key = (page, snippet.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append({
+            "source": source_file,
+            "link": source_link,
+            "page": page,
+            "snippet": snippet,
+        })
+        if len(evidence) >= max_items:
+            break
+    return evidence
+
+
+def _extract_generated_page_evidence(
+    content: str,
+    source_file: str,
+    *,
+    max_items: int = 12,
+) -> list[dict[str, str]]:
+    """Extract source/page evidence from a generated concept or company page."""
+    if not source_file.startswith("summaries/"):
+        return []
+
+    source_link = source_file[:-3] if source_file.endswith(".md") else source_file
+    return _extract_page_reference_evidence(
+        content,
+        source_file,
+        source_link,
+        max_items=max_items,
+    )
+
+
+def _record_summary_page_evidence(
+    wiki_dir: Path,
+    doc_name: str,
+    content: str,
+    source_file: str,
+) -> None:
+    evidence = _extract_page_reference_evidence(
+        content,
+        source_file,
+        f"summaries/{doc_name}",
+    )
+    update_evidence_map(wiki_dir, f"summaries/{doc_name}.md", evidence)
+
+
+def _record_generated_page_evidence(
+    wiki_dir: Path,
+    page_path: str,
+    content: str,
+    source_file: str,
+) -> None:
+    evidence = _extract_generated_page_evidence(content, source_file)
+    update_evidence_map(wiki_dir, page_path, evidence)
+
+
 def _remove_index_entries(wiki_dir: Path, page_ids: set[str]) -> None:
     """Remove index rows for deleted generated pages."""
     if not page_ids:
@@ -1198,13 +1366,25 @@ def _update_index(
     index_path = wiki_dir / "index.md"
     if not index_path.exists():
         index_path.write_text(
-            "# Knowledge Base Index\n\n## Documents\n\n## Companies\n\n## Concepts\n\n## Explorations\n",
+            "# Knowledge Base Index\n\n"
+            "## Documents\n\n"
+            "## Companies\n\n"
+            "## Industries\n\n"
+            "## Themes\n\n"
+            "## Metrics\n\n"
+            "## Risks\n\n"
+            "## Concepts\n\n"
+            "## Explorations\n",
             encoding="utf-8",
         )
 
     lines = index_path.read_text(encoding="utf-8").split("\n")
     _ensure_index_section(lines, "## Documents", before_heading="## Companies")
-    _ensure_index_section(lines, "## Companies", before_heading="## Concepts")
+    _ensure_index_section(lines, "## Companies", before_heading="## Industries")
+    _ensure_index_section(lines, "## Industries", before_heading="## Themes")
+    _ensure_index_section(lines, "## Themes", before_heading="## Metrics")
+    _ensure_index_section(lines, "## Metrics", before_heading="## Risks")
+    _ensure_index_section(lines, "## Risks", before_heading="## Concepts")
     _ensure_index_section(lines, "## Concepts", before_heading="## Explorations")
 
     doc_link = f"[[summaries/{doc_name}]]"
@@ -1594,6 +1774,13 @@ async def _compile_concepts(
         )
         if normalized_text != text:
             concept_path.write_text(normalized_text, encoding="utf-8")
+            text = normalized_text
+        _record_generated_page_evidence(
+            wiki_dir,
+            f"concepts/{slug}.md",
+            text,
+            source_file,
+        )
     for slug in company_names:
         company_path = wiki_dir / "companies" / f"{slug}.md"
         if not company_path.exists():
@@ -1607,6 +1794,13 @@ async def _compile_concepts(
         )
         if normalized_text != text:
             company_path.write_text(normalized_text, encoding="utf-8")
+            text = normalized_text
+        _record_generated_page_evidence(
+            wiki_dir,
+            f"companies/{slug}.md",
+            text,
+            source_file,
+        )
 
     all_concept_slugs = concept_names + sanitized_related
     if all_concept_slugs:
@@ -1620,10 +1814,11 @@ async def _compile_concepts(
                   doc_type=doc_type)
 
 
-async def compile_short_doc(
+async def _compile_short_doc_to_wiki(
     doc_name: str,
     source_path: Path,
     kb_dir: Path,
+    wiki_dir: Path,
     model: str,
     max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
 ) -> None:
@@ -1638,7 +1833,6 @@ async def compile_short_doc(
     config = load_config(openkb_dir / "config.yaml")
     language: str = config.get("language", "en")
 
-    wiki_dir = kb_dir / "wiki"
     schema_md = get_agents_md(wiki_dir)
     content = source_path.read_text(encoding="utf-8")
 
@@ -1669,10 +1863,32 @@ async def compile_short_doc(
     )
 
 
-async def compile_local_long_doc(
+async def compile_short_doc(
     doc_name: str,
     source_path: Path,
     kb_dir: Path,
+    model: str,
+    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+) -> None:
+    """Compile a short document and commit generated wiki files atomically."""
+    async def operation(staged_wiki: Path) -> None:
+        await _compile_short_doc_to_wiki(
+            doc_name,
+            source_path,
+            kb_dir,
+            staged_wiki,
+            model,
+            max_concurrency,
+        )
+
+    await _run_with_staged_wiki(kb_dir, operation)
+
+
+async def _compile_local_long_doc_to_wiki(
+    doc_name: str,
+    source_path: Path,
+    kb_dir: Path,
+    wiki_dir: Path,
     model: str,
     max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
 ) -> None:
@@ -1683,7 +1899,6 @@ async def compile_local_long_doc(
     config = load_config(openkb_dir / "config.yaml")
     language: str = config.get("language", "en")
 
-    wiki_dir = kb_dir / "wiki"
     schema_md = get_agents_md(wiki_dir)
     content = _build_local_long_doc_context(source_path)
 
@@ -1711,11 +1926,33 @@ async def compile_local_long_doc(
     )
 
 
-async def compile_long_doc(
+async def compile_local_long_doc(
+    doc_name: str,
+    source_path: Path,
+    kb_dir: Path,
+    model: str,
+    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+) -> None:
+    """Compile a local-long document and commit generated wiki files atomically."""
+    async def operation(staged_wiki: Path) -> None:
+        await _compile_local_long_doc_to_wiki(
+            doc_name,
+            source_path,
+            kb_dir,
+            staged_wiki,
+            model,
+            max_concurrency,
+        )
+
+    await _run_with_staged_wiki(kb_dir, operation)
+
+
+async def _compile_long_doc_to_wiki(
     doc_name: str,
     summary_path: Path,
     doc_id: str,
     kb_dir: Path,
+    wiki_dir: Path,
     model: str,
     doc_description: str = "",
     max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
@@ -1731,9 +1968,13 @@ async def compile_long_doc(
     config = load_config(openkb_dir / "config.yaml")
     language: str = config.get("language", "en")
 
-    wiki_dir = kb_dir / "wiki"
     schema_md = get_agents_md(wiki_dir)
-    summary_content = summary_path.read_text(encoding="utf-8")
+    real_wiki_dir = kb_dir / "wiki"
+    try:
+        staged_summary_path = wiki_dir / summary_path.resolve().relative_to(real_wiki_dir.resolve())
+    except ValueError:
+        staged_summary_path = summary_path
+    summary_content = staged_summary_path.read_text(encoding="utf-8")
 
     # Base context A
     system_msg = {"role": "system", "content": _SYSTEM_TEMPLATE.format(
@@ -1752,3 +1993,28 @@ async def compile_long_doc(
         overview, doc_name, max_concurrency, doc_brief=doc_description,
         doc_type="pageindex",
     )
+
+
+async def compile_long_doc(
+    doc_name: str,
+    summary_path: Path,
+    doc_id: str,
+    kb_dir: Path,
+    model: str,
+    doc_description: str = "",
+    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+) -> None:
+    """Compile a PageIndex long document and commit generated wiki files atomically."""
+    async def operation(staged_wiki: Path) -> None:
+        await _compile_long_doc_to_wiki(
+            doc_name,
+            summary_path,
+            doc_id,
+            kb_dir,
+            staged_wiki,
+            model,
+            doc_description=doc_description,
+            max_concurrency=max_concurrency,
+        )
+
+    await _run_with_staged_wiki(kb_dir, operation)

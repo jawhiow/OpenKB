@@ -19,6 +19,10 @@ def _setup_kb(tmp_path: Path) -> Path:
     (kb_dir / "wiki" / "summaries").mkdir(parents=True)
     (kb_dir / "wiki" / "concepts").mkdir(parents=True)
     (kb_dir / "wiki" / "companies").mkdir(parents=True)
+    (kb_dir / "wiki" / "industries").mkdir(parents=True)
+    (kb_dir / "wiki" / "themes").mkdir(parents=True)
+    (kb_dir / "wiki" / "metrics").mkdir(parents=True)
+    (kb_dir / "wiki" / "risks").mkdir(parents=True)
     (kb_dir / "wiki" / "reports").mkdir(parents=True)
     openkb_dir = kb_dir / ".openkb"
     openkb_dir.mkdir()
@@ -118,6 +122,28 @@ class TestListCommand:
         assert "tsmc" in result.output
         assert "smic" in result.output
 
+    def test_list_shows_expanded_investment_schema_pages(self, tmp_path):
+        kb_dir = _setup_kb(tmp_path)
+        hashes = {"abc": {"name": "paper.pdf", "type": "pdf"}}
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes))
+        (kb_dir / "wiki" / "industries" / "semiconductors.md").write_text("# Semiconductors")
+        (kb_dir / "wiki" / "themes" / "ai-capex.md").write_text("# AI CAPEX")
+        (kb_dir / "wiki" / "metrics" / "gross-margin.md").write_text("# Gross Margin")
+        (kb_dir / "wiki" / "risks" / "export-controls.md").write_text("# Export Controls")
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["list"])
+
+        assert "Industries (1):" in result.output
+        assert "semiconductors" in result.output
+        assert "Themes (1):" in result.output
+        assert "ai-capex" in result.output
+        assert "Metrics (1):" in result.output
+        assert "gross-margin" in result.output
+        assert "Risks (1):" in result.output
+        assert "export-controls" in result.output
+
 
 class TestStatusCommand:
     def test_status_no_kb(self, tmp_path):
@@ -144,6 +170,10 @@ class TestStatusCommand:
         assert "summaries" in result.output
         assert "concepts" in result.output
         assert "companies" in result.output
+        assert "industries" in result.output
+        assert "themes" in result.output
+        assert "metrics" in result.output
+        assert "risks" in result.output
         assert "reports" in result.output
 
     def test_status_shows_total_indexed(self, tmp_path):

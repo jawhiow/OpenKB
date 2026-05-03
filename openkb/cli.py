@@ -406,12 +406,24 @@ def init():
     Path("wiki/sources/images").mkdir(parents=True, exist_ok=True)
     Path("wiki/summaries").mkdir(parents=True, exist_ok=True)
     Path("wiki/companies").mkdir(parents=True, exist_ok=True)
+    Path("wiki/industries").mkdir(parents=True, exist_ok=True)
+    Path("wiki/themes").mkdir(parents=True, exist_ok=True)
+    Path("wiki/metrics").mkdir(parents=True, exist_ok=True)
+    Path("wiki/risks").mkdir(parents=True, exist_ok=True)
     Path("wiki/concepts").mkdir(parents=True, exist_ok=True)
 
     # Write wiki files
     Path("wiki/AGENTS.md").write_text(AGENTS_MD, encoding="utf-8")
     Path("wiki/index.md").write_text(
-        "# Knowledge Base Index\n\n## Documents\n\n## Companies\n\n## Concepts\n\n## Explorations\n",
+        "# Knowledge Base Index\n\n"
+        "## Documents\n\n"
+        "## Companies\n\n"
+        "## Industries\n\n"
+        "## Themes\n\n"
+        "## Metrics\n\n"
+        "## Risks\n\n"
+        "## Concepts\n\n"
+        "## Explorations\n",
         encoding="utf-8",
     )
     Path("wiki/log.md").write_text("# Operations Log\n\n", encoding="utf-8")
@@ -487,6 +499,39 @@ def add(ctx, force, path):
             add_single_file(target, kb_dir, force=True)
         else:
             add_single_file(target, kb_dir)
+
+
+@cli.command()
+@click.option("--strict", is_flag=True, default=False, help="Stop on the first rebuild failure.")
+@click.pass_context
+def rebuild(ctx, strict):
+    """Rebuild all supported documents from raw/ using the force path."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+
+    raw_dir = kb_dir / "raw"
+    if not raw_dir.exists():
+        click.echo("No raw/ directory found. Nothing to rebuild.")
+        return
+
+    files = [
+        f for f in sorted(raw_dir.rglob("*"))
+        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+    if not files:
+        click.echo("No supported raw documents found. Nothing to rebuild.")
+        return
+
+    total = len(files)
+    click.echo(f"Rebuilding {total} raw document(s) from {raw_dir}...")
+    for i, f in enumerate(files, 1):
+        click.echo(f"\n[{i}/{total}] ", nl=False)
+        kwargs = {"force": True}
+        if strict:
+            kwargs["strict"] = True
+        add_single_file(f, kb_dir, **kwargs)
 
 
 @cli.command()
@@ -667,7 +712,7 @@ def watch(ctx):
     watch_directory(raw_dir, on_new_files)
 
 
-async def run_lint(kb_dir: Path) -> Path | None:
+async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
     """Run structural + knowledge lint, write report, return report path.
 
     Returns ``None`` if the KB has no indexed documents (nothing to lint).
@@ -675,7 +720,13 @@ async def run_lint(kb_dir: Path) -> Path | None:
     (via ``asyncio.run``) and directly from the chat REPL.
     """
     from openkb.lint import run_structural_lint
-    from openkb.agent.linter import run_knowledge_lint
+    from openkb.agent.linter import (
+        apply_coverage_gap_concept_candidates,
+        extract_coverage_gap_concept_candidates,
+        format_coverage_gap_fixes,
+        format_coverage_gap_concept_candidates,
+        run_knowledge_lint,
+    )
 
     openkb_dir = kb_dir / ".openkb"
 
@@ -704,13 +755,36 @@ async def run_lint(kb_dir: Path) -> Path | None:
         knowledge_report = f"Knowledge lint failed: {exc}"
     _safe_echo(knowledge_report)
 
+    coverage_candidates = extract_coverage_gap_concept_candidates(
+        kb_dir / "wiki",
+        knowledge_report,
+    )
+    coverage_report = format_coverage_gap_concept_candidates(coverage_candidates)
+    if coverage_candidates:
+        _safe_echo(coverage_report)
+
+    coverage_fix_report = ""
+    if fix:
+        created = apply_coverage_gap_concept_candidates(kb_dir / "wiki", coverage_candidates)
+        coverage_fix_report = format_coverage_gap_fixes(created)
+        _safe_echo(coverage_fix_report)
+        if created:
+            _safe_echo(f"Created coverage-gap draft concept page(s): {len(created)}")
+
     # Write combined report
     reports_dir = kb_dir / "wiki" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     import datetime
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = reports_dir / f"lint_{timestamp}.md"
-    report_content = f"# Lint Report — {timestamp}\n\n## Structural\n\n{structural_report}\n\n## Semantic\n\n{knowledge_report}\n"
+    report_content = (
+        f"# Lint Report - {timestamp}\n\n"
+        f"## Structural\n\n{structural_report}\n\n"
+        f"## Semantic\n\n{knowledge_report}\n\n"
+        f"{coverage_report}\n"
+    )
+    if coverage_fix_report:
+        report_content += f"\n{coverage_fix_report}\n"
     report_path.write_text(report_content, encoding="utf-8")
     append_log(kb_dir / "wiki", "lint", f"report → {report_path.name}")
     _safe_echo(f"\nReport written to {report_path}")
@@ -722,13 +796,11 @@ async def run_lint(kb_dir: Path) -> Path | None:
 @click.pass_context
 def lint(ctx, fix):
     """Lint the knowledge base for structural and semantic inconsistencies."""
-    if fix:
-        click.echo("Warning: --fix is not yet implemented. Running lint in report-only mode.")
     kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
         return
-    asyncio.run(run_lint(kb_dir))
+    asyncio.run(run_lint(kb_dir, fix=fix))
 
 
 def print_list(kb_dir: Path) -> None:
@@ -775,6 +847,20 @@ def print_list(kb_dir: Path) -> None:
             for c in companies:
                 click.echo(f"  - {c}")
 
+    for subdir, title in (
+        ("industries", "Industries"),
+        ("themes", "Themes"),
+        ("metrics", "Metrics"),
+        ("risks", "Risks"),
+    ):
+        page_dir = kb_dir / "wiki" / subdir
+        if page_dir.exists():
+            pages = sorted(p.stem for p in page_dir.glob("*.md"))
+            if pages:
+                click.echo(f"\n{title} ({len(pages)}):")
+                for page in pages:
+                    click.echo(f"  - {page}")
+
     # Display concepts
     concepts_dir = kb_dir / "wiki" / "concepts"
     if concepts_dir.exists():
@@ -808,7 +894,17 @@ def list_cmd(ctx):
 def print_status(kb_dir: Path) -> None:
     """Print knowledge base status. Usable from CLI and chat REPL."""
     wiki_dir = kb_dir / "wiki"
-    subdirs = ["sources", "summaries", "companies", "concepts", "reports"]
+    subdirs = [
+        "sources",
+        "summaries",
+        "companies",
+        "industries",
+        "themes",
+        "metrics",
+        "risks",
+        "concepts",
+        "reports",
+    ]
 
     click.echo("Knowledge Base Status:")
     click.echo(f"  {'Directory':<20} {'Files':<10}")

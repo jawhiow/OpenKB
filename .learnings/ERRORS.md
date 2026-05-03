@@ -51,6 +51,8 @@ Use `Get-ChildItem` plus `Select-String` as a fallback when `rg.exe` is blocked 
 ### Metadata
 - Reproducible: unknown
 - Related Files: none
+- Recurrence-Count: 2
+- Last-Seen: 2026-05-03
 
 ---
 ## [ERR-20260502-001] rg_unicode_path_access_denied

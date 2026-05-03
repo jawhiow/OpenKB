@@ -91,7 +91,17 @@ def get_status_data(kb_dir: Path) -> dict[str, Any]:
     kb_dir = require_kb_dir(kb_dir)
     wiki_dir = kb_dir / "wiki"
     directories: dict[str, int] = {}
-    for name in ("sources", "summaries", "concepts", "reports"):
+    for name in (
+        "sources",
+        "summaries",
+        "companies",
+        "industries",
+        "themes",
+        "metrics",
+        "risks",
+        "concepts",
+        "reports",
+    ):
         path = wiki_dir / name
         directories[name] = len(list(path.glob("*.md"))) if path.exists() else 0
 
@@ -133,6 +143,11 @@ def get_document_data(kb_dir: Path) -> dict[str, Any]:
     return {
         "documents": documents,
         "summaries": _list_stems(wiki_dir / "summaries"),
+        "companies": _list_stems(wiki_dir / "companies"),
+        "industries": _list_stems(wiki_dir / "industries"),
+        "themes": _list_stems(wiki_dir / "themes"),
+        "metrics": _list_stems(wiki_dir / "metrics"),
+        "risks": _list_stems(wiki_dir / "risks"),
         "concepts": _list_stems(wiki_dir / "concepts"),
         "reports": _list_names(wiki_dir / "reports"),
     }
@@ -277,13 +292,26 @@ def init_kb(
     (kb_dir / "raw").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "sources" / "images").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "summaries").mkdir(parents=True, exist_ok=True)
+    (kb_dir / "wiki" / "companies").mkdir(parents=True, exist_ok=True)
+    (kb_dir / "wiki" / "industries").mkdir(parents=True, exist_ok=True)
+    (kb_dir / "wiki" / "themes").mkdir(parents=True, exist_ok=True)
+    (kb_dir / "wiki" / "metrics").mkdir(parents=True, exist_ok=True)
+    (kb_dir / "wiki" / "risks").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "concepts").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "explorations").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "reports").mkdir(parents=True, exist_ok=True)
 
     (kb_dir / "wiki" / "AGENTS.md").write_text(AGENTS_MD, encoding="utf-8")
     (kb_dir / "wiki" / "index.md").write_text(
-        "# Knowledge Base Index\n\n## Documents\n\n## Concepts\n\n## Explorations\n",
+        "# Knowledge Base Index\n\n"
+        "## Documents\n\n"
+        "## Companies\n\n"
+        "## Industries\n\n"
+        "## Themes\n\n"
+        "## Metrics\n\n"
+        "## Risks\n\n"
+        "## Concepts\n\n"
+        "## Explorations\n",
         encoding="utf-8",
     )
     (kb_dir / "wiki" / "log.md").write_text("# Operations Log\n\n", encoding="utf-8")

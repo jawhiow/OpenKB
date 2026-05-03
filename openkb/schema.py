@@ -10,6 +10,10 @@ AGENTS_MD = """\
 - sources/images/ - Extracted images from documents, referenced by sources.
 - summaries/ - One per source document. Summary of key content.
 - companies/ - Company-specific investment pages with ratings, valuation context, exposures, catalysts, risks, and source evidence.
+- industries/ - Industry structure pages for sectors, value chains, capacity cycles, and competitive maps.
+- themes/ - Cross-company investment themes such as AI CAPEX, localization, pricing power, or policy shifts.
+- metrics/ - Reusable operating, financial, valuation, and monitoring indicators.
+- risks/ - Durable risk factors, bear-case patterns, policy constraints, and disconfirming signals.
 - concepts/ - Cross-document topic synthesis. Created when a theme spans multiple documents.
 - explorations/ - Saved query results, analyses, and comparisons worth keeping.
 - reports/ - Lint health check reports. Auto-generated.
@@ -21,14 +25,22 @@ AGENTS_MD = """\
 ## Page Types
 - **Summary Page** (summaries/): Key content of a single source document.
 - **Company Page** (companies/): Company-specific investment evidence, not generic concepts.
+- **Industry Page** (industries/): Sector structure, value-chain position, capacity cycles, and competitive dynamics.
+- **Theme Page** (themes/): Cross-company or cross-industry investment theme.
+- **Metric Page** (metrics/): Reusable metric definition, interpretation, drivers, and monitoring cadence.
+- **Risk Page** (risks/): Durable risk factor, bear case, policy constraint, or disconfirming signal.
 - **Concept Page** (concepts/): Cross-document topic synthesis with [[wikilinks]].
 - **Exploration Page** (explorations/): Saved query results, analyses, comparisons, syntheses.
 - **Index Page** (index.md): One-liner summary of every page in the wiki. Auto-maintained.
 
 ## Index Page Format
-index.md lists all documents, companies, concepts, and explorations with metadata:
+index.md lists all documents, companies, industries, themes, metrics, risks, concepts, and explorations with metadata:
 - Documents: name, one-liner description, type (short|pageindex|local-long), detail access path
 - Companies: company name, one-liner investment relevance
+- Industries: industry or value-chain segment, one-liner structure/relevance
+- Themes: investment theme, one-liner thesis/relevance
+- Metrics: metric name, one-liner definition/use
+- Risks: risk name, one-liner bear-case or monitoring relevance
 - Concepts: name, one-liner description
 - Explorations: name, one-liner description
 
@@ -38,7 +50,8 @@ For broker research, earnings notes, industry reports, or other investment docum
 - Capture the investment thesis, catalysts, risks, disconfirming evidence, and monitoring indicators.
 - Prefer durable concept pages for reusable cross-document themes such as supply-chain bottlenecks, pricing power, cost curves, TAM, capital intensity, and policy risk.
 - Route company-specific claims to `companies/` pages when company pages are generated; keep them traceable to the source summary or page evidence.
-- Do not create company pages under `concepts/`; concepts should be reusable mechanisms, themes, risks, metrics, or industry structures.
+- Use `industries/`, `themes/`, `metrics/`, and `risks/` when those dedicated pages remove ambiguity beyond a general `concepts/` page.
+- Do not create company pages under `concepts/`; concepts should stay reusable and non-company-specific.
 
 ## Log Format
 Each log entry: `## [YYYY-MM-DD HH:MM:SS] operation | description`

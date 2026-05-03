@@ -239,3 +239,50 @@ class TestAddCommand:
 
         mock_convert.assert_called_once_with(doc, kb_dir, force=True)
         mock_cleanup.assert_called_once_with(kb_dir / "wiki", "test")
+
+
+class TestRebuildCommand:
+    def _setup_kb(self, tmp_path):
+        (tmp_path / "raw").mkdir()
+        openkb_dir = tmp_path / ".openkb"
+        openkb_dir.mkdir()
+        (openkb_dir / "config.yaml").write_text("model: gpt-4o-mini\n")
+        (openkb_dir / "hashes.json").write_text(json.dumps({}))
+        return tmp_path
+
+    def test_rebuild_missing_init(self, tmp_path):
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=None):
+            result = runner.invoke(cli, ["rebuild"])
+        assert "No knowledge base found" in result.output
+
+    def test_rebuild_forces_all_supported_raw_files(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / "raw" / "a.md").write_text("# A")
+        (kb_dir / "raw" / "b.txt").write_text("B")
+        (kb_dir / "raw" / "ignore.xyz").write_text("skip")
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.cli.add_single_file") as mock_add:
+            result = runner.invoke(cli, ["rebuild"])
+
+        assert "Rebuilding 2 raw document(s)" in result.output
+        assert mock_add.call_count == 2
+        called = [(call.args[0].name, call.args[1], call.kwargs) for call in mock_add.call_args_list]
+        assert called == [
+            ("a.md", kb_dir, {"force": True}),
+            ("b.txt", kb_dir, {"force": True}),
+        ]
+
+    def test_rebuild_strict_passes_strict_to_helper(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / "raw" / "a.md").write_text("# A")
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.cli.add_single_file") as mock_add:
+            result = runner.invoke(cli, ["rebuild", "--strict"])
+
+        assert result.exit_code == 0
+        mock_add.assert_called_once_with(kb_dir / "raw" / "a.md", kb_dir, force=True, strict=True)
