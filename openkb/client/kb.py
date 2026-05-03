@@ -235,9 +235,9 @@ def build_lint_fix_plan(kb_dir: Path, report: str | None = None) -> dict[str, An
     """Return safe lint fix candidates from a report without modifying the wiki."""
     kb_dir = require_kb_dir(kb_dir)
     report_path, relative_path = _resolve_report_path(kb_dir, report)
-    from openkb.agent.linter import extract_coverage_gap_concept_candidates
+    from openkb.agent.linter import extract_lint_fix_candidates
 
-    candidates = extract_coverage_gap_concept_candidates(
+    candidates = extract_lint_fix_candidates(
         kb_dir / "wiki",
         report_path.read_text(encoding="utf-8"),
     )
@@ -262,13 +262,15 @@ def _approved_lint_fix_candidates(candidates: Any) -> list[dict[str, Any]]:
         name = str(item.get("name") or "").strip()
         if not name:
             continue
-        approved.append(
-            {
-                "name": name,
-                "title": str(item.get("title") or name.replace("_", " ")).strip(),
-                "action": "create",
-            }
-        )
+        approved_item = {
+            "name": name,
+            "title": str(item.get("title") or name.replace("_", " ")).strip(),
+            "action": "create",
+        }
+        for key in ("path", "type", "source_section", "reason"):
+            if item.get(key):
+                approved_item[key] = str(item[key])
+        approved.append(approved_item)
     return approved
 
 
@@ -276,9 +278,9 @@ def apply_lint_fix_candidates(kb_dir: Path, candidates: Any) -> dict[str, Any]:
     """Create approved lint draft pages while preserving existing pages."""
     kb_dir = require_kb_dir(kb_dir)
     approved = _approved_lint_fix_candidates(candidates)
-    from openkb.agent.linter import apply_coverage_gap_concept_candidates
+    from openkb.agent.linter import apply_lint_fix_candidates
 
-    created = apply_coverage_gap_concept_candidates(kb_dir / "wiki", approved)
+    created = apply_lint_fix_candidates(kb_dir / "wiki", approved)
     return {"approved": approved, "created": created}
 
 

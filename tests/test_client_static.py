@@ -39,3 +39,13 @@ def test_client_settings_include_test_llm_button_and_handler():
     assert 'addEventListener("click", testLlm);' in script
     assert 'async function testLlm(event)' in script
     assert '"/api/config/test-llm"' in script
+
+
+def test_client_fix_plan_renders_report_reason_and_preview_content():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "function fixKey" in script
+    assert "source_section" in script
+    assert "fix-reason" in script
+    assert "fix-preview" in script
+    assert "auto_applicable" in script

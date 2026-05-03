@@ -768,14 +768,25 @@ th {
 
 .fix-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 10px;
-  min-height: 58px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-alt);
   padding: 10px;
+}
+
+.fix-row.review-only {
+  background: #fbfcfb;
+}
+
+.fix-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
 }
 
 .fix-main {
@@ -795,6 +806,63 @@ th {
 .fix-main span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.fix-detail {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fix-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fix-meta span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--muted);
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.fix-reason {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.fix-preview {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.fix-preview summary {
+  cursor: pointer;
+  color: var(--muted);
+  padding: 7px 9px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.fix-preview pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .created-fixes {

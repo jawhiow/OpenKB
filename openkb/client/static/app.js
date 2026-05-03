@@ -273,6 +273,19 @@ function handleJobTransitions(previousStatuses) {
   }
 }
 
+function syncFixPlanFromJobs() {
+  if (state.fixPlan?.candidates?.length || !state.selectedReport) return;
+  const job = state.jobs.find(
+    (item) =>
+      item.type === "lint_fix_plan" &&
+      item.status === "succeeded" &&
+      item.result?.report === state.selectedReport,
+  );
+  if (job?.result?.candidates) {
+    setFixPlanState(job.result);
+  }
+}
+
 function handleQueryJob() {
   if (!state.queryJobId) return;
   const job = state.jobs.find((item) => item.id === state.queryJobId);
@@ -735,8 +748,9 @@ function renderSessions() {
 function renderReports() {
   const reports = state.documents?.reports || [];
   syncSelectedReport(reports);
+  syncFixPlanFromJobs();
   const candidates = state.fixPlan?.candidates || [];
-  const selectedCount = candidates.filter((item) => state.selectedFixes[item.name]).length;
+  const selectedCount = candidates.filter((item) => isAutoFix(item) && state.selectedFixes[fixKey(item)]).length;
   const activeReportName = state.selectedReport ? state.selectedReport.replace(/^reports\//, "") : "";
   mainView.innerHTML = `
     <div class="quality-layout">
@@ -806,9 +820,9 @@ function renderReports() {
   mainView.querySelectorAll("[data-report]").forEach((button) => {
     button.addEventListener("click", () => selectReport(button.dataset.report));
   });
-  mainView.querySelectorAll("[data-fix-name]").forEach((input) => {
+  mainView.querySelectorAll("[data-fix-key]").forEach((input) => {
     input.addEventListener("change", () => {
-      state.selectedFixes[input.dataset.fixName] = input.checked;
+      state.selectedFixes[input.dataset.fixKey] = input.checked;
       renderReports();
     });
   });
@@ -833,6 +847,14 @@ function qualityStat(label, value) {
   return `<div><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`;
 }
 
+function fixKey(item) {
+  return item?.id || item?.path || item?.name || "";
+}
+
+function isAutoFix(item) {
+  return (item?.action || "create") === "create" && item?.auto_applicable !== false;
+}
+
 function reportPreviewText() {
   if (!state.selectedReport) return "";
   if (state.reportPreviewLoading === state.selectedReport) return "Loading...";
@@ -844,16 +866,34 @@ function renderFixCandidates(candidates) {
   if (!candidates.length) return `<div class="empty">No fix candidates</div>`;
   return candidates
     .map((item) => {
-      const checked = state.selectedFixes[item.name] ? "checked" : "";
+      const key = fixKey(item);
+      const auto = isAutoFix(item);
+      const checked = state.selectedFixes[key] ? "checked" : "";
+      const disabled = auto ? "" : "disabled";
+      const badgeClass = auto ? "warn" : "muted";
+      const actionLabel = auto ? item.action || "create" : item.action || "manual-review";
       return `
-        <label class="fix-row">
-          <input type="checkbox" data-fix-name="${escapeHTML(item.name)}" ${checked} />
-          <span class="fix-main">
-            <strong>${escapeHTML(item.title || item.name)}</strong>
-            <span>${escapeHTML(item.path || `concepts/${item.name}.md`)}</span>
-          </span>
-          <span class="badge warn">${escapeHTML(item.action || "create")}</span>
-        </label>
+        <div class="fix-row${auto ? "" : " review-only"}">
+          <label class="fix-select">
+            <input type="checkbox" data-fix-key="${escapeHTML(key)}" ${checked} ${disabled} />
+            <span class="fix-main">
+              <strong>${escapeHTML(item.title || item.name)}</strong>
+              <span>${escapeHTML(item.path || `concepts/${item.name}.md`)}</span>
+            </span>
+          </label>
+          <span class="badge ${badgeClass}">${escapeHTML(actionLabel)}</span>
+          <div class="fix-detail">
+            <div class="fix-meta">
+              <span>${escapeHTML(item.source_section || "Lint report")}</span>
+              ${item.status ? `<span>${escapeHTML(item.status)}</span>` : ""}
+            </div>
+            <p class="fix-reason">${escapeHTML(item.reason || "")}</p>
+            <details class="fix-preview" open>
+              <summary>Planned content</summary>
+              <pre>${escapeHTML(item.preview || "")}</pre>
+            </details>
+          </div>
+        </div>
       `;
     })
     .join("");
@@ -908,7 +948,9 @@ async function loadReportPreview(reportPath) {
 
 function setAllFixes(value) {
   (state.fixPlan?.candidates || []).forEach((item) => {
-    state.selectedFixes[item.name] = value;
+    if (isAutoFix(item)) {
+      state.selectedFixes[fixKey(item)] = value;
+    }
   });
   renderReports();
 }
@@ -1015,7 +1057,7 @@ async function applyApprovedFixes(event) {
   const button = event?.currentTarget;
   const candidates = (state.fixPlan?.candidates || []).map((item) => ({
     ...item,
-    approved: Boolean(state.selectedFixes[item.name]),
+    approved: Boolean(isAutoFix(item) && state.selectedFixes[fixKey(item)]),
   }));
   const approved = candidates.filter((item) => item.approved);
   if (!approved.length) {
@@ -1114,14 +1156,18 @@ async function saveConfig(event) {
   }
 }
 
-function captureFixPlan(result) {
+function setFixPlanState(result) {
   const candidates = result?.candidates || [];
   state.fixPlan = {
     report: result?.report || state.selectedReport || null,
     candidates,
   };
-  state.selectedFixes = Object.fromEntries(candidates.map((item) => [item.name, false]));
+  state.selectedFixes = Object.fromEntries(candidates.map((item) => [fixKey(item), false]));
   state.lastFixApply = null;
+}
+
+function captureFixPlan(result) {
+  setFixPlanState(result);
   if (state.view === "reports") {
     renderReports();
   }

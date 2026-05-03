@@ -133,6 +133,67 @@ def test_lint_fix_plan_job_extracts_candidates_without_writing_pages(tmp_path):
     assert not (kb_dir / "wiki" / "concepts" / "AI_GPU.md").exists()
 
 
+def test_lint_fix_plan_job_matches_prioritized_report_items_and_includes_previews(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    for folder in ("companies", "industries", "themes", "metrics", "risks", "explorations"):
+        (kb_dir / "wiki" / folder).mkdir()
+    report_path = kb_dir / "wiki" / "reports" / "lint_20260503_143448.md"
+    report_path.write_text(
+        "# Lint Report - 20260503_143448\n\n"
+        "## Semantic\n\n"
+        "### 九、问题优先级汇总\n\n"
+        "### 🔴 必须修复\n\n"
+        "1. **填补 10+ 个死链接** - 将所有公司/概念页面中 `concepts/xxx` 引用改为已有页面名或创建对应概念页\n"
+        "2. **创建 `concepts/云资本开支`** - 被 3 个核心公司页面引用\n"
+        "3. **统一 Optical_Engines 为中文** - 保持全站语言一致\n\n"
+        "### 🟡 建议修复\n\n"
+        "4. **创建缺失的公司页面** - GUC、KYEC、ASE、Winway、MPI、GigaDevice、中芯国际\n"
+        "5. **搭建 industries/themes/metrics/risks 目录** - 至少各创建 1-2 个种子页面\n"
+        "6. **去冗余** - 明确 CoWoS/Advanced_Packaging、CPO/Optical_Engines 的页面边界\n"
+        "7. **修复 Aspeed 评级日期** - 标注为首次评级日期\n\n"
+        "### 6.1 缺失的高价值概念页\n\n"
+        "| 建议创建的概念 | 理由 | 优先级 |\n"
+        "|---|---|---|\n"
+        "| **AI GPU（通用 AI 加速器）** | 报告标题关键词，ASIC 的对照物 | 🔴 高 |\n"
+        "| **BMC 芯片与服务器管理** | Aspeed 页面引用的核心概念，无独立页面 | 🟡 中 |\n"
+        "| **AI 推理 vs 训练** | 推理芯片 CAGR 68%，是结构性主题 | 🟡 中 |\n\n"
+        "## Coverage Gap Candidates\n\n"
+        "- [[concepts/Cloud_CAPEX]] - Cloud CAPEX (create)\n"
+        "- [[concepts/Export_Controls]] - Export Controls (create)\n",
+        encoding="utf-8",
+    )
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/lint/fix-plan",
+        json={"kb_dir": str(kb_dir), "report": "reports/lint_20260503_143448.md"},
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.result["report"] == "reports/lint_20260503_143448.md"
+    candidates = job.result["candidates"]
+    names = [item["name"] for item in candidates]
+    assert "Cloud_CAPEX" in names
+    assert "GUC" in names
+    assert "AI_GPU" in names
+    assert "BMC_Server_Management" in names
+    assert "AI_Inference_vs_Training" in names
+    assert "Seed_industries" in names
+    assert "Optical_Engines" in names
+    assert "companies/aspeed.md" in [item["path"] for item in candidates]
+    assert all(item.get("source_section") for item in candidates)
+    assert all(item.get("reason") for item in candidates)
+    assert all(item.get("preview") for item in candidates)
+    assert next(item for item in candidates if item["name"] == "GUC")["path"] == "companies/GUC.md"
+    assert next(item for item in candidates if item["name"] == "Seed_industries")["path"] == "industries/semiconductor-value-chain.md"
+
+
 def test_lint_fix_plan_job_rejects_reports_outside_reports_dir(tmp_path):
     kb_dir = _make_kb(tmp_path)
     registry = JobRegistry()
@@ -184,6 +245,62 @@ def test_lint_apply_fixes_job_creates_only_explicitly_approved_draft_pages(tmp_p
     assert "# AI CPU" in ai_cpu
     assert (kb_dir / "wiki" / "concepts" / "AI_GPU.md").read_text(encoding="utf-8") == "# Existing AI GPU"
     assert not (kb_dir / "wiki" / "concepts" / "Cloud_CAPEX.md").exists()
+
+
+def test_lint_apply_fixes_job_creates_approved_company_and_schema_drafts(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    for folder in ("companies", "industries", "themes", "metrics", "risks"):
+        (kb_dir / "wiki" / folder).mkdir()
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/lint/apply-fixes",
+        json={
+            "kb_dir": str(kb_dir),
+            "candidates": [
+                {
+                    "name": "GUC",
+                    "title": "GUC",
+                    "path": "companies/GUC.md",
+                    "action": "create",
+                    "approved": True,
+                    "reason": "创建缺失的公司页面",
+                },
+                {
+                    "name": "Seed_industries",
+                    "title": "Semiconductor Value Chain",
+                    "path": "industries/semiconductor-value-chain.md",
+                    "action": "create",
+                    "approved": True,
+                    "reason": "搭建 industries/themes/metrics/risks 目录",
+                },
+                {
+                    "name": "Optical_Engines",
+                    "title": "Optical Engines language normalization",
+                    "path": "concepts/Optical_Engines.md",
+                    "action": "manual-review",
+                    "approved": True,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert [item["path"] for item in job.result["created"]] == [
+        "companies/GUC.md",
+        "industries/semiconductor-value-chain.md",
+    ]
+    assert "# GUC" in (kb_dir / "wiki" / "companies" / "GUC.md").read_text(encoding="utf-8")
+    assert "status: draft" in (kb_dir / "wiki" / "industries" / "semiconductor-value-chain.md").read_text(encoding="utf-8")
+    index = (kb_dir / "wiki" / "index.md").read_text(encoding="utf-8")
+    assert "[[companies/GUC]]" in index
+    assert "[[industries/semiconductor-value-chain]]" in index
 
 
 def test_lint_apply_fixes_job_ignores_unapproved_candidates(tmp_path):
