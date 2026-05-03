@@ -83,14 +83,30 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
         config_path = kb_dir / ".openkb" / "config.yaml"
         if config_path.exists():
             config = load_config(config_path)
-            model_name = str(config.get("model", "")).strip() or None
-            wire_api = str(config.get("wire_api", "")).strip().lower()
+            active_profile = None
+            raw_profiles = config.get("llm_profiles")
+            active_id = str(config.get("active_llm_profile") or "").strip()
+            if isinstance(raw_profiles, list):
+                active_profile = next(
+                    (
+                        profile
+                        for profile in raw_profiles
+                        if isinstance(profile, dict) and str(profile.get("id") or "").strip() == active_id
+                    ),
+                    None,
+                )
+            profile_config = active_profile if isinstance(active_profile, dict) else config
+            model_name = str(profile_config.get("model", "")).strip() or None
+            wire_api = str(profile_config.get("wire_api", "")).strip().lower()
             if wire_api:
                 os.environ["OPENKB_WIRE_API"] = wire_api
-            base_url = str(config.get("base_url", "")).strip().rstrip("/")
+            base_url = str(profile_config.get("base_url", "")).strip().rstrip("/")
             if base_url:
                 os.environ["OPENAI_BASE_URL"] = base_url
                 os.environ["OPENAI_API_BASE"] = base_url
+            profile_env = str(profile_config.get("api_key_env", "")).strip()
+            if profile_env and os.environ.get(profile_env):
+                os.environ["LLM_API_KEY"] = os.environ[profile_env]
 
     from openkb.config import GLOBAL_CONFIG_DIR
     global_env = GLOBAL_CONFIG_DIR / ".env"
@@ -494,11 +510,23 @@ def init():
 
     # Create .openkb/ state directory
     openkb_dir.mkdir()
+    resolved_wire_api = "responses" if model_prefers_responses_api(model) else DEFAULT_CONFIG["wire_api"]
     config = {
+        "active_llm_profile": "default",
+        "llm_profiles": [
+            {
+                "id": "default",
+                "name": "Default",
+                "model": model,
+                "wire_api": resolved_wire_api,
+                "base_url": DEFAULT_CONFIG["base_url"],
+                "api_key_env": "OPENKB_LLM_PROFILE_DEFAULT_API_KEY",
+            }
+        ],
         "model": model,
         "language": DEFAULT_CONFIG["language"],
         "pageindex_threshold": DEFAULT_CONFIG["pageindex_threshold"],
-        "wire_api": "responses" if model_prefers_responses_api(model) else DEFAULT_CONFIG["wire_api"],
+        "wire_api": resolved_wire_api,
         "base_url": DEFAULT_CONFIG["base_url"],
     }
     save_config(openkb_dir / "config.yaml", config)

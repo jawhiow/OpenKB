@@ -189,6 +189,60 @@ def test_setup_llm_key_refreshes_runtime_env_for_each_kb(tmp_path, monkeypatch):
         assert os.environ["OPENAI_API_KEY"] == "sk-chat"
 
 
+def test_setup_llm_key_uses_active_llm_profile(tmp_path, monkeypatch):
+    from openkb import config as config_module
+    from openkb.cli import _setup_llm_key
+
+    kb_dir = tmp_path / "kb"
+    openkb_dir = kb_dir / ".openkb"
+    openkb_dir.mkdir(parents=True)
+    (openkb_dir / "config.yaml").write_text(
+        "model: gpt-5.4-mini\n"
+        "wire_api: responses\n"
+        "base_url: ''\n"
+        "active_llm_profile: gateway\n"
+        "llm_profiles:\n"
+        "  - id: default\n"
+        "    name: Default\n"
+        "    model: gpt-5.4-mini\n"
+        "    wire_api: responses\n"
+        "    base_url: ''\n"
+        "    api_key_env: OPENKB_LLM_PROFILE_DEFAULT_API_KEY\n"
+        "  - id: gateway\n"
+        "    name: Gateway\n"
+        "    model: openai/doubao-seed-2-0-pro-260215\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://gateway.example.com/v1\n"
+        "    api_key_env: OPENKB_LLM_PROFILE_GATEWAY_API_KEY\n",
+        encoding="utf-8",
+    )
+    (kb_dir / ".env").write_text(
+        "LLM_API_KEY=default-secret\n"
+        "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=default-secret\n"
+        "OPENKB_LLM_PROFILE_GATEWAY_API_KEY=gateway-secret\n",
+        encoding="utf-8",
+    )
+
+    for name in [
+        "OPENKB_WIRE_API",
+        "OPENAI_WIRE_API",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "LLM_API_KEY",
+        "OPENAI_API_KEY",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(config_module, "GLOBAL_CONFIG_DIR", tmp_path / "global-config")
+
+    with patch("openkb.cli.configure_runtime") as mock_configure:
+        _setup_llm_key(kb_dir)
+
+    assert os.environ["OPENKB_WIRE_API"] == "chat_completions"
+    assert os.environ["OPENAI_BASE_URL"] == "https://gateway.example.com/v1"
+    assert os.environ["OPENAI_API_KEY"] == "gateway-secret"
+    mock_configure.assert_called_once_with("openai/doubao-seed-2-0-pro-260215")
+
+
 def test_init_keeps_chat_completions_for_non_gpt5_models(tmp_path):
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path), \

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,9 @@ _TYPE_DISPLAY_MAP = {
 
 _SHORT_DOC_TYPES = {"pdf", "docx", "md", "markdown", "html", "htm", "txt", "csv", "pptx", "xlsx"}
 
-_CONFIG_KEYS = {"model", "language", "pageindex_threshold", "wire_api", "base_url"}
+_GENERAL_CONFIG_KEYS = {"language", "pageindex_threshold"}
+_PROFILE_CONFIG_KEYS = {"model", "wire_api", "base_url"}
+_DEFAULT_PROFILE_ID = "default"
 
 
 def is_kb_dir(path: Path) -> bool:
@@ -173,10 +176,14 @@ def build_wiki_tree(kb_dir: Path) -> list[dict[str, Any]]:
         if not path.is_file() or path.suffix.lower() not in {".md", ".json"}:
             continue
         relative = path.relative_to(root).as_posix()
+        parts = relative.split("/")
         entries.append(
             {
                 "path": relative,
                 "name": path.name,
+                "directory": "/".join(parts[:-1]),
+                "depth": len(parts) - 1,
+                "extension": path.suffix.lower(),
                 "size": path.stat().st_size,
                 "modified": _format_mtime(path),
             }
@@ -298,40 +305,211 @@ def _api_key_configured(kb_dir: Path) -> bool:
     return False
 
 
-def _write_api_key(kb_dir: Path, api_key: str) -> None:
+def _read_env_values(kb_dir: Path) -> dict[str, str]:
     env_path = kb_dir / ".env"
-    replacement = f"LLM_API_KEY={api_key}\n"
     if not env_path.exists():
-        env_path.write_text(replacement, encoding="utf-8")
-        os.chmod(env_path, 0o600)
-        return
+        return {}
+    values: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
 
-    lines = env_path.read_text(encoding="utf-8").splitlines()
+
+def _write_env_values(kb_dir: Path, values: dict[str, str]) -> None:
+    env_path = kb_dir / ".env"
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
     updated: list[str] = []
-    found = False
+    remaining = dict(values)
     for line in lines:
-        if line.strip().startswith("LLM_API_KEY="):
-            updated.append(f"LLM_API_KEY={api_key}")
-            found = True
+        if "=" not in line or line.strip().startswith("#"):
+            updated.append(line)
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in remaining:
+            updated.append(f"{key}={remaining.pop(key)}")
         else:
             updated.append(line)
-    if not found:
-        updated.append(f"LLM_API_KEY={api_key}")
+    for key, value in remaining.items():
+        updated.append(f"{key}={value}")
     env_path.write_text("\n".join(updated).rstrip("\n") + "\n", encoding="utf-8")
     os.chmod(env_path, 0o600)
+
+
+def _write_api_key(kb_dir: Path, api_key: str) -> None:
+    _write_env_values(kb_dir, {"LLM_API_KEY": api_key})
+
+
+def _profile_id_from_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "profile"
+
+
+def _unique_profile_id(base: str, existing: set[str]) -> str:
+    candidate = _profile_id_from_name(base)
+    if candidate not in existing:
+        return candidate
+    index = 2
+    while f"{candidate}-{index}" in existing:
+        index += 1
+    return f"{candidate}-{index}"
+
+
+def _profile_env_key(profile_id: str) -> str:
+    env_id = re.sub(r"[^A-Za-z0-9]+", "_", profile_id).strip("_").upper() or "PROFILE"
+    return f"OPENKB_LLM_PROFILE_{env_id}_API_KEY"
+
+
+def _normalize_profile(raw: dict[str, Any], fallback_id: str, config: dict[str, Any]) -> dict[str, str]:
+    profile_id = str(raw.get("id") or fallback_id or _DEFAULT_PROFILE_ID).strip() or _DEFAULT_PROFILE_ID
+    return {
+        "id": profile_id,
+        "name": str(raw.get("name") or ("Default" if profile_id == _DEFAULT_PROFILE_ID else profile_id)).strip(),
+        "model": str(raw.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip(),
+        "wire_api": str(raw.get("wire_api") or config.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
+        "base_url": str(raw.get("base_url") or config.get("base_url") or DEFAULT_CONFIG.get("base_url", "")).strip().rstrip("/"),
+        "api_key_env": str(raw.get("api_key_env") or _profile_env_key(profile_id)).strip(),
+    }
+
+
+def _normalize_profiles(config: dict[str, Any]) -> tuple[list[dict[str, str]], str]:
+    raw_profiles = config.get("llm_profiles")
+    profiles: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    if isinstance(raw_profiles, list):
+        for raw in raw_profiles:
+            if not isinstance(raw, dict):
+                continue
+            profile = _normalize_profile(raw, str(raw.get("id") or ""), config)
+            if profile["id"] in seen:
+                continue
+            profiles.append(profile)
+            seen.add(profile["id"])
+    elif isinstance(raw_profiles, dict):
+        for profile_id, raw in raw_profiles.items():
+            if not isinstance(raw, dict):
+                continue
+            profile = _normalize_profile(raw, str(profile_id), config)
+            if profile["id"] in seen:
+                continue
+            profiles.append(profile)
+            seen.add(profile["id"])
+
+    if not profiles:
+        profiles.append(
+            _normalize_profile(
+                {
+                    "id": _DEFAULT_PROFILE_ID,
+                    "name": "Default",
+                    "model": config.get("model", DEFAULT_CONFIG["model"]),
+                    "wire_api": config.get("wire_api", DEFAULT_CONFIG["wire_api"]),
+                    "base_url": config.get("base_url", DEFAULT_CONFIG.get("base_url", "")),
+                },
+                _DEFAULT_PROFILE_ID,
+                config,
+            )
+        )
+
+    active_id = str(config.get("active_llm_profile") or profiles[0]["id"]).strip() or profiles[0]["id"]
+    if active_id not in {profile["id"] for profile in profiles}:
+        active_id = profiles[0]["id"]
+    return profiles, active_id
+
+
+def _find_profile(profiles: list[dict[str, str]], profile_id: str) -> dict[str, str] | None:
+    return next((profile for profile in profiles if profile["id"] == profile_id), None)
+
+
+def _profile_has_api_key(
+    kb_dir: Path,
+    profile: dict[str, str],
+    active_id: str,
+    env_values: dict[str, str] | None = None,
+) -> bool:
+    env_values = env_values if env_values is not None else _read_env_values(kb_dir)
+    env_key = profile.get("api_key_env") or _profile_env_key(profile["id"])
+    if os.environ.get(env_key) or env_values.get(env_key):
+        return True
+    if profile["id"] == active_id:
+        return _api_key_configured(kb_dir)
+    return False
+
+
+def _public_profiles(kb_dir: Path, profiles: list[dict[str, str]], active_id: str) -> list[dict[str, Any]]:
+    env_values = _read_env_values(kb_dir)
+    return [
+        {
+            "id": profile["id"],
+            "name": profile["name"],
+            "model": profile["model"],
+            "wire_api": profile["wire_api"],
+            "base_url": profile["base_url"],
+            "api_key_configured": _profile_has_api_key(kb_dir, profile, active_id, env_values),
+            "is_active": profile["id"] == active_id,
+        }
+        for profile in profiles
+    ]
+
+
+def _persist_profiles(config: dict[str, Any], profiles: list[dict[str, str]], active_id: str) -> None:
+    active_profile = _find_profile(profiles, active_id) or profiles[0]
+    config["active_llm_profile"] = active_profile["id"]
+    config["llm_profiles"] = [
+        {
+            "id": profile["id"],
+            "name": profile["name"],
+            "model": profile["model"],
+            "wire_api": profile["wire_api"],
+            "base_url": profile["base_url"],
+            "api_key_env": profile["api_key_env"],
+        }
+        for profile in profiles
+    ]
+    config["model"] = active_profile["model"]
+    config["wire_api"] = active_profile["wire_api"]
+    config["base_url"] = active_profile["base_url"]
+
+
+def _ensure_profile_key_from_legacy(kb_dir: Path, profile: dict[str, str]) -> None:
+    env_values = _read_env_values(kb_dir)
+    env_key = profile.get("api_key_env") or _profile_env_key(profile["id"])
+    legacy_key = env_values.get("LLM_API_KEY", "").strip()
+    if legacy_key and not env_values.get(env_key):
+        _write_env_values(kb_dir, {env_key: legacy_key})
+
+
+def _write_profile_api_key(kb_dir: Path, profile: dict[str, str], api_key: str) -> None:
+    env_key = profile.get("api_key_env") or _profile_env_key(profile["id"])
+    _write_env_values(kb_dir, {env_key: api_key, "LLM_API_KEY": api_key})
+
+
+def _sync_legacy_key_from_profile(kb_dir: Path, profile: dict[str, str]) -> None:
+    env_values = _read_env_values(kb_dir)
+    env_key = profile.get("api_key_env") or _profile_env_key(profile["id"])
+    profile_key = env_values.get(env_key, "").strip()
+    if profile_key:
+        _write_env_values(kb_dir, {"LLM_API_KEY": profile_key})
 
 
 def get_config_data(kb_dir: Path) -> dict[str, Any]:
     """Return public configuration data without exposing secret values."""
     kb_dir = require_kb_dir(kb_dir)
     config = load_config(kb_dir / ".openkb" / "config.yaml")
+    profiles, active_id = _normalize_profiles(config)
+    active_profile = _find_profile(profiles, active_id) or profiles[0]
     return {
-        "model": config.get("model", DEFAULT_CONFIG["model"]),
+        "model": active_profile.get("model", config.get("model", DEFAULT_CONFIG["model"])),
         "language": config.get("language", DEFAULT_CONFIG["language"]),
         "pageindex_threshold": config.get("pageindex_threshold", DEFAULT_CONFIG["pageindex_threshold"]),
-        "wire_api": config.get("wire_api", DEFAULT_CONFIG["wire_api"]),
-        "base_url": config.get("base_url", DEFAULT_CONFIG.get("base_url", "")) or "",
-        "api_key_configured": _api_key_configured(kb_dir),
+        "wire_api": active_profile.get("wire_api", config.get("wire_api", DEFAULT_CONFIG["wire_api"])),
+        "base_url": active_profile.get("base_url", config.get("base_url", DEFAULT_CONFIG.get("base_url", ""))) or "",
+        "api_key_configured": _profile_has_api_key(kb_dir, active_profile, active_id),
+        "active_profile": active_id,
+        "profiles": _public_profiles(kb_dir, profiles, active_id),
     }
 
 
@@ -340,18 +518,62 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
     kb_dir = require_kb_dir(kb_dir)
     config_path = kb_dir / ".openkb" / "config.yaml"
     config = load_config(config_path)
+    profiles, active_id = _normalize_profiles(config)
+    profile_by_id = {profile["id"]: profile for profile in profiles}
+    create_profile = bool(updates.get("create_profile"))
+    requested_active = str(updates.get("active_profile") or "").strip()
+
+    target_profile: dict[str, str]
+    if create_profile:
+        current_profile = profile_by_id.get(active_id)
+        if current_profile:
+            _ensure_profile_key_from_legacy(kb_dir, current_profile)
+        profile_name = str(updates.get("profile_name") or updates.get("model") or "New Profile").strip()
+        profile_id = _unique_profile_id(str(updates.get("profile_id") or profile_name), set(profile_by_id))
+        target_profile = {
+            "id": profile_id,
+            "name": profile_name or profile_id,
+            "model": str(updates.get("model") or DEFAULT_CONFIG["model"]).strip(),
+            "wire_api": str(updates.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
+            "base_url": str(updates.get("base_url") or "").strip().rstrip("/"),
+            "api_key_env": _profile_env_key(profile_id),
+        }
+        profiles.append(target_profile)
+        active_id = target_profile["id"]
+    else:
+        target_id = requested_active or str(updates.get("profile_id") or active_id).strip() or active_id
+        target_profile = profile_by_id.get(target_id)
+        if target_profile is None:
+            raise ClientError(f"Unknown LLM profile: {target_id}")
+        active_id = target_profile["id"]
+
+    if not create_profile and updates.get("profile_name") is not None:
+        profile_name = str(updates.get("profile_name") or "").strip()
+        if profile_name:
+            target_profile["name"] = profile_name
+
     for key, value in updates.items():
-        if key not in _CONFIG_KEYS:
-            continue
-        if key == "pageindex_threshold":
-            value = int(value)
-        if key == "base_url":
-            value = str(value or "").strip().rstrip("/")
-        config[key] = value
-    save_config(config_path, config)
+        if key in _PROFILE_CONFIG_KEYS:
+            if key == "base_url":
+                value = str(value or "").strip().rstrip("/")
+            elif key == "wire_api":
+                value = str(value or "").strip().lower()
+            else:
+                value = str(value or "").strip()
+            target_profile[key] = value
+        elif key in _GENERAL_CONFIG_KEYS:
+            if key == "pageindex_threshold":
+                value = int(value)
+            config[key] = value
+
     api_key = str(updates.get("api_key") or "").strip()
     if api_key:
-        _write_api_key(kb_dir, api_key)
+        _write_profile_api_key(kb_dir, target_profile, api_key)
+    else:
+        _sync_legacy_key_from_profile(kb_dir, target_profile)
+
+    _persist_profiles(config, profiles, active_id)
+    save_config(config_path, config)
     return get_config_data(kb_dir)
 
 
@@ -400,12 +622,25 @@ def init_kb(
     (kb_dir / "wiki" / "log.md").write_text("# Operations Log\n\n", encoding="utf-8")
 
     openkb_dir.mkdir(parents=True)
+    resolved_wire_api = wire_api or ("responses" if model_prefers_responses_api(model) else DEFAULT_CONFIG["wire_api"])
+    resolved_base_url = base_url.strip().rstrip("/")
     config = {
+        "active_llm_profile": _DEFAULT_PROFILE_ID,
+        "llm_profiles": [
+            {
+                "id": _DEFAULT_PROFILE_ID,
+                "name": "Default",
+                "model": model,
+                "wire_api": resolved_wire_api,
+                "base_url": resolved_base_url,
+                "api_key_env": _profile_env_key(_DEFAULT_PROFILE_ID),
+            }
+        ],
         "model": model,
         "language": language,
         "pageindex_threshold": int(pageindex_threshold),
-        "wire_api": wire_api or ("responses" if model_prefers_responses_api(model) else DEFAULT_CONFIG["wire_api"]),
-        "base_url": base_url.strip().rstrip("/"),
+        "wire_api": resolved_wire_api,
+        "base_url": resolved_base_url,
     }
     save_config(openkb_dir / "config.yaml", config)
     (openkb_dir / "hashes.json").write_text("{}", encoding="utf-8")

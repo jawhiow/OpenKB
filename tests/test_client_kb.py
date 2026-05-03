@@ -89,6 +89,10 @@ def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
         "reports/lint.md",
         "summaries/paper.md",
     ]
+    summaries_entry = next(entry for entry in tree if entry["path"] == "summaries/paper.md")
+    assert summaries_entry["directory"] == "summaries"
+    assert summaries_entry["depth"] == 1
+    assert summaries_entry["extension"] == ".md"
     assert read_wiki_file(kb_dir, "index.md")["content"] == "# Index\n"
 
     write_wiki_file(kb_dir, "concepts/new-page.md", "# New\n")
@@ -104,13 +108,26 @@ def test_config_data_can_be_updated_without_exposing_env(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".env").write_text("LLM_API_KEY=secret\n", encoding="utf-8")
 
-    assert get_config_data(kb_dir) == {
+    config_data = get_config_data(kb_dir)
+    assert config_data == {
         "model": "gpt-5.4-mini",
         "language": "zh",
         "pageindex_threshold": 20,
         "wire_api": "responses",
         "base_url": "https://llm.example.com",
         "api_key_configured": True,
+        "active_profile": "default",
+        "profiles": [
+            {
+                "id": "default",
+                "name": "Default",
+                "model": "gpt-5.4-mini",
+                "wire_api": "responses",
+                "base_url": "https://llm.example.com",
+                "api_key_configured": True,
+                "is_active": True,
+            }
+        ],
     }
 
     updated = update_config_data(
@@ -127,12 +144,52 @@ def test_config_data_can_be_updated_without_exposing_env(tmp_path: Path):
 
     assert updated["model"] == "anthropic/claude-sonnet-4-6"
     assert updated["base_url"] == "https://gateway.example.com/v1"
+    assert updated["profiles"][0]["model"] == "anthropic/claude-sonnet-4-6"
     assert "secret" not in json.dumps(updated)
     assert "new-secret" not in json.dumps(updated)
-    assert (kb_dir / ".env").read_text(encoding="utf-8") == "LLM_API_KEY=new-secret\n"
+    env_text = (kb_dir / ".env").read_text(encoding="utf-8")
+    assert "LLM_API_KEY=new-secret\n" in env_text
+    assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=new-secret\n" in env_text
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["pageindex_threshold"] == 30
     assert saved["base_url"] == "https://gateway.example.com/v1"
+    assert saved["active_llm_profile"] == "default"
+    assert saved["llm_profiles"][0]["id"] == "default"
+
+
+def test_config_data_can_create_and_switch_llm_profiles_with_separate_keys(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")
+
+    created = update_config_data(
+        kb_dir,
+        {
+            "create_profile": True,
+            "profile_name": "Claude Research",
+            "model": "anthropic/claude-sonnet-4-6",
+            "wire_api": "chat_completions",
+            "base_url": "https://anthropic-gateway.example.com/v1",
+            "api_key": "claude-secret",
+        },
+    )
+
+    assert created["active_profile"] == "claude-research"
+    assert created["model"] == "anthropic/claude-sonnet-4-6"
+    assert [profile["id"] for profile in created["profiles"]] == ["default", "claude-research"]
+    assert all("secret" not in json.dumps(profile) for profile in created["profiles"])
+    env_text = (kb_dir / ".env").read_text(encoding="utf-8")
+    assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=default-secret\n" in env_text
+    assert "OPENKB_LLM_PROFILE_CLAUDE_RESEARCH_API_KEY=claude-secret\n" in env_text
+    assert "LLM_API_KEY=claude-secret\n" in env_text
+
+    switched = update_config_data(kb_dir, {"active_profile": "default"})
+
+    assert switched["active_profile"] == "default"
+    assert switched["model"] == "gpt-5.4-mini"
+    assert switched["wire_api"] == "responses"
+    assert switched["profiles"][0]["is_active"] is True
+    assert switched["profiles"][1]["is_active"] is False
+    assert "LLM_API_KEY=default-secret\n" in (kb_dir / ".env").read_text(encoding="utf-8")
 
 
 def test_init_kb_creates_openkb_layout(tmp_path: Path):

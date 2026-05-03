@@ -41,6 +41,34 @@ def test_client_settings_include_test_llm_button_and_handler():
     assert '"/api/config/test-llm"' in script
 
 
+def test_client_wiki_renders_folder_navigation():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "function buildWikiDirectory" in script
+    assert "function renderWikiDirectory" in script
+    assert "folder-row" in script
+    assert "file-row" in script
+    assert ".wiki-browser" in styles
+    assert ".folder-row" in styles
+    assert ".file-row.active" in styles
+
+
+def test_client_settings_support_llm_profile_switching():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "renderProfileList" in script
+    assert 'id="profileNameInput"' in script
+    assert 'id="saveProfileBtn"' in script
+    assert 'id="saveNewProfileBtn"' in script
+    assert "switchProfile" in script
+    assert "create_profile: true" in script
+    assert "active_profile" in script
+    assert ".profile-list" in styles
+    assert ".profile-button.active" in styles
+
+
 def test_client_fix_plan_renders_report_reason_and_preview_content():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 

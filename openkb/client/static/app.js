@@ -4,6 +4,7 @@ const state = {
   status: null,
   documents: null,
   wikiTree: [],
+  wikiOpenDirs: {},
   selectedWikiPath: "index.md",
   selectedReport: null,
   reportPreview: { path: null, content: "" },
@@ -15,6 +16,7 @@ const state = {
   jobs: [],
   selectedJobId: null,
   config: null,
+  selectedProfileId: null,
   queryJobId: null,
   jobStatuses: {},
   loadingAll: false,
@@ -61,6 +63,11 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function activeProfile(config = state.config) {
+  const profiles = config?.profiles || [];
+  return profiles.find((profile) => profile.id === config?.active_profile) || profiles.find((profile) => profile.is_active) || profiles[0] || null;
 }
 
 function jobProgress(job) {
@@ -186,6 +193,7 @@ async function loadKnowledgeData() {
   state.wikiTree = tree.files || [];
   state.chats = chats.sessions || [];
   state.config = config;
+  state.selectedProfileId = config?.active_profile || null;
 }
 
 async function refreshKnowledgeData() {
@@ -434,6 +442,7 @@ function render() {
 function renderOverview() {
   const dirs = state.status?.directories || {};
   const cfg = state.config || {};
+  const profile = activeProfile(cfg);
   mainView.innerHTML = `
     <div class="stats-grid">
       ${stat("Indexed", state.status?.total_indexed ?? 0)}
@@ -478,7 +487,7 @@ function renderOverview() {
         <header>
           <div>
             <h3>Runtime</h3>
-            <span class="muted-text">${escapeHTML(cfg.wire_api || "responses")}</span>
+            <span class="muted-text">${escapeHTML(profile?.name || "Default")} · ${escapeHTML(cfg.wire_api || "responses")}</span>
           </div>
           ${cfg.api_key_configured ? `<span class="badge good">Key set</span>` : `<span class="badge warn">No key</span>`}
         </header>
@@ -633,18 +642,86 @@ async function uploadFile(event) {
   }
 }
 
+function buildWikiDirectory(files) {
+  const root = { name: "wiki", path: "", files: [], children: new Map(), count: 0 };
+  (files || []).forEach((file) => {
+    const parts = String(file.path || "").split("/").filter(Boolean);
+    if (!parts.length) return;
+    let node = root;
+    parts.slice(0, -1).forEach((part) => {
+      const childPath = node.path ? `${node.path}/${part}` : part;
+      if (!node.children.has(part)) {
+        node.children.set(part, { name: part, path: childPath, files: [], children: new Map(), count: 0 });
+      }
+      node = node.children.get(part);
+    });
+    node.files.push(file);
+  });
+
+  const finalize = (node) => {
+    const children = Array.from(node.children.values()).sort((a, b) => a.name.localeCompare(b.name));
+    node.files.sort((a, b) => a.name.localeCompare(b.name));
+    node.children = children;
+    node.count = node.files.length + children.reduce((total, child) => total + finalize(child), 0);
+    return node.count;
+  };
+  finalize(root);
+  return root;
+}
+
+function renderWikiDirectory(node, depth = 0) {
+  const folderMarkup = (node.children || [])
+    .map((child) => {
+      const open = state.wikiOpenDirs[child.path] !== false ? "open" : "";
+      return `
+        <details class="folder-group" data-folder-path="${escapeHTML(child.path)}" ${open}>
+          <summary class="folder-row" style="--depth: ${depth}">
+            <span class="folder-icon" aria-hidden="true"></span>
+            <strong>${escapeHTML(child.name)}</strong>
+            <em>${escapeHTML(child.count)}</em>
+          </summary>
+          ${renderWikiDirectory(child, depth + 1)}
+        </details>
+      `;
+    })
+    .join("");
+  const fileMarkup = (node.files || [])
+    .map((file) => {
+      const active = file.path === state.selectedWikiPath ? " active" : "";
+      return `
+        <button type="button" data-wiki-path="${escapeHTML(file.path)}" class="file-row${active}" style="--depth: ${depth}">
+          <span>${escapeHTML(file.name)}</span>
+          <small>${escapeHTML(file.directory || "wiki")}</small>
+        </button>
+      `;
+    })
+    .join("");
+  return `${folderMarkup}${fileMarkup}`;
+}
+
 function renderWiki() {
   const files = state.wikiTree || [];
   if (!files.some((file) => file.path === state.selectedWikiPath) && files.length) {
     state.selectedWikiPath = files[0].path;
   }
+  const directory = buildWikiDirectory(files);
+  const selectedFile = files.find((file) => file.path === state.selectedWikiPath);
   mainView.innerHTML = `
     <div class="wiki-layout">
-      <div class="file-list">
-        ${files.map((file) => `<button type="button" data-wiki-path="${escapeHTML(file.path)}" class="${file.path === state.selectedWikiPath ? "active" : ""}">${escapeHTML(file.path)}</button>`).join("") || `<div class="empty">No files</div>`}
-      </div>
+      <aside class="wiki-browser" aria-label="Wiki folders">
+        <div class="wiki-browser-head">
+          <div>
+            <strong>wiki/</strong>
+            <span>${escapeHTML(files.length)} page(s)</span>
+          </div>
+          ${selectedFile ? `<span class="badge muted">${escapeHTML(selectedFile.extension || ".md")}</span>` : ""}
+        </div>
+        <div class="wiki-tree-list">
+          ${files.length ? renderWikiDirectory(directory) : `<div class="empty">No files</div>`}
+        </div>
+      </aside>
       <div class="editor-pane">
-        <div class="row-actions">
+        <div class="row-actions wiki-path-row">
           <input id="wikiPathInput" type="text" value="${escapeHTML(state.selectedWikiPath)}" />
           <button id="loadWikiBtn" type="button">Load</button>
           <button id="saveWikiBtn" class="primary" type="button">Save</button>
@@ -658,7 +735,11 @@ function renderWiki() {
     button.addEventListener("click", () => {
       state.selectedWikiPath = button.dataset.wikiPath;
       renderWiki();
-      loadWikiFile();
+    });
+  });
+  mainView.querySelectorAll("[data-folder-path]").forEach((folder) => {
+    folder.addEventListener("toggle", () => {
+      state.wikiOpenDirs[folder.dataset.folderPath] = folder.open;
     });
   });
   $("#loadWikiBtn").addEventListener("click", (event) => {
@@ -994,10 +1075,41 @@ async function runLint(event) {
   }
 }
 
+function renderProfileList(cfg) {
+  const profiles = cfg.profiles || [];
+  if (!profiles.length) return `<div class="empty">No LLM profiles</div>`;
+  return `
+    <div class="profile-list">
+      ${profiles
+        .map((profile) => {
+          const active = profile.id === cfg.active_profile ? " active" : "";
+          const keyBadge = profile.api_key_configured ? `<span class="badge good">Key set</span>` : `<span class="badge warn">No key</span>`;
+          return `
+            <button type="button" class="profile-button${active}" data-profile-id="${escapeHTML(profile.id)}">
+              <span>
+                <strong>${escapeHTML(profile.name || profile.id)}</strong>
+                <small>${escapeHTML(profile.model || "")}</small>
+              </span>
+              ${keyBadge}
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function renderSettings() {
   const cfg = state.config || {};
+  const profile = activeProfile(cfg) || {
+    id: "default",
+    name: "Default",
+    model: cfg.model || "gpt-5.4-mini",
+    wire_api: cfg.wire_api || "responses",
+    base_url: cfg.base_url || "",
+  };
   mainView.innerHTML = `
-    <div class="content-grid">
+    <div class="settings-grid">
       <section class="section">
         <header><h3>Knowledge Base</h3></header>
         <div class="section-body form-grid">
@@ -1009,15 +1121,6 @@ function renderSettings() {
             <button id="useKbBtn" type="button">Use</button>
             <button id="createKbBtn" class="primary" type="button">Create</button>
           </div>
-        </div>
-      </section>
-      <section class="section">
-        <header><h3>Config</h3>${cfg.api_key_configured ? `<span class="badge good">Key set</span>` : `<span class="badge warn">No key</span>`}</header>
-        <div class="section-body form-grid">
-          <div class="field">
-            <label for="modelInput">Model</label>
-            <input id="modelInput" type="text" value="${escapeHTML(cfg.model || "gpt-5.4-mini")}" />
-          </div>
           <div class="field">
             <label for="languageInput">Language</label>
             <input id="languageInput" type="text" value="${escapeHTML(cfg.language || "en")}" />
@@ -1026,34 +1129,61 @@ function renderSettings() {
             <label for="thresholdInput">PageIndex Threshold</label>
             <input id="thresholdInput" type="number" min="1" value="${escapeHTML(cfg.pageindex_threshold || 20)}" />
           </div>
-          <div class="field">
-            <label for="wireApiInput">Wire API</label>
-            <select id="wireApiInput">
-              <option value="responses">responses</option>
-              <option value="chat_completions">chat_completions</option>
-            </select>
+        </div>
+      </section>
+      <section class="section llm-profile-section">
+        <header>
+          <div>
+            <h3>LLM Profiles</h3>
+            <span class="muted-text">${escapeHTML(profile.name || profile.id)} · ${escapeHTML(profile.wire_api || cfg.wire_api || "responses")}</span>
           </div>
-          <div class="field full">
-            <label for="baseUrlInput">Base URL</label>
-            <input id="baseUrlInput" type="url" value="${escapeHTML(cfg.base_url || "")}" placeholder="https://api.example.com/v1" />
-          </div>
-          <div class="field full">
-            <label for="apiKeyInput">API Key</label>
-            <input id="apiKeyInput" type="password" value="" />
-          </div>
-          <div class="row-actions full">
-            <button id="testLlmBtn" type="button">Test LLM</button>
-            <button id="saveConfigBtn" class="primary" type="button">Save Config</button>
+          ${cfg.api_key_configured ? `<span class="badge good">Active key set</span>` : `<span class="badge warn">No active key</span>`}
+        </header>
+        <div class="section-body profile-config-grid">
+          ${renderProfileList(cfg)}
+          <div class="form-grid profile-editor">
+            <div class="field">
+              <label for="profileNameInput">Profile Name</label>
+              <input id="profileNameInput" type="text" value="${escapeHTML(profile.name || "Default")}" />
+            </div>
+            <div class="field">
+              <label for="modelInput">Model</label>
+              <input id="modelInput" type="text" value="${escapeHTML(profile.model || cfg.model || "gpt-5.4-mini")}" />
+            </div>
+            <div class="field">
+              <label for="wireApiInput">Wire API</label>
+              <select id="wireApiInput">
+                <option value="responses">responses</option>
+                <option value="chat_completions">chat_completions</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="baseUrlInput">Base URL</label>
+              <input id="baseUrlInput" type="url" value="${escapeHTML(profile.base_url || "")}" placeholder="https://api.example.com/v1" />
+            </div>
+            <div class="field full">
+              <label for="apiKeyInput">API Key</label>
+              <input id="apiKeyInput" type="password" value="" placeholder="Leave blank to keep stored key" />
+            </div>
+            <div class="row-actions full">
+              <button id="testLlmBtn" type="button">Test LLM</button>
+              <button id="saveNewProfileBtn" type="button">Save as New</button>
+              <button id="saveProfileBtn" class="primary" type="button">Save Profile</button>
+            </div>
           </div>
         </div>
       </section>
     </div>
   `;
-  $("#wireApiInput").value = cfg.wire_api || "responses";
+  $("#wireApiInput").value = profile.wire_api || cfg.wire_api || "responses";
   $("#useKbBtn").addEventListener("click", useKb);
   $("#createKbBtn").addEventListener("click", createKb);
   $("#testLlmBtn").addEventListener("click", testLlm);
-  $("#saveConfigBtn").addEventListener("click", saveConfig);
+  $("#saveProfileBtn").addEventListener("click", saveConfig);
+  $("#saveNewProfileBtn").addEventListener("click", saveNewProfile);
+  mainView.querySelectorAll("[data-profile-id]").forEach((button) => {
+    button.addEventListener("click", (event) => switchProfile(button.dataset.profileId, event));
+  });
 }
 
 async function generateFixPlan(event) {
@@ -1150,7 +1280,29 @@ async function createKb(event) {
   }
 }
 
-async function saveConfig(event) {
+async function switchProfile(profileId, event) {
+  if (!profileId || profileId === state.config?.active_profile) return;
+  const button = event?.currentTarget;
+  setButtonBusy(button, true, "Switching...");
+  try {
+    await api("/api/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        kb_dir: state.kbDir,
+        active_profile: profileId,
+      }),
+    });
+    notify("LLM profile switched", "success");
+    await loadKnowledgeData();
+    render();
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function saveConfig(event, options = {}) {
   const button = event?.currentTarget;
   if (!state.kbDir) {
     notify("Select or create a knowledge base first.", "warning");
@@ -1158,10 +1310,14 @@ async function saveConfig(event) {
   }
   setButtonBusy(button, true, "Saving...");
   try {
+    const createProfile = options.createProfile === true;
     await api("/api/config", {
       method: "PUT",
       body: JSON.stringify({
         kb_dir: state.kbDir,
+        profile_id: state.config?.active_profile,
+        profile_name: $("#profileNameInput").value.trim(),
+        ...(createProfile ? { create_profile: true } : {}),
         model: $("#modelInput").value.trim(),
         language: $("#languageInput").value.trim(),
         pageindex_threshold: Number($("#thresholdInput").value || 20),
@@ -1170,13 +1326,17 @@ async function saveConfig(event) {
         api_key: $("#apiKeyInput").value,
       }),
     });
-    notify("Config saved", "success");
+    notify(createProfile ? "LLM profile created" : "LLM profile saved", "success");
     await loadAll();
   } catch (error) {
     setError(error.message);
   } finally {
     setButtonBusy(button, false);
   }
+}
+
+async function saveNewProfile(event) {
+  return saveConfig(event, { createProfile: true });
 }
 
 function setFixPlanState(result) {

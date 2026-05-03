@@ -426,6 +426,42 @@ def test_test_llm_endpoint_uses_current_form_values(tmp_path, monkeypatch):
     assert "ping" in str(captured["message"]).lower()
 
 
+def test_config_endpoint_can_create_and_switch_profiles(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")
+    client = TestClient(create_app())
+
+    create_response = client.put(
+        "/api/config",
+        json={
+            "kb_dir": str(kb_dir),
+            "create_profile": True,
+            "profile_name": "Gateway",
+            "model": "openai/doubao-seed-2-0-pro-260215",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v1",
+            "api_key": "gateway-secret",
+        },
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["active_profile"] == "gateway"
+    assert created["model"] == "openai/doubao-seed-2-0-pro-260215"
+    assert [profile["id"] for profile in created["profiles"]] == ["default", "gateway"]
+    assert "gateway-secret" not in json.dumps(created)
+
+    switch_response = client.put(
+        "/api/config",
+        json={"kb_dir": str(kb_dir), "active_profile": "default"},
+    )
+
+    assert switch_response.status_code == 200
+    switched = switch_response.json()
+    assert switched["active_profile"] == "default"
+    assert switched["model"] == "gpt-5.4-mini"
+
+
 def test_test_llm_endpoint_returns_rich_error_context(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
 
