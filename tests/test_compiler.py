@@ -319,6 +319,39 @@ class TestUpdateIndex:
         assert "[[summaries/report]] (short) - AI semiconductor report" in text
         assert "[[companies/TSMC]] - AI foundry bellwether" in text
 
+    def test_appends_dedicated_investment_page_entries_with_briefs(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+        (wiki / "index.md").write_text(
+            "# Index\n\n## Documents\n\n## Concepts\n\n## Explorations\n",
+            encoding="utf-8",
+        )
+
+        _update_index(
+            wiki,
+            "report",
+            [],
+            doc_brief="AI semiconductor report",
+            industry_names=["semiconductors"],
+            industry_briefs={"semiconductors": "Semiconductor value-chain structure"},
+            theme_names=["ai-capex"],
+            theme_briefs={"ai-capex": "Cloud AI spending cycle"},
+            metric_names=["hbm-supply"],
+            metric_briefs={"hbm-supply": "Capacity indicator for AI memory"},
+            risk_names=["export-controls"],
+            risk_briefs={"export-controls": "Policy constraint on AI chips"},
+        )
+
+        text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "## Industries" in text
+        assert "## Themes" in text
+        assert "## Metrics" in text
+        assert "## Risks" in text
+        assert "[[industries/semiconductors]] - Semiconductor value-chain structure" in text
+        assert "[[themes/ai-capex]] - Cloud AI spending cycle" in text
+        assert "[[metrics/hbm-supply]] - Capacity indicator for AI memory" in text
+        assert "[[risks/export-controls]] - Policy constraint on AI chips" in text
+
     def test_updates_only_exact_concept_row(self, tmp_path):
         wiki = tmp_path / "wiki"
         wiki.mkdir()
@@ -537,10 +570,18 @@ class TestCleanupGeneratedPagesForSource:
         wiki = tmp_path / "wiki"
         (wiki / "concepts").mkdir(parents=True)
         (wiki / "companies").mkdir(parents=True)
+        (wiki / "industries").mkdir(parents=True)
+        (wiki / "themes").mkdir(parents=True)
+        (wiki / "metrics").mkdir(parents=True)
+        (wiki / "risks").mkdir(parents=True)
         (wiki / "index.md").write_text(
             "# Index\n\n"
             "## Documents\n- [[summaries/report]] (local-long) - Report\n\n"
             "## Companies\n- [[companies/TSMC]] - Old company\n\n"
+            "## Industries\n- [[industries/semiconductors]] - Old industry\n\n"
+            "## Themes\n- [[themes/ai-capex]] - Old theme\n\n"
+            "## Metrics\n- [[metrics/hbm-supply]] - Old metric\n\n"
+            "## Risks\n- [[risks/export-controls]] - Old risk\n\n"
             "## Concepts\n"
             "- [[concepts/HBM]] - Old concept\n"
             "- [[concepts/Shared]] - Shared concept\n\n",
@@ -554,6 +595,22 @@ class TestCleanupGeneratedPagesForSource:
             "---\nsources: [summaries/report.md]\n---\n\n# TSMC",
             encoding="utf-8",
         )
+        (wiki / "industries" / "semiconductors.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n# Semiconductors",
+            encoding="utf-8",
+        )
+        (wiki / "themes" / "ai-capex.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n# AI CAPEX",
+            encoding="utf-8",
+        )
+        (wiki / "metrics" / "hbm-supply.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n# HBM Supply",
+            encoding="utf-8",
+        )
+        (wiki / "risks" / "export-controls.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n# Export Controls",
+            encoding="utf-8",
+        )
         (wiki / "concepts" / "Shared.md").write_text(
             "---\nsources: [summaries/other.md, summaries/report.md]\n---\n\n# Shared",
             encoding="utf-8",
@@ -561,13 +618,28 @@ class TestCleanupGeneratedPagesForSource:
 
         removed = cleanup_generated_pages_for_source(wiki, "report")
 
-        assert removed == ["companies/TSMC", "concepts/HBM"]
+        assert removed == [
+            "companies/TSMC",
+            "concepts/HBM",
+            "industries/semiconductors",
+            "metrics/hbm-supply",
+            "risks/export-controls",
+            "themes/ai-capex",
+        ]
         assert not (wiki / "concepts" / "HBM.md").exists()
         assert not (wiki / "companies" / "TSMC.md").exists()
+        assert not (wiki / "industries" / "semiconductors.md").exists()
+        assert not (wiki / "themes" / "ai-capex.md").exists()
+        assert not (wiki / "metrics" / "hbm-supply.md").exists()
+        assert not (wiki / "risks" / "export-controls.md").exists()
         assert (wiki / "concepts" / "Shared.md").exists()
         index_text = (wiki / "index.md").read_text(encoding="utf-8")
         assert "[[companies/TSMC]]" not in index_text
         assert "[[concepts/HBM]]" not in index_text
+        assert "[[industries/semiconductors]]" not in index_text
+        assert "[[themes/ai-capex]]" not in index_text
+        assert "[[metrics/hbm-supply]]" not in index_text
+        assert "[[risks/export-controls]]" not in index_text
         assert "[[concepts/Shared]]" in index_text
 
 
@@ -858,6 +930,63 @@ class TestCompileShortDoc:
         index_text = (wiki / "index.md").read_text()
         assert "[[summaries/test-doc]]" in index_text
         assert "[[concepts/transformer]]" in index_text
+
+    @pytest.mark.asyncio
+    async def test_short_doc_syncs_generated_industry_pages_from_staging(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        (wiki / "sources").mkdir(parents=True)
+        (wiki / "summaries").mkdir(parents=True)
+        (wiki / "concepts").mkdir(parents=True)
+        (wiki / "industries").mkdir(parents=True)
+        (wiki / "index.md").write_text(
+            "# Index\n\n## Documents\n\n## Industries\n\n## Concepts\n\n## Explorations\n",
+            encoding="utf-8",
+        )
+        source_path = wiki / "sources" / "industry-report.md"
+        source_path.write_text("# Industry Report\n\nSemiconductor value chain.", encoding="utf-8")
+        (tmp_path / ".openkb").mkdir()
+        (tmp_path / "raw").mkdir()
+        (tmp_path / "raw" / "industry-report.pdf").write_bytes(b"fake")
+
+        summary_response = json.dumps({
+            "brief": "Semiconductor industry report",
+            "content": "# Summary\n\nSemiconductor value-chain structure.",
+        })
+        company_plan_response = json.dumps({"companies": []})
+        investment_page_plan_response = json.dumps({
+            "industries": [
+                {"name": "semiconductors", "title": "Semiconductors", "action": "create"},
+            ],
+            "themes": [],
+            "metrics": [],
+            "risks": [],
+        })
+        concept_plan_response = json.dumps({"create": [], "update": [], "related": []})
+        industry_page_response = json.dumps({
+            "brief": "Semiconductor value-chain structure",
+            "content": "# Semiconductors\n\nLinked to [[summaries/industry-report]].",
+        })
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    summary_response,
+                    company_plan_response,
+                    investment_page_plan_response,
+                    concept_plan_response,
+                ]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([industry_page_response]),
+            ),
+        ):
+            await compile_short_doc("industry-report", source_path, tmp_path, "gpt-4o-mini")
+
+        assert (wiki / "industries" / "semiconductors.md").exists()
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[industries/semiconductors]] - Semiconductor value-chain structure" in index_text
 
     @pytest.mark.asyncio
     async def test_rolls_back_summary_when_concept_planning_fails(self, tmp_path):
@@ -1170,6 +1299,83 @@ class TestCompileConceptsPlan:
         index_text = (wiki / "index.md").read_text(encoding="utf-8")
         assert "[[companies/TSMC]] - AI foundry bellwether" in index_text
         assert "[[concepts/HBM]] - Memory bottleneck for AI accelerators" in index_text
+
+    @pytest.mark.asyncio
+    async def test_investment_page_plan_creates_dedicated_pages_and_index(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "test-doc.md").write_text(
+            "The report covers semiconductor industry structure, AI CAPEX, HBM supply, and export controls.",
+            encoding="utf-8",
+        )
+
+        company_plan_response = json.dumps({"companies": []})
+        investment_page_plan_response = json.dumps({
+            "industries": [
+                {"name": "semiconductors", "title": "Semiconductors", "action": "create"},
+            ],
+            "themes": [
+                {"name": "ai-capex", "title": "AI CAPEX", "action": "create"},
+            ],
+            "metrics": [
+                {"name": "hbm-supply", "title": "HBM Supply", "action": "create"},
+            ],
+            "risks": [
+                {"name": "export-controls", "title": "Export Controls", "action": "create"},
+            ],
+        })
+        concept_plan_response = json.dumps({"create": [], "update": [], "related": []})
+        generated_page_responses = [
+            json.dumps({
+                "brief": "Semiconductor value-chain structure",
+                "content": "# Semiconductors\n\nFoundry and memory supply chain linked to [[summaries/test-doc]].",
+            }),
+            json.dumps({
+                "brief": "Cloud AI spending cycle",
+                "content": "# AI CAPEX\n\nSpending theme linked to [[summaries/test-doc]].",
+            }),
+            json.dumps({
+                "brief": "Capacity indicator for AI memory",
+                "content": "# HBM Supply\n\nMetric linked to [[summaries/test-doc]].",
+            }),
+            json.dumps({
+                "brief": "Policy constraint on AI chips",
+                "content": "# Export Controls\n\nRisk linked to [[summaries/test-doc]].",
+            }),
+        ]
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = "The report covers semiconductor industry structure, AI CAPEX, HBM supply, and export controls."
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    company_plan_response,
+                    investment_page_plan_response,
+                    concept_plan_response,
+                ]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion(generated_page_responses),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert (wiki / "industries" / "semiconductors.md").exists()
+        assert (wiki / "themes" / "ai-capex.md").exists()
+        assert (wiki / "metrics" / "hbm-supply.md").exists()
+        assert (wiki / "risks" / "export-controls.md").exists()
+
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[industries/semiconductors]] - Semiconductor value-chain structure" in index_text
+        assert "[[themes/ai-capex]] - Cloud AI spending cycle" in index_text
+        assert "[[metrics/hbm-supply]] - Capacity indicator for AI memory" in index_text
+        assert "[[risks/export-controls]] - Policy constraint on AI chips" in index_text
 
     @pytest.mark.asyncio
     async def test_generated_company_and_concept_pages_update_evidence_map(self, tmp_path):

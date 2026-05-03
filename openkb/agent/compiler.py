@@ -90,11 +90,54 @@ Rules:
   ratings, target prices, valuation context, AI exposure, catalysts, risks, or
   supply-chain position.
 - Do NOT include products, technologies, countries, markets, concepts, or broad
-  industry themes; those belong in `concepts/`.
+  industry themes; those belong in `industries/`, `themes/`, `metrics/`,
+  `risks/`, or `concepts/` as appropriate.
 - Prefer 3-8 high-signal companies when the report supports it.
 - Use "action": "update" for an existing company page and "create" otherwise.
 - If the report does not contain material company evidence, return
   {{"companies": []}}.
+
+Return ONLY valid JSON, no fences, no explanation.
+"""
+
+
+_INVESTMENT_PAGES_PLAN_USER = """\
+Based on the summary above, decide which dedicated investment pages should be
+created or updated outside `companies/` and `concepts/`.
+
+Existing industry pages:
+{industry_briefs}
+
+Existing theme pages:
+{theme_briefs}
+
+Existing metric pages:
+{metric_briefs}
+
+Existing risk pages:
+{risk_briefs}
+
+Return a JSON object with four keys:
+
+1. "industries" - sectors, industry structures, value chains, capacity cycles,
+   bottlenecks, and competitive maps. Array of objects:
+   {{"name": "industry-slug", "title": "Human-Readable Industry", "action": "create"}}
+
+2. "themes" - cross-company or cross-industry investment themes such as AI
+   CAPEX, localization, pricing power, or policy shifts. Same object shape.
+
+3. "metrics" - reusable operating, financial, valuation, and monitoring
+   indicators. Same object shape.
+
+4. "risks" - durable risk factors, bear cases, policy constraints, and
+   disconfirming signals. Same object shape.
+
+Rules:
+- Use "action": "update" for an existing page and "create" otherwise.
+- Do not duplicate company pages or ordinary reusable concepts.
+- Prefer a small set of high-signal pages. Empty arrays are fine.
+- For an industry report, create at least one `industries/` page when the
+  summary supports a durable sector, segment, or value-chain page.
 
 Return ONLY valid JSON, no fences, no explanation.
 """
@@ -167,6 +210,27 @@ Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) describing this company's
   investment relevance in this document
 - "content": The full company page in Markdown. Use [[concepts/...]] for
+  reusable concepts and [[summaries/{doc_name}]] for the source summary.
+
+Return ONLY valid JSON, no fences.
+"""
+
+_INVESTMENT_PAGE_USER = """\
+Write the {page_label} page for: {title}
+
+This {page_label} relates to the document "{doc_name}" summarized above.
+{update_instruction}
+
+Page guidance:
+{page_guidance}
+
+Keep claims traceable to the source summary. Include source evidence when
+available, related companies/concepts when useful, and [[summaries/{doc_name}]].
+
+Return a JSON object with two keys:
+- "brief": A single sentence (under 100 chars) describing this page's
+  investment relevance
+- "content": The full {page_label} page in Markdown. Use [[concepts/...]] for
   reusable concepts and [[summaries/{doc_name}]] for the source summary.
 
 Return ONLY valid JSON, no fences.
@@ -356,6 +420,10 @@ def _is_compile_managed_wiki_path(relative_path: Path) -> bool:
         rel in {"index.md", "evidence_map.json"}
         or rel.startswith("summaries/")
         or rel.startswith("companies/")
+        or rel.startswith("industries/")
+        or rel.startswith("themes/")
+        or rel.startswith("metrics/")
+        or rel.startswith("risks/")
         or rel.startswith("concepts/")
     )
 
@@ -453,6 +521,14 @@ def _read_concept_briefs(wiki_dir: Path) -> str:
 def _read_company_briefs(wiki_dir: Path) -> str:
     """Read existing company pages and return compact one-line summaries."""
     return _read_page_briefs(wiki_dir, "companies")
+
+
+def _read_investment_page_briefs(wiki_dir: Path) -> dict[str, str]:
+    """Read existing dedicated investment pages by subdirectory."""
+    return {
+        page_type["brief_key"]: _read_page_briefs(wiki_dir, page_type["subdir"])
+        for page_type in _INVESTMENT_PAGE_TYPES
+    }
 
 
 def _get_section_bounds(lines: list[str], heading: str) -> tuple[int, int] | None:
@@ -556,6 +632,52 @@ _SAFE_NAME_RE = re.compile(r'[^\w\-]')
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
 _CONCEPT_WIKILINK_RE = re.compile(r"\[\[concepts/([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
 DEFAULT_SUMMARY_LINK_FALLBACK_LIMIT = 8
+_INVESTMENT_PAGE_TYPES: tuple[dict[str, str], ...] = (
+    {
+        "subdir": "industries",
+        "label": "industry",
+        "brief_key": "industry_briefs",
+        "guidance": (
+            "Cover sector structure, value-chain position, capacity cycles, "
+            "bottlenecks, competitive dynamics, key companies, metrics to "
+            "track, catalysts, risks, and disconfirming evidence."
+        ),
+    },
+    {
+        "subdir": "themes",
+        "label": "theme",
+        "brief_key": "theme_briefs",
+        "guidance": (
+            "Cover the investment thesis, scope across companies or industries, "
+            "supporting evidence, catalysts, monitoring indicators, related "
+            "metrics, and risks."
+        ),
+    },
+    {
+        "subdir": "metrics",
+        "label": "metric",
+        "brief_key": "metric_briefs",
+        "guidance": (
+            "Define the metric, explain interpretation, drivers, units, update "
+            "cadence, what changes would confirm or refute the thesis, and "
+            "where the source document uses it."
+        ),
+    },
+    {
+        "subdir": "risks",
+        "label": "risk",
+        "brief_key": "risk_briefs",
+        "guidance": (
+            "Describe the bear-case mechanism, affected companies or industries, "
+            "trigger conditions, monitoring signals, mitigants, and source "
+            "evidence."
+        ),
+    },
+)
+_INVESTMENT_PAGE_SUBDIRS = tuple(page_type["subdir"] for page_type in _INVESTMENT_PAGE_TYPES)
+_INVESTMENT_PAGE_TYPE_BY_SUBDIR = {
+    page_type["subdir"]: page_type for page_type in _INVESTMENT_PAGE_TYPES
+}
 
 
 def _sanitize_concept_name(name: str) -> str:
@@ -748,6 +870,58 @@ def _company_alias_keys(company_items: list[dict]) -> set[str]:
                 if paren:
                     keys.add(_concept_alias_key(paren.group(1)))
     return keys
+
+
+def _canonicalize_investment_page_item(item: dict) -> dict | None:
+    """Normalize dedicated investment page plan items to safe slugs."""
+    name = str(item.get("name", "")).strip()
+    if not name:
+        return None
+    title = str(item.get("title", name)).strip() or name
+    action = str(item.get("action", "create")).strip().lower()
+    if action not in {"create", "update"}:
+        action = "create"
+    return {
+        "name": _sanitize_concept_name(name),
+        "title": title,
+        "action": action,
+    }
+
+
+def _empty_investment_page_plan() -> dict[str, list[dict]]:
+    """Return an empty dedicated investment page plan keyed by subdir."""
+    return {subdir: [] for subdir in _INVESTMENT_PAGE_SUBDIRS}
+
+
+def _parse_investment_page_plan(parsed: list | dict) -> dict[str, list[dict]]:
+    """Extract industries/themes/metrics/risks arrays from an LLM plan."""
+    plan = _empty_investment_page_plan()
+    if not isinstance(parsed, dict):
+        return plan
+
+    for subdir in _INVESTMENT_PAGE_SUBDIRS:
+        raw_items = parsed.get(subdir, [])
+        if not isinstance(raw_items, list):
+            continue
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            canonical = _canonicalize_investment_page_item(item)
+            if canonical is not None:
+                plan[subdir].append(canonical)
+    return plan
+
+
+def _planned_investment_page_slugs(plan: dict[str, list[dict]]) -> dict[str, set[str]]:
+    """Return planned dedicated investment page slugs by subdir."""
+    return {
+        subdir: {
+            _sanitize_concept_name(str(item["name"]))
+            for item in items
+            if isinstance(item, dict) and item.get("name")
+        }
+        for subdir, items in plan.items()
+    }
 
 
 def _canonicalize_concept_item(item: dict) -> dict | None:
@@ -1102,6 +1276,79 @@ def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is
         path.write_text(frontmatter + content, encoding="utf-8")
 
 
+def _write_investment_page(
+    wiki_dir: Path,
+    subdir: str,
+    name: str,
+    content: str,
+    source_file: str,
+    is_update: bool,
+    brief: str = "",
+) -> None:
+    """Write or update a dedicated investment page with managed frontmatter."""
+    if subdir not in _INVESTMENT_PAGE_SUBDIRS:
+        logger.warning("Unsupported investment page subdir: %s", subdir)
+        return
+
+    pages_dir = wiki_dir / subdir
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = _sanitize_concept_name(name)
+    path = (pages_dir / f"{safe_name}.md").resolve()
+    if not path.is_relative_to(pages_dir.resolve()):
+        logger.warning("Investment page name escapes %s dir: %s", subdir, name)
+        return
+
+    if is_update and path.exists():
+        existing = path.read_text(encoding="utf-8")
+        if source_file not in existing:
+            if existing.startswith("---"):
+                end = existing.find("---", 3)
+                if end != -1:
+                    fm = existing[:end + 3]
+                    body = existing[end + 3:]
+                    if "sources:" in fm:
+                        fm = fm.replace("sources: [", f"sources: [{source_file}, ")
+                    else:
+                        fm = fm.replace("---\n", f"---\nsources: [{source_file}]\n", 1)
+                    existing = fm + body
+            else:
+                existing = f"---\nsources: [{source_file}]\n---\n\n" + existing
+        clean = content
+        if clean.startswith("---"):
+            end = clean.find("---", 3)
+            if end != -1:
+                clean = clean[end + 3:].lstrip("\n")
+        if existing.startswith("---"):
+            end = existing.find("---", 3)
+            if end != -1:
+                existing = existing[:end + 3] + "\n\n" + clean
+            else:
+                existing = clean
+        else:
+            existing = clean
+        if brief and existing.startswith("---"):
+            end = existing.find("---", 3)
+            if end != -1:
+                fm = existing[:end + 3]
+                body = existing[end + 3:]
+                if "brief:" in fm:
+                    fm = re.sub(r"brief:.*", f"brief: {brief}", fm)
+                else:
+                    fm = fm.replace("---\n", f"---\nbrief: {brief}\n", 1)
+                existing = fm + body
+        path.write_text(existing, encoding="utf-8")
+    else:
+        if content.startswith("---"):
+            end = content.find("---", 3)
+            if end != -1:
+                content = content[end + 3:].lstrip("\n")
+        fm_lines = [f"sources: [{source_file}]"]
+        if brief:
+            fm_lines.append(f"brief: {brief}")
+        frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n"
+        path.write_text(frontmatter + content, encoding="utf-8")
+
+
 def _frontmatter_source_entries(text: str) -> list[str]:
     """Return source entries from a generated page frontmatter block."""
     if not text.startswith("---"):
@@ -1238,11 +1485,11 @@ def _remove_index_entries(wiki_dir: Path, page_ids: set[str]) -> None:
 
 
 def cleanup_generated_pages_for_source(wiki_dir: Path, doc_name: str) -> list[str]:
-    """Delete generated company/concept pages whose only source is this document."""
+    """Delete generated pages whose only source is this document."""
     source_file = f"summaries/{doc_name}.md"
     removed: list[str] = []
 
-    for subdir in ("companies", "concepts"):
+    for subdir in sorted({"companies", "concepts", *_INVESTMENT_PAGE_SUBDIRS}):
         pages_dir = wiki_dir / subdir
         if not pages_dir.exists():
             continue
@@ -1346,11 +1593,19 @@ def _update_index(
     doc_brief: str = "", concept_briefs: dict[str, str] | None = None,
     company_names: list[str] | None = None,
     company_briefs: dict[str, str] | None = None,
+    industry_names: list[str] | None = None,
+    industry_briefs: dict[str, str] | None = None,
+    theme_names: list[str] | None = None,
+    theme_briefs: dict[str, str] | None = None,
+    metric_names: list[str] | None = None,
+    metric_briefs: dict[str, str] | None = None,
+    risk_names: list[str] | None = None,
+    risk_briefs: dict[str, str] | None = None,
     doc_type: str = "short",
 ) -> None:
-    """Append document, company, and concept entries to index.md.
+    """Append document and generated page entries to index.md.
 
-    When ``doc_brief`` or entries in ``concept_briefs`` are provided, entries
+    When ``doc_brief`` or entries in page brief maps are provided, entries
     are written as ``- [[link]] (type) - brief text``. Existing entries are
     detected within their own section by exact entry prefix and skipped to
     avoid duplicates.
@@ -1363,6 +1618,22 @@ def _update_index(
         company_names = []
     if company_briefs is None:
         company_briefs = {}
+    if industry_names is None:
+        industry_names = []
+    if industry_briefs is None:
+        industry_briefs = {}
+    if theme_names is None:
+        theme_names = []
+    if theme_briefs is None:
+        theme_briefs = {}
+    if metric_names is None:
+        metric_names = []
+    if metric_briefs is None:
+        metric_briefs = {}
+    if risk_names is None:
+        risk_names = []
+    if risk_briefs is None:
+        risk_briefs = {}
 
     index_path = wiki_dir / "index.md"
     if not index_path.exists():
@@ -1395,16 +1666,28 @@ def _update_index(
             doc_entry += f" - {doc_brief}"
         _insert_section_entry(lines, "## Documents", doc_entry)
 
-    for name in company_names:
-        company_link = f"[[companies/{name}]]"
-        company_entry = f"- {company_link}"
-        if name in company_briefs:
-            company_entry += f" - {company_briefs[name]}"
-        if _section_contains_link(lines, "## Companies", company_link):
-            if name in company_briefs:
-                _replace_section_entry(lines, "## Companies", company_link, company_entry)
-        else:
-            _insert_section_entry(lines, "## Companies", company_entry)
+    def upsert_page_entries(
+        section: str,
+        subdir: str,
+        names: list[str],
+        briefs: dict[str, str],
+    ) -> None:
+        for name in names:
+            page_link = f"[[{subdir}/{name}]]"
+            page_entry = f"- {page_link}"
+            if name in briefs:
+                page_entry += f" - {briefs[name]}"
+            if _section_contains_link(lines, section, page_link):
+                if name in briefs:
+                    _replace_section_entry(lines, section, page_link, page_entry)
+            else:
+                _insert_section_entry(lines, section, page_entry)
+
+    upsert_page_entries("## Companies", "companies", company_names, company_briefs)
+    upsert_page_entries("## Industries", "industries", industry_names, industry_briefs)
+    upsert_page_entries("## Themes", "themes", theme_names, theme_briefs)
+    upsert_page_entries("## Metrics", "metrics", metric_names, metric_briefs)
+    upsert_page_entries("## Risks", "risks", risk_names, risk_briefs)
 
     for name in concept_names:
         concept_link = f"[[concepts/{name}]]"
@@ -1524,7 +1807,28 @@ async def _compile_concepts(
         for item in company_items
     }
 
-    # --- Step 2b: Get concepts plan (A cached) ---
+    # --- Step 2b: Get dedicated investment page plan (A cached) ---
+    investment_page_briefs = _read_investment_page_briefs(wiki_dir)
+    investment_page_plan_raw = _llm_call(model, [
+        system_msg,
+        doc_msg,
+        {"role": "assistant", "content": summary},
+        {"role": "user", "content": _INVESTMENT_PAGES_PLAN_USER.format(
+            **investment_page_briefs,
+        )},
+    ], "investment-pages-plan", max_tokens=1536)
+
+    try:
+        investment_page_parsed = _parse_json(investment_page_plan_raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Failed to parse investment pages plan: %s", exc)
+        logger.debug("Raw: %s", investment_page_plan_raw)
+        investment_page_parsed = {}
+
+    investment_page_plan = _parse_investment_page_plan(investment_page_parsed)
+    planned_investment_slugs = _planned_investment_page_slugs(investment_page_plan)
+
+    # --- Step 2c: Get concepts plan (A cached) ---
     concept_briefs = _read_concept_briefs(wiki_dir)
 
     plan_raw = _llm_call(model, [
@@ -1575,13 +1879,24 @@ async def _compile_concepts(
     valid_pages = (
         _known_wiki_pages(wiki_dir)
         | {f"companies/{slug}" for slug in planned_company_slugs}
+        | {
+            f"{subdir}/{slug}"
+            for subdir, slugs in planned_investment_slugs.items()
+            for slug in slugs
+        }
         | {f"concepts/{slug}" for slug in allowed_concept_slugs}
         | {f"summaries/{doc_name}"}
     )
     summary = _normalize_wiki_links(summary, concept_aliases, allowed_concept_slugs, valid_pages)
     _rewrite_summary_links(wiki_dir, doc_name, concept_aliases, allowed_concept_slugs, valid_pages)
 
-    if not company_items and not create_items and not update_items and not related_items:
+    investment_page_items = [
+        (subdir, item)
+        for subdir, items in investment_page_plan.items()
+        for item in items
+    ]
+
+    if not company_items and not investment_page_items and not create_items and not update_items and not related_items:
         _update_index(wiki_dir, doc_name, [], doc_brief=doc_brief, doc_type=doc_type)
         return
 
@@ -1626,6 +1941,49 @@ async def _compile_concepts(
         except (json.JSONDecodeError, ValueError):
             brief, content = "", raw
         return name, content, is_update, brief
+
+    async def _gen_investment_page(subdir: str, page: dict) -> tuple[str, str, str, bool, str]:
+        page_type = _INVESTMENT_PAGE_TYPE_BY_SUBDIR[subdir]
+        name = str(page["name"]).strip()
+        title = str(page.get("title", name)).strip() or name
+        safe_name = _sanitize_concept_name(name)
+        page_path = wiki_dir / subdir / f"{safe_name}.md"
+        requested_action = str(page.get("action", "")).lower()
+        is_update = requested_action == "update" or page_path.exists()
+        if is_update and page_path.exists():
+            raw_text = page_path.read_text(encoding="utf-8")
+            if raw_text.startswith("---"):
+                parts = raw_text.split("---", 2)
+                existing_content = parts[2].strip() if len(parts) >= 3 else raw_text
+            else:
+                existing_content = raw_text
+            update_instruction = (
+                f"Current content of this {page_type['label']} page:\n"
+                f"{existing_content}\n\n"
+                "Integrate the new document evidence naturally; do not just append."
+            )
+        else:
+            update_instruction = ""
+        async with semaphore:
+            raw = await _llm_call_async(model, [
+                system_msg,
+                doc_msg,
+                {"role": "assistant", "content": summary},
+                {"role": "user", "content": _INVESTMENT_PAGE_USER.format(
+                    page_label=page_type["label"],
+                    title=title,
+                    doc_name=doc_name,
+                    update_instruction=update_instruction,
+                    page_guidance=page_type["guidance"],
+                )},
+            ], f"{page_type['label']}: {name}")
+        try:
+            parsed = _parse_json(raw)
+            brief = parsed.get("brief", "")
+            content = parsed.get("content", raw)
+        except (json.JSONDecodeError, ValueError):
+            brief, content = "", raw
+        return subdir, name, content, is_update, brief
 
     async def _gen_create(concept: dict) -> tuple[str, str, bool, str]:
         name = concept["name"]
@@ -1680,6 +2038,10 @@ async def _compile_concepts(
         return name, content, True, brief
 
     company_tasks = [_gen_company(c) for c in company_items]
+    investment_page_tasks = [
+        _gen_investment_page(subdir, item)
+        for subdir, item in investment_page_items
+    ]
 
     tasks = []
     tasks.extend(_gen_create(c) for c in create_items)
@@ -1687,6 +2049,12 @@ async def _compile_concepts(
 
     company_names: list[str] = []
     company_briefs_map: dict[str, str] = {}
+    investment_page_names: dict[str, list[str]] = {
+        subdir: [] for subdir in _INVESTMENT_PAGE_SUBDIRS
+    }
+    investment_page_briefs_map: dict[str, dict[str, str]] = {
+        subdir: {} for subdir in _INVESTMENT_PAGE_SUBDIRS
+    }
     concept_names: list[str] = []
     concept_briefs_map: dict[str, str] = {}
 
@@ -1712,6 +2080,29 @@ async def _compile_concepts(
             company_names.append(safe_name)
             if brief:
                 company_briefs_map[safe_name] = brief
+
+    if investment_page_tasks:
+        total = len(investment_page_tasks)
+        sys.stdout.write(f"    Generating {total} dedicated investment page(s) (concurrency={max_concurrency})...\n")
+        sys.stdout.flush()
+
+        investment_page_results = await asyncio.gather(*investment_page_tasks, return_exceptions=True)
+        for r in investment_page_results:
+            if isinstance(r, Exception):
+                logger.warning("Investment page generation failed: %s", r)
+                continue
+            subdir, name, page_content, is_update, brief = r
+            page_content = _normalize_wiki_links(
+                page_content,
+                concept_aliases,
+                allowed_concept_slugs,
+                valid_pages,
+            )
+            _write_investment_page(wiki_dir, subdir, name, page_content, source_file, is_update, brief=brief)
+            safe_name = _sanitize_concept_name(name)
+            investment_page_names[subdir].append(safe_name)
+            if brief:
+                investment_page_briefs_map[subdir][safe_name] = brief
 
     if tasks:
         total = len(tasks)
@@ -1802,6 +2193,27 @@ async def _compile_concepts(
             text,
             source_file,
         )
+    for subdir, names in investment_page_names.items():
+        for slug in names:
+            page_path = wiki_dir / subdir / f"{slug}.md"
+            if not page_path.exists():
+                continue
+            text = page_path.read_text(encoding="utf-8")
+            normalized_text = _normalize_wiki_links(
+                text,
+                final_aliases,
+                successful_concept_slugs,
+                final_valid_pages,
+            )
+            if normalized_text != text:
+                page_path.write_text(normalized_text, encoding="utf-8")
+                text = normalized_text
+            _record_generated_page_evidence(
+                wiki_dir,
+                f"{subdir}/{slug}.md",
+                text,
+                source_file,
+            )
 
     all_concept_slugs = concept_names + sanitized_related
     if all_concept_slugs:
@@ -1812,6 +2224,14 @@ async def _compile_concepts(
     _update_index(wiki_dir, doc_name, concept_names,
                   doc_brief=doc_brief, concept_briefs=concept_briefs_map,
                   company_names=company_names, company_briefs=company_briefs_map,
+                  industry_names=investment_page_names["industries"],
+                  industry_briefs=investment_page_briefs_map["industries"],
+                  theme_names=investment_page_names["themes"],
+                  theme_briefs=investment_page_briefs_map["themes"],
+                  metric_names=investment_page_names["metrics"],
+                  metric_briefs=investment_page_briefs_map["metrics"],
+                  risk_names=investment_page_names["risks"],
+                  risk_briefs=investment_page_briefs_map["risks"],
                   doc_type=doc_type)
 
 
