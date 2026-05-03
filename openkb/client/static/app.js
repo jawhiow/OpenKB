@@ -750,7 +750,7 @@ function renderReports() {
   syncSelectedReport(reports);
   syncFixPlanFromJobs();
   const candidates = state.fixPlan?.candidates || [];
-  const selectedCount = candidates.filter((item) => isAutoFix(item) && state.selectedFixes[fixKey(item)]).length;
+  const selectedCount = candidates.filter((item) => isSelectableFix(item) && state.selectedFixes[fixKey(item)]).length;
   const activeReportName = state.selectedReport ? state.selectedReport.replace(/^reports\//, "") : "";
   mainView.innerHTML = `
     <div class="quality-layout">
@@ -771,6 +771,7 @@ function renderReports() {
           ${qualityStat("Candidates", candidates.length)}
           ${qualityStat("Approved", selectedCount)}
           ${qualityStat("Created", state.lastFixApply?.created?.length ?? 0)}
+          ${qualityStat("Review", state.lastFixApply?.reviewed?.length ?? 0)}
         </div>
       </section>
 
@@ -807,7 +808,7 @@ function renderReports() {
         </header>
         <div class="section-body fix-list">
           ${renderFixCandidates(candidates)}
-          ${renderCreatedFixes()}
+          ${renderAppliedFixes()}
         </div>
       </section>
     </div>
@@ -855,6 +856,14 @@ function isAutoFix(item) {
   return (item?.action || "create") === "create" && item?.auto_applicable !== false;
 }
 
+function isManualReviewFix(item) {
+  return (item?.action || "create") === "manual-review";
+}
+
+function isSelectableFix(item) {
+  return isAutoFix(item) || isManualReviewFix(item);
+}
+
 function reportPreviewText() {
   if (!state.selectedReport) return "";
   if (state.reportPreviewLoading === state.selectedReport) return "Loading...";
@@ -868,12 +877,14 @@ function renderFixCandidates(candidates) {
     .map((item) => {
       const key = fixKey(item);
       const auto = isAutoFix(item);
+      const review = isManualReviewFix(item);
+      const selectable = isSelectableFix(item);
       const checked = state.selectedFixes[key] ? "checked" : "";
-      const disabled = auto ? "" : "disabled";
-      const badgeClass = auto ? "warn" : "muted";
-      const actionLabel = auto ? item.action || "create" : item.action || "manual-review";
+      const disabled = selectable ? "" : "disabled";
+      const badgeClass = auto ? "warn" : review ? "info" : "muted";
+      const actionLabel = item.action || "create";
       return `
-        <div class="fix-row${auto ? "" : " review-only"}">
+        <div class="fix-row${review ? " review-only" : ""}${selectable ? "" : " unavailable"}">
           <label class="fix-select">
             <input type="checkbox" data-fix-key="${escapeHTML(key)}" ${checked} ${disabled} />
             <span class="fix-main">
@@ -899,17 +910,29 @@ function renderFixCandidates(candidates) {
     .join("");
 }
 
-function renderCreatedFixes() {
+function renderAppliedFixes() {
   const created = state.lastFixApply?.created || [];
-  if (!created.length) return "";
+  const reviewed = state.lastFixApply?.reviewed || [];
+  if (!created.length && !reviewed.length) return "";
   return `
-    <div class="created-fixes">
+    <div class="applied-fixes">
       ${created
         .map(
           (item) => `
-            <div class="created-fix">
-              <span>${escapeHTML(item.path)}</span>
+            <div class="applied-fix created-fix">
+              <span>Created draft - ${escapeHTML(item.path)}</span>
               <strong>${escapeHTML(item.title || item.name)}</strong>
+            </div>
+          `,
+        )
+        .join("")}
+      ${reviewed
+        .map(
+          (item) => `
+            <div class="applied-fix reviewed-fix">
+              <span>Approved review - ${escapeHTML(item.path)}</span>
+              <strong>${escapeHTML(item.title || item.name)}</strong>
+              ${item.reason ? `<em>${escapeHTML(item.reason)}</em>` : ""}
             </div>
           `,
         )
@@ -948,7 +971,7 @@ async function loadReportPreview(reportPath) {
 
 function setAllFixes(value) {
   (state.fixPlan?.candidates || []).forEach((item) => {
-    if (isAutoFix(item)) {
+    if (isSelectableFix(item)) {
       state.selectedFixes[fixKey(item)] = value;
     }
   });
@@ -1057,7 +1080,7 @@ async function applyApprovedFixes(event) {
   const button = event?.currentTarget;
   const candidates = (state.fixPlan?.candidates || []).map((item) => ({
     ...item,
-    approved: Boolean(isAutoFix(item) && state.selectedFixes[fixKey(item)]),
+    approved: Boolean(isSelectableFix(item) && state.selectedFixes[fixKey(item)]),
   }));
   const approved = candidates.filter((item) => item.approved);
   if (!approved.length) {

@@ -257,7 +257,7 @@ def _approved_lint_fix_candidates(candidates: Any) -> list[dict[str, Any]]:
         if item.get("approved") is not True:
             continue
         action = str(item.get("action") or "create").strip().lower()
-        if action != "create":
+        if action not in {"create", "manual-review"}:
             continue
         name = str(item.get("name") or "").strip()
         if not name:
@@ -265,9 +265,9 @@ def _approved_lint_fix_candidates(candidates: Any) -> list[dict[str, Any]]:
         approved_item = {
             "name": name,
             "title": str(item.get("title") or name.replace("_", " ")).strip(),
-            "action": "create",
+            "action": action,
         }
-        for key in ("path", "type", "source_section", "reason"):
+        for key in ("path", "type", "source_section", "reason", "preview"):
             if item.get(key):
                 approved_item[key] = str(item[key])
         approved.append(approved_item)
@@ -278,10 +278,12 @@ def apply_lint_fix_candidates(kb_dir: Path, candidates: Any) -> dict[str, Any]:
     """Create approved lint draft pages while preserving existing pages."""
     kb_dir = require_kb_dir(kb_dir)
     approved = _approved_lint_fix_candidates(candidates)
+    create_candidates = [item for item in approved if item.get("action") == "create"]
+    reviewed = [item for item in approved if item.get("action") == "manual-review"]
     from openkb.agent.linter import apply_lint_fix_candidates
 
-    created = apply_lint_fix_candidates(kb_dir / "wiki", approved)
-    return {"approved": approved, "created": created}
+    created = apply_lint_fix_candidates(kb_dir / "wiki", create_candidates)
+    return {"approved": approved, "created": created, "reviewed": reviewed}
 
 
 def _api_key_configured(kb_dir: Path) -> bool:

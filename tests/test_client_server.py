@@ -303,6 +303,60 @@ def test_lint_apply_fixes_job_creates_approved_company_and_schema_drafts(tmp_pat
     assert "[[industries/semiconductor-value-chain]]" in index
 
 
+def test_lint_apply_fixes_job_returns_approved_manual_review_items_without_rewriting_pages(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / "wiki" / "companies").mkdir()
+    target = kb_dir / "wiki" / "companies" / "aspeed.md"
+    target.write_text("# Aspeed\n\n评级日期 2025年6月9日\n", encoding="utf-8")
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/lint/apply-fixes",
+        json={
+            "kb_dir": str(kb_dir),
+            "candidates": [
+                {
+                    "name": "Aspeed_Rating_Date",
+                    "title": "Aspeed rating date clarification",
+                    "path": "companies/aspeed.md",
+                    "action": "manual-review",
+                    "approved": True,
+                    "reason": "修复 Aspeed 评级日期，标注为首次评级日期",
+                    "preview": "Add clarification that 2025-06-09 is the initial rating date.",
+                },
+                {
+                    "name": "Normalize_Concept_Links",
+                    "title": "Normalize unresolved concept links",
+                    "path": "wiki",
+                    "action": "manual-review",
+                    "approved": False,
+                    "reason": "填补 10+ 个死链接",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.result["created"] == []
+    assert job.result["reviewed"] == [
+        {
+            "name": "Aspeed_Rating_Date",
+            "title": "Aspeed rating date clarification",
+            "path": "companies/aspeed.md",
+            "action": "manual-review",
+            "reason": "修复 Aspeed 评级日期，标注为首次评级日期",
+            "preview": "Add clarification that 2025-06-09 is the initial rating date.",
+        }
+    ]
+    assert target.read_text(encoding="utf-8") == "# Aspeed\n\n评级日期 2025年6月9日\n"
+
+
 def test_lint_apply_fixes_job_ignores_unapproved_candidates(tmp_path):
     kb_dir = _make_kb(tmp_path)
     registry = JobRegistry()

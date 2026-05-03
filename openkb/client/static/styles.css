@@ -689,6 +689,12 @@ th {
   color: var(--warn);
 }
 
+.badge.info {
+  border-color: var(--info);
+  background: var(--info-soft);
+  color: var(--info);
+}
+
 .badge.muted {
   color: var(--muted);
 }
@@ -778,7 +784,12 @@ th {
 }
 
 .fix-row.review-only {
-  background: #fbfcfb;
+  border-color: #cbd9e8;
+  background: var(--info-soft);
+}
+
+.fix-row.unavailable {
+  opacity: 0.72;
 }
 
 .fix-select {
@@ -865,28 +876,46 @@ th {
   line-height: 1.45;
 }
 
-.created-fixes {
+.applied-fixes {
   display: grid;
   gap: 6px;
   margin-top: 8px;
 }
 
-.created-fix {
+.applied-fix {
   display: grid;
   gap: 2px;
-  border: 1px solid var(--good);
   border-radius: 6px;
-  background: var(--good-soft);
   padding: 8px 10px;
   font-size: 12px;
+}
+
+.created-fix {
+  border: 1px solid var(--good);
+  background: var(--good-soft);
+}
+
+.reviewed-fix {
+  border: 1px solid var(--info);
+  background: var(--info-soft);
 }
 
 .created-fix span {
   color: var(--good);
 }
 
-.created-fix strong {
+.reviewed-fix span {
+  color: var(--info);
+}
+
+.applied-fix strong {
   color: var(--text);
+}
+
+.applied-fix em {
+  color: var(--muted);
+  font-style: normal;
+  line-height: 1.4;
 }
 
 .toast-host {
