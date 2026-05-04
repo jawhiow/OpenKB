@@ -61,7 +61,62 @@ def _restore_initial_runtime_env() -> None:
             os.environ[key] = value
 
 
-def _setup_llm_key(kb_dir: Path | None = None) -> None:
+def _normalized_llm_profile(raw: dict, fallback_id: str, config: dict) -> dict[str, str]:
+    profile_id = str(raw.get("id") or fallback_id or "default").strip() or "default"
+    return {
+        "id": profile_id,
+        "name": str(raw.get("name") or ("Default" if profile_id == "default" else profile_id)).strip(),
+        "model": str(raw.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip(),
+        "wire_api": str(raw.get("wire_api") or config.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
+        "base_url": str(raw.get("base_url") or config.get("base_url") or DEFAULT_CONFIG.get("base_url", "")).strip().rstrip("/"),
+        "api_key_env": str(raw.get("api_key_env") or "").strip(),
+    }
+
+
+def _ordered_llm_profiles(config: dict) -> list[dict[str, str]]:
+    raw_profiles = config.get("llm_profiles")
+    profiles: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    if isinstance(raw_profiles, list):
+        for index, raw in enumerate(raw_profiles, 1):
+            if not isinstance(raw, dict):
+                continue
+            profile = _normalized_llm_profile(raw, str(raw.get("id") or f"profile-{index}"), config)
+            if profile["id"] in seen:
+                continue
+            profiles.append(profile)
+            seen.add(profile["id"])
+    elif isinstance(raw_profiles, dict):
+        for profile_id, raw in raw_profiles.items():
+            if not isinstance(raw, dict):
+                continue
+            profile = _normalized_llm_profile(raw, str(profile_id), config)
+            if profile["id"] in seen:
+                continue
+            profiles.append(profile)
+            seen.add(profile["id"])
+
+    if not profiles:
+        profiles.append(_normalized_llm_profile(config, "default", config))
+
+    active_id = str(config.get("active_llm_profile") or profiles[0]["id"]).strip()
+    active = [profile for profile in profiles if profile["id"] == active_id]
+    rest = [profile for profile in profiles if profile["id"] != active_id]
+    return active + rest if active else profiles
+
+
+def _profile_label(profile: dict[str, str]) -> str:
+    return profile.get("name") or profile.get("id") or profile.get("model") or "profile"
+
+
+def _is_retryable_llm_failure(exc: Exception) -> bool:
+    from openkb.llm_runtime import _is_retryable_llm_error
+
+    return _is_retryable_llm_error(exc)
+
+
+def _setup_llm_key(kb_dir: Path | None = None, profile_config: dict[str, str] | None = None) -> None:
     """Set LiteLLM API key from LLM_API_KEY env var if present.
 
     Load order (override=False, so first one wins):
@@ -95,16 +150,16 @@ def _setup_llm_key(kb_dir: Path | None = None) -> None:
                     ),
                     None,
                 )
-            profile_config = active_profile if isinstance(active_profile, dict) else config
-            model_name = str(profile_config.get("model", "")).strip() or None
-            wire_api = str(profile_config.get("wire_api", "")).strip().lower()
+            selected_profile = profile_config or (active_profile if isinstance(active_profile, dict) else config)
+            model_name = str(selected_profile.get("model", "")).strip() or None
+            wire_api = str(selected_profile.get("wire_api", "")).strip().lower()
             if wire_api:
                 os.environ["OPENKB_WIRE_API"] = wire_api
-            base_url = str(profile_config.get("base_url", "")).strip().rstrip("/")
+            base_url = str(selected_profile.get("base_url", "")).strip().rstrip("/")
             if base_url:
                 os.environ["OPENAI_BASE_URL"] = base_url
                 os.environ["OPENAI_API_BASE"] = base_url
-            profile_env = str(profile_config.get("api_key_env", "")).strip()
+            profile_env = str(selected_profile.get("api_key_env", "")).strip()
             if profile_env and os.environ.get(profile_env):
                 os.environ["LLM_API_KEY"] = os.environ[profile_env]
 
@@ -233,11 +288,43 @@ def _find_kb_dir(override: Path | None = None) -> Path | None:
 
 
 ProgressCallback = Callable[[str], None]
+CompileOperation = Callable[[str], object]
 
 
 def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> None:
     if progress_callback is not None:
         progress_callback(message)
+
+
+def _run_compile_with_profile_fallback(
+    kb_dir: Path,
+    profiles: list[dict[str, str]],
+    progress_callback: ProgressCallback | None,
+    operation: CompileOperation,
+) -> object:
+    last_exc: Exception | None = None
+    for profile_index, profile in enumerate(profiles):
+        if profile_index > 0:
+            message = f"Retrying with LLM profile {_profile_label(profile)}"
+            click.echo(f"  {message}...")
+            _emit_progress(progress_callback, message)
+        _setup_llm_key(kb_dir, profile)
+        model_name = profile["model"]
+        for attempt in range(2):
+            try:
+                return asyncio.run(operation(model_name))
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    click.echo(f"  Retrying compilation in 2s...")
+                    time.sleep(2)
+                    continue
+                break
+        if last_exc is None or not _is_retryable_llm_failure(last_exc):
+            raise last_exc
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("No LLM profiles available for compilation.")
 
 
 def _safe_echo(message: object = "", **kwargs) -> None:
@@ -282,8 +369,8 @@ def add_single_file(
     logger = logging.getLogger(__name__)
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
-    _setup_llm_key(kb_dir)
-    model: str = config.get("model", DEFAULT_CONFIG["model"])
+    profiles = _ordered_llm_profiles(config)
+    _setup_llm_key(kb_dir, profiles[0])
     compile_max_concurrency = max(int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])), 1)
     registry = HashRegistry(openkb_dir / "hashes.json")
 
@@ -311,30 +398,27 @@ def add_single_file(
     if result.is_long_doc and result.local_long_doc:
         click.echo(f"  Long document detected - compiling with local page index...")
         _emit_progress(progress_callback, f"Compiling local long document: {file_path.name}")
-        for attempt in range(2):
-            try:
-                with compile_progress_callback(progress_callback):
-                    removed_stale_pages = asyncio.run(
-                        compile_local_long_doc(
-                            doc_name,
-                            result.source_path,
-                            kb_dir,
-                            model,
-                            max_concurrency=compile_max_concurrency,
-                            cleanup_existing=force,
-                        )
+        try:
+            with compile_progress_callback(progress_callback):
+                removed_stale_pages = _run_compile_with_profile_fallback(
+                    kb_dir,
+                    profiles,
+                    progress_callback,
+                    lambda model: compile_local_long_doc(
+                        doc_name,
+                        result.source_path,
+                        kb_dir,
+                        model,
+                        max_concurrency=compile_max_concurrency,
+                        cleanup_existing=force,
                     )
-                break
-            except Exception as exc:
-                if attempt == 0:
-                    click.echo(f"  Retrying compilation in 2s...")
-                    time.sleep(2)
-                else:
-                    click.echo(f"  [ERROR] Compilation failed: {exc}")
-                    logger.debug("Compilation traceback:", exc_info=True)
-                    if strict:
-                        raise RuntimeError(f"Compilation failed: {exc}") from exc
-                    return
+                )
+        except Exception as exc:
+            click.echo(f"  [ERROR] Compilation failed: {exc}")
+            logger.debug("Compilation traceback:", exc_info=True)
+            if strict:
+                raise RuntimeError(f"Compilation failed: {exc}") from exc
+            return
     elif result.is_long_doc:
         click.echo(f"  Long document detected — indexing with PageIndex...")
         _emit_progress(progress_callback, f"Indexing long document: {file_path.name}")
@@ -351,59 +435,53 @@ def add_single_file(
         summary_path = kb_dir / "wiki" / "summaries" / f"{doc_name}.md"
         click.echo(f"  Compiling long doc (doc_id={index_result.doc_id})...")
         _emit_progress(progress_callback, f"Compiling long document: {file_path.name}")
-        for attempt in range(2):
-            try:
-                with compile_progress_callback(progress_callback):
-                    removed_stale_pages = asyncio.run(
-                        compile_long_doc(
-                            doc_name,
-                            summary_path,
-                            index_result.doc_id,
-                            kb_dir,
-                            model,
-                            doc_description=index_result.description,
-                            max_concurrency=compile_max_concurrency,
-                            cleanup_existing=force,
-                        )
+        try:
+            with compile_progress_callback(progress_callback):
+                removed_stale_pages = _run_compile_with_profile_fallback(
+                    kb_dir,
+                    profiles,
+                    progress_callback,
+                    lambda model: compile_long_doc(
+                        doc_name,
+                        summary_path,
+                        index_result.doc_id,
+                        kb_dir,
+                        model,
+                        doc_description=index_result.description,
+                        max_concurrency=compile_max_concurrency,
+                        cleanup_existing=force,
                     )
-                break
-            except Exception as exc:
-                if attempt == 0:
-                    click.echo(f"  Retrying compilation in 2s...")
-                    time.sleep(2)
-                else:
-                    click.echo(f"  [ERROR] Compilation failed: {exc}")
-                    logger.debug("Compilation traceback:", exc_info=True)
-                    if strict:
-                        raise RuntimeError(f"Compilation failed: {exc}") from exc
-                    return
+                )
+        except Exception as exc:
+            click.echo(f"  [ERROR] Compilation failed: {exc}")
+            logger.debug("Compilation traceback:", exc_info=True)
+            if strict:
+                raise RuntimeError(f"Compilation failed: {exc}") from exc
+            return
     else:
         click.echo(f"  Compiling short doc...")
         _emit_progress(progress_callback, f"Compiling short document: {file_path.name}")
-        for attempt in range(2):
-            try:
-                with compile_progress_callback(progress_callback):
-                    removed_stale_pages = asyncio.run(
-                        compile_short_doc(
-                            doc_name,
-                            result.source_path,
-                            kb_dir,
-                            model,
-                            max_concurrency=compile_max_concurrency,
-                            cleanup_existing=force,
-                        )
+        try:
+            with compile_progress_callback(progress_callback):
+                removed_stale_pages = _run_compile_with_profile_fallback(
+                    kb_dir,
+                    profiles,
+                    progress_callback,
+                    lambda model: compile_short_doc(
+                        doc_name,
+                        result.source_path,
+                        kb_dir,
+                        model,
+                        max_concurrency=compile_max_concurrency,
+                        cleanup_existing=force,
                     )
-                break
-            except Exception as exc:
-                if attempt == 0:
-                    click.echo(f"  Retrying compilation in 2s...")
-                    time.sleep(2)
-                else:
-                    click.echo(f"  [ERROR] Compilation failed: {exc}")
-                    logger.debug("Compilation traceback:", exc_info=True)
-                    if strict:
-                        raise RuntimeError(f"Compilation failed: {exc}") from exc
-                    return
+                )
+        except Exception as exc:
+            click.echo(f"  [ERROR] Compilation failed: {exc}")
+            logger.debug("Compilation traceback:", exc_info=True)
+            if strict:
+                raise RuntimeError(f"Compilation failed: {exc}") from exc
+            return
 
     if removed_stale_pages:
         click.echo(f"  Removed {len(removed_stale_pages)} stale generated page(s) for recompilation.")
@@ -658,8 +736,9 @@ def query(ctx, question, save, raw):
 
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
-    _setup_llm_key(kb_dir)
-    model: str = config.get("model", DEFAULT_CONFIG["model"])
+    profiles = _ordered_llm_profiles(config)
+    _setup_llm_key(kb_dir, profiles[0])
+    model = profiles[0]["model"]
 
     try:
         answer = asyncio.run(run_query(question, kb_dir, model, stream=True, raw=raw))
@@ -847,18 +926,26 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
         return
 
     config = load_config(openkb_dir / "config.yaml")
-    _setup_llm_key(kb_dir)
-    model: str = config.get("model", DEFAULT_CONFIG["model"])
+    profiles = _ordered_llm_profiles(config)
+    _setup_llm_key(kb_dir, profiles[0])
 
     _safe_echo("Running structural lint...")
     structural_report = run_structural_lint(kb_dir)
     _safe_echo(structural_report)
 
     _safe_echo("Running knowledge lint...")
-    try:
-        knowledge_report = await run_knowledge_lint(kb_dir, model)
-    except Exception as exc:
-        knowledge_report = f"Knowledge lint failed: {exc}"
+    knowledge_report = ""
+    for profile_index, profile in enumerate(profiles):
+        if profile_index > 0:
+            _safe_echo(f"Retrying knowledge lint with LLM profile {_profile_label(profile)}...")
+        _setup_llm_key(kb_dir, profile)
+        try:
+            knowledge_report = await run_knowledge_lint(kb_dir, profile["model"])
+            break
+        except Exception as exc:
+            if not _is_retryable_llm_failure(exc) or profile_index == len(profiles) - 1:
+                knowledge_report = f"Knowledge lint failed: {exc}"
+                break
     _safe_echo(knowledge_report)
 
     coverage_candidates = extract_coverage_gap_concept_candidates(

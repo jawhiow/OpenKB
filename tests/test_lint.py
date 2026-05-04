@@ -8,6 +8,7 @@ import pytest
 from openkb.lint import (
     check_index_sync,
     find_broken_links,
+    find_incomplete_entries,
     find_investment_quality_issues,
     find_missing_entries,
     find_orphans,
@@ -158,6 +159,29 @@ class TestFindMissingEntries:
         result = find_missing_entries(raw, wiki)
 
         assert result == []
+
+    def test_source_without_summary_is_incomplete(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        (raw / "doc.docx").write_bytes(b"DOCX")
+        (wiki / "sources" / "doc.md").write_text("# Converted", encoding="utf-8")
+
+        result = find_incomplete_entries(raw, wiki)
+
+        assert result == ["doc.docx"]
+
+    def test_structural_lint_reports_source_without_summary(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        raw = tmp_path / "raw"
+        raw.mkdir()
+        (raw / "doc.docx").write_bytes(b"DOCX")
+        (wiki / "sources" / "doc.md").write_text("# Converted", encoding="utf-8")
+
+        report = run_structural_lint(tmp_path)
+
+        assert "### Incomplete Wiki Entries (1)" in report
+        assert "- doc.docx" in report
 
 
 class TestCheckIndexSync:

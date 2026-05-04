@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 from openkb.cli import _safe_echo, cli
@@ -107,6 +108,53 @@ class TestLintCommand:
         assert len(reports) == 1
         report_text = reports[0].read_text(encoding="utf-8")
         assert "[[concepts/AI_GPU]]" in report_text
+
+    @pytest.mark.asyncio
+    async def test_run_lint_falls_back_to_next_llm_profile_on_retryable_failure(self, tmp_path):
+        from openkb.cli import run_lint
+
+        class RetryableLLMError(RuntimeError):
+            status_code = 500
+
+        kb_dir = _setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps({"abc": {"name": "paper.pdf", "type": "pdf"}}))
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "active_llm_profile: bad\n"
+            "model: bad-model\n"
+            "wire_api: chat_completions\n"
+            "base_url: https://bad.example.com/v1\n"
+            "llm_profiles:\n"
+            "- id: bad\n"
+            "  name: Bad\n"
+            "  model: bad-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://bad.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_BAD_API_KEY\n"
+            "- id: good\n"
+            "  name: Good\n"
+            "  model: good-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://good.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_GOOD_API_KEY\n",
+            encoding="utf-8",
+        )
+        calls: list[str] = []
+
+        async def run_knowledge_lint(_kb_dir, model):
+            calls.append(model)
+            if model == "bad-model":
+                raise RetryableLLMError("upstream 500")
+            return "No issues."
+
+        with patch("openkb.cli._setup_llm_key"), \
+             patch("openkb.agent.linter.run_knowledge_lint", side_effect=run_knowledge_lint):
+            report_path = await run_lint(kb_dir)
+
+        assert calls == ["bad-model", "good-model"]
+        assert report_path is not None
+        report_text = report_path.read_text(encoding="utf-8")
+        assert "No issues." in report_text
+        assert "Knowledge lint failed" not in report_text
 
     def test_lint_fix_creates_coverage_gap_draft_pages(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)

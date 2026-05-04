@@ -95,6 +95,16 @@ def test_client_settings_support_llm_profile_switching():
     assert ".profile-button.active" in styles
 
 
+def test_client_settings_exposes_general_save_button():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="saveSettingsBtn"' in script
+    assert '$("#saveSettingsBtn").addEventListener("click", saveSettings);' in script
+    assert "async function saveSettings(event)" in script
+    assert "language: $(\"#languageInput\").value.trim()" in script
+    assert "compile_max_concurrency: Number($(\"#compileConcurrencyInput\").value || 2)" in script
+
+
 def test_client_fix_plan_renders_report_reason_and_preview_content():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 

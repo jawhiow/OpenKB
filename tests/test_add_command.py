@@ -329,6 +329,68 @@ class TestAddCommand:
             cleanup_existing=False,
         )
 
+    def test_add_single_file_falls_back_to_next_llm_profile_on_retryable_failure(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        class RetryableLLMError(RuntimeError):
+            status_code = 500
+
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "active_llm_profile: bad\n"
+            "model: bad-model\n"
+            "wire_api: chat_completions\n"
+            "base_url: https://bad.example.com/v1\n"
+            "llm_profiles:\n"
+            "- id: bad\n"
+            "  name: Bad\n"
+            "  model: bad-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://bad.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_BAD_API_KEY\n"
+            "- id: good\n"
+            "  name: Good\n"
+            "  model: good-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://good.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_GOOD_API_KEY\n",
+            encoding="utf-8",
+        )
+        (kb_dir / ".env").write_text(
+            "OPENKB_LLM_PROFILE_BAD_API_KEY=bad-key\n"
+            "OPENKB_LLM_PROFILE_GOOD_API_KEY=good-key\n",
+            encoding="utf-8",
+        )
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+        source_path = kb_dir / "wiki" / "sources" / "test.md"
+        source_path.write_text("# Hello converted")
+        events: list[str] = []
+        calls: list[str] = []
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "test.md",
+            source_path=source_path,
+            is_long_doc=False,
+            file_hash="abc123",
+        )
+
+        async def compile_short_doc(_doc_name, _source_path, _kb_dir, model, **_kwargs):
+            calls.append(model)
+            if model == "bad-model":
+                raise RetryableLLMError("upstream 500")
+            return []
+
+        with patch("openkb.cli.convert_document", return_value=mock_result), \
+             patch("openkb.agent.compiler.compile_short_doc", side_effect=compile_short_doc):
+            add_single_file(doc, kb_dir, strict=True, progress_callback=events.append)
+
+        assert calls == ["bad-model", "bad-model", "good-model"]
+        assert any("Retrying with LLM profile Good" in event for event in events)
+        hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+        assert hashes["abc123"]["name"] == "test.md"
+
 
 class TestRebuildCommand:
     def _setup_kb(self, tmp_path):

@@ -1161,7 +1161,10 @@ function renderSettings() {
   mainView.innerHTML = `
     <div class="settings-grid">
       <section class="section">
-        <header><h3>Knowledge Base</h3></header>
+        <header>
+          <h3>Knowledge Base</h3>
+          <button id="saveSettingsBtn" class="primary" type="button">Save Settings</button>
+        </header>
         <div class="section-body form-grid">
           <div class="field full">
             <label for="kbPathInput">Path</label>
@@ -1238,6 +1241,7 @@ function renderSettings() {
   $("#wireApiInput").value = profile.wire_api || cfg.wire_api || "responses";
   $("#useKbBtn").addEventListener("click", useKb);
   $("#createKbBtn").addEventListener("click", createKb);
+  $("#saveSettingsBtn").addEventListener("click", saveSettings);
   $("#testLlmBtn").addEventListener("click", testLlm);
   $("#toggleApiKeyBtn").addEventListener("click", toggleApiKeyVisibility);
   $("#exportProfilesBtn").addEventListener("click", exportLlmConfig);
@@ -1402,6 +1406,33 @@ async function switchProfile(profileId, event) {
       }),
     });
     notify("LLM profile switched", "success");
+    await loadKnowledgeData();
+    render();
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function saveSettings(event) {
+  const button = event?.currentTarget;
+  if (!state.kbDir) {
+    notify("Select or create a knowledge base first.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Saving...");
+  try {
+    await api("/api/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        kb_dir: state.kbDir,
+        language: $("#languageInput").value.trim(),
+        pageindex_threshold: Number($("#thresholdInput").value || 20),
+        compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
+      }),
+    });
+    notify("Settings saved", "success");
     await loadKnowledgeData();
     render();
   } catch (error) {

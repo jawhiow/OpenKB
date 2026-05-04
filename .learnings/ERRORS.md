@@ -192,6 +192,34 @@ Use `${pidValue}` when a variable is immediately followed by punctuation in a do
 - Related Files: none
 
 ---
+## [ERR-20260504-001] pytest_wrong_nodeid
+
+**Logged**: 2026-05-04T21:33:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: tests
+
+### Summary
+Ran pytest with a stale/nonexistent node id while verifying client config behavior.
+
+### Error
+```text
+ERROR: not found: D:\workspace\codex\jt-ai-tz\OpenKB\tests\test_client_server.py::test_test_llm_endpoint_uses_payload_values_and_masks_key
+(no match in any of [<Module test_client_server.py>])
+```
+
+### Context
+- Command attempted after adding a Settings save button in the browser client.
+- The actual test name is `test_test_llm_endpoint_uses_current_form_values`.
+
+### Suggested Fix
+Search test names before targeting a specific node id, or run the whole relevant file when test naming has changed.
+
+### Metadata
+- Reproducible: yes
+- Related Files: tests/test_client_server.py
+
+---
 ## [ERR-20260430-004] powershell_nested_redaction_command
 
 **Logged**: 2026-04-30T13:35:00+08:00

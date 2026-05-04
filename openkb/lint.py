@@ -204,6 +204,31 @@ def find_missing_entries(raw: Path, wiki: Path) -> list[str]:
     return sorted(missing)
 
 
+def _source_stems(wiki: Path) -> set[str]:
+    sources_dir = wiki / "sources"
+    if not sources_dir.exists():
+        return set()
+    return {
+        path.stem
+        for path in sources_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in {".md", ".json"}
+    }
+
+
+def find_incomplete_entries(raw: Path, wiki: Path) -> list[str]:
+    """Find raw files converted into sources/ but missing compiled summaries."""
+    summaries_dir = wiki / "summaries"
+    sources_stems = _source_stems(wiki)
+    summary_stems = {p.stem for p in summaries_dir.glob("*.md")} if summaries_dir.exists() else set()
+
+    incomplete: list[str] = []
+    if raw.exists():
+        for f in raw.iterdir():
+            if f.is_file() and f.stem in sources_stems and f.stem not in summary_stems:
+                incomplete.append(f.name)
+    return sorted(incomplete)
+
+
 def check_index_sync(wiki: Path) -> list[str]:
     """Compare index.md wikilinks against actual files on disk.
 
@@ -305,6 +330,7 @@ def run_structural_lint(kb_dir: Path) -> str:
     broken = find_broken_links(wiki)
     orphans = find_orphans(wiki)
     missing = find_missing_entries(raw, wiki)
+    incomplete = find_incomplete_entries(raw, wiki)
     sync_issues = check_index_sync(wiki)
     investment_issues = find_investment_quality_issues(wiki)
 
@@ -335,6 +361,14 @@ def run_structural_lint(kb_dir: Path) -> str:
             lines.append(f"- {name}")
     else:
         lines.append("All raw files have wiki entries.")
+    lines.append("")
+
+    lines.append(f"### Incomplete Wiki Entries ({len(incomplete)})")
+    if incomplete:
+        for name in incomplete:
+            lines.append(f"- {name}")
+    else:
+        lines.append("No converted source-only files found.")
     lines.append("")
 
     # Index sync
