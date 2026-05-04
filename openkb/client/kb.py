@@ -38,9 +38,10 @@ _TYPE_DISPLAY_MAP = {
 
 _SHORT_DOC_TYPES = {"pdf", "docx", "md", "markdown", "html", "htm", "txt", "csv", "pptx", "xlsx"}
 
-_GENERAL_CONFIG_KEYS = {"language", "pageindex_threshold"}
+_GENERAL_CONFIG_KEYS = {"language", "pageindex_threshold", "compile_max_concurrency"}
 _PROFILE_CONFIG_KEYS = {"model", "wire_api", "base_url"}
 _DEFAULT_PROFILE_ID = "default"
+_CONFIG_EXPORT_FORMAT = "openkb.llm-config.v1"
 
 
 def is_kb_dir(path: Path) -> bool:
@@ -430,13 +431,34 @@ def _profile_has_api_key(
     active_id: str,
     env_values: dict[str, str] | None = None,
 ) -> bool:
+    return bool(_profile_api_key(kb_dir, profile, active_id, env_values))
+
+
+def _profile_api_key(
+    kb_dir: Path,
+    profile: dict[str, str],
+    active_id: str,
+    env_values: dict[str, str] | None = None,
+) -> str:
     env_values = env_values if env_values is not None else _read_env_values(kb_dir)
     env_key = profile.get("api_key_env") or _profile_env_key(profile["id"])
-    if os.environ.get(env_key) or env_values.get(env_key):
-        return True
+    api_key = env_values.get(env_key, "").strip()
+    if api_key:
+        return api_key
     if profile["id"] == active_id:
-        return _api_key_configured(kb_dir)
-    return False
+        for key in ("LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
+            api_key = env_values.get(key, "").strip()
+            if api_key:
+                return api_key
+    api_key = (os.environ.get(env_key) or "").strip()
+    if api_key:
+        return api_key
+    if profile["id"] == active_id:
+        for key in ("LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
+            api_key = (os.environ.get(key) or "").strip()
+            if api_key:
+                return api_key
+    return ""
 
 
 def _public_profiles(kb_dir: Path, profiles: list[dict[str, str]], active_id: str) -> list[dict[str, Any]]:
@@ -448,6 +470,7 @@ def _public_profiles(kb_dir: Path, profiles: list[dict[str, str]], active_id: st
             "model": profile["model"],
             "wire_api": profile["wire_api"],
             "base_url": profile["base_url"],
+            "api_key": _profile_api_key(kb_dir, profile, active_id, env_values),
             "api_key_configured": _profile_has_api_key(kb_dir, profile, active_id, env_values),
             "is_active": profile["id"] == active_id,
         }
@@ -496,7 +519,7 @@ def _sync_legacy_key_from_profile(kb_dir: Path, profile: dict[str, str]) -> None
 
 
 def get_config_data(kb_dir: Path) -> dict[str, Any]:
-    """Return public configuration data without exposing secret values."""
+    """Return client configuration data including stored LLM profile keys."""
     kb_dir = require_kb_dir(kb_dir)
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     profiles, active_id = _normalize_profiles(config)
@@ -505,12 +528,109 @@ def get_config_data(kb_dir: Path) -> dict[str, Any]:
         "model": active_profile.get("model", config.get("model", DEFAULT_CONFIG["model"])),
         "language": config.get("language", DEFAULT_CONFIG["language"]),
         "pageindex_threshold": config.get("pageindex_threshold", DEFAULT_CONFIG["pageindex_threshold"]),
+        "compile_max_concurrency": int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])),
         "wire_api": active_profile.get("wire_api", config.get("wire_api", DEFAULT_CONFIG["wire_api"])),
         "base_url": active_profile.get("base_url", config.get("base_url", DEFAULT_CONFIG.get("base_url", ""))) or "",
+        "api_key": _profile_api_key(kb_dir, active_profile, active_id),
         "api_key_configured": _profile_has_api_key(kb_dir, active_profile, active_id),
         "active_profile": active_id,
         "profiles": _public_profiles(kb_dir, profiles, active_id),
     }
+
+
+def export_config_data(kb_dir: Path) -> dict[str, Any]:
+    """Export portable LLM profile settings, including stored API keys."""
+    kb_dir = require_kb_dir(kb_dir)
+    config = load_config(kb_dir / ".openkb" / "config.yaml")
+    profiles, active_id = _normalize_profiles(config)
+    env_values = _read_env_values(kb_dir)
+    return {
+        "format": _CONFIG_EXPORT_FORMAT,
+        "active_profile": active_id,
+        "settings": {
+            "language": config.get("language", DEFAULT_CONFIG["language"]),
+            "pageindex_threshold": int(config.get("pageindex_threshold", DEFAULT_CONFIG["pageindex_threshold"])),
+            "compile_max_concurrency": int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])),
+        },
+        "profiles": [
+            {
+                "id": profile["id"],
+                "name": profile["name"],
+                "model": profile["model"],
+                "wire_api": profile["wire_api"],
+                "base_url": profile["base_url"],
+                "api_key": _profile_api_key(kb_dir, profile, active_id, env_values),
+            }
+            for profile in profiles
+        ],
+    }
+
+
+def import_config_data(kb_dir: Path, imported: dict[str, Any]) -> dict[str, Any]:
+    """Import LLM profile settings and stored API keys."""
+    kb_dir = require_kb_dir(kb_dir)
+    if not isinstance(imported, dict):
+        raise ClientError("Imported config must be a JSON object.")
+
+    raw_profiles = imported.get("profiles")
+    if not isinstance(raw_profiles, list) or not raw_profiles:
+        raise ClientError("Imported config must include at least one profile.")
+
+    config_path = kb_dir / ".openkb" / "config.yaml"
+    config = load_config(config_path)
+    existing_profiles, _existing_active = _normalize_profiles(config)
+    existing_by_id = {profile["id"]: profile for profile in existing_profiles}
+
+    profiles: list[dict[str, str]] = []
+    imported_api_keys: dict[str, str] = {}
+    seen: set[str] = set()
+    for index, raw in enumerate(raw_profiles, 1):
+        if not isinstance(raw, dict):
+            continue
+        profile = _normalize_profile(raw, str(raw.get("id") or f"profile-{index}"), config)
+        if profile["id"] in seen:
+            continue
+        existing = existing_by_id.get(profile["id"])
+        profile["api_key_env"] = (
+            existing.get("api_key_env")
+            if existing
+            else _profile_env_key(profile["id"])
+        )
+        profiles.append(profile)
+        api_key = str(raw.get("api_key") or "").strip()
+        if api_key:
+            imported_api_keys[profile["id"]] = api_key
+        seen.add(profile["id"])
+
+    if not profiles:
+        raise ClientError("Imported config does not contain any valid profiles.")
+
+    settings = imported.get("settings") if isinstance(imported.get("settings"), dict) else {}
+    if "language" in settings:
+        config["language"] = str(settings["language"] or DEFAULT_CONFIG["language"]).strip() or DEFAULT_CONFIG["language"]
+    if "pageindex_threshold" in settings:
+        config["pageindex_threshold"] = max(int(settings["pageindex_threshold"]), 1)
+    if "compile_max_concurrency" in settings:
+        config["compile_max_concurrency"] = max(int(settings["compile_max_concurrency"]), 1)
+
+    active_id = str(imported.get("active_profile") or profiles[0]["id"]).strip()
+    if active_id not in {profile["id"] for profile in profiles}:
+        active_id = profiles[0]["id"]
+
+    _persist_profiles(config, profiles, active_id)
+    save_config(config_path, config)
+    env_updates = {
+        profile["api_key_env"]: imported_api_keys[profile["id"]]
+        for profile in profiles
+        if profile["id"] in imported_api_keys
+    }
+    if active_id in imported_api_keys:
+        env_updates["LLM_API_KEY"] = imported_api_keys[active_id]
+    if env_updates:
+        _write_env_values(kb_dir, env_updates)
+    else:
+        _sync_legacy_key_from_profile(kb_dir, _find_profile(profiles, active_id) or profiles[0])
+    return get_config_data(kb_dir)
 
 
 def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
@@ -562,8 +682,8 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
                 value = str(value or "").strip()
             target_profile[key] = value
         elif key in _GENERAL_CONFIG_KEYS:
-            if key == "pageindex_threshold":
-                value = int(value)
+            if key in {"pageindex_threshold", "compile_max_concurrency"}:
+                value = max(int(value), 1)
             config[key] = value
 
     api_key = str(updates.get("api_key") or "").strip()
@@ -583,6 +703,7 @@ def init_kb(
     model: str,
     language: str = "en",
     pageindex_threshold: int = 20,
+    compile_max_concurrency: int = 2,
     wire_api: str | None = None,
     base_url: str = "",
     api_key: str = "",
@@ -639,6 +760,7 @@ def init_kb(
         "model": model,
         "language": language,
         "pageindex_threshold": int(pageindex_threshold),
+        "compile_max_concurrency": max(int(compile_max_concurrency), 1),
         "wire_api": resolved_wire_api,
         "base_url": resolved_base_url,
     }
@@ -646,7 +768,7 @@ def init_kb(
     (openkb_dir / "hashes.json").write_text("{}", encoding="utf-8")
 
     if api_key:
-        _write_api_key(kb_dir, api_key)
+        _write_profile_api_key(kb_dir, config["llm_profiles"][0], api_key)
 
     if make_default:
         register_kb(kb_dir)

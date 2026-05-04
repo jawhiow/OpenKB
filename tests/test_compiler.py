@@ -9,9 +9,13 @@ import pytest
 
 from openkb.agent.compiler import (
     DEFAULT_COMPILE_CONCURRENCY,
+    _COMPANIES_PLAN_USER,
+    _CONCEPTS_PLAN_USER,
+    _INVESTMENT_PAGES_PLAN_USER,
     compile_long_doc,
     compile_local_long_doc,
     compile_short_doc,
+    compile_progress_callback,
     _compile_concepts,
     _ensure_summary_links_in_plan,
     _normalize_concept_links,
@@ -31,7 +35,11 @@ from openkb.agent.compiler import (
     _add_related_link,
     _backlink_summary,
     _backlink_concepts,
+    _canonicalize_company_item,
+    _canonicalize_concept_item,
+    _canonicalize_investment_page_item,
     get_compile_max_concurrency,
+    _llm_call,
 )
 from openkb.lint import find_broken_links
 from openkb.llm_runtime import CompletionResult
@@ -53,6 +61,44 @@ def test_compile_max_concurrency_can_be_overridden_by_env(monkeypatch):
 
     monkeypatch.setenv("OPENKB_COMPILE_MAX_CONCURRENCY", "0")
     assert get_compile_max_concurrency() == 1
+
+
+def test_generated_page_plan_prompts_request_chinese_filenames():
+    prompts = "\n".join([
+        _COMPANIES_PLAN_USER,
+        _INVESTMENT_PAGES_PLAN_USER,
+        _CONCEPTS_PLAN_USER,
+    ])
+
+    assert "Chinese page filename" in prompts
+    assert "Do not use English slugs" in prompts
+
+
+def test_generated_page_items_prefer_chinese_title_for_filename():
+    assert _canonicalize_company_item(
+        {"name": "tsmc", "title": "台积电", "action": "create"}
+    )["name"] == "台积电"
+    assert _canonicalize_investment_page_item(
+        {"name": "cloud-capex", "title": "云资本开支", "action": "create"}
+    )["name"] == "云资本开支"
+    assert _canonicalize_concept_item(
+        {"name": "advanced-packaging", "title": "先进封装"}
+    )["name"] == "先进封装"
+
+
+def test_llm_calls_emit_progress_events_for_job_details():
+    events: list[str] = []
+
+    with patch(
+        "openkb.agent.compiler.completion",
+        return_value=CompletionResult(text="ok", usage=None),
+    ):
+        with compile_progress_callback(events.append):
+            result = _llm_call("gpt-4o-mini", [{"role": "user", "content": "Ping"}], "summary")
+
+    assert result == "ok"
+    assert events[0] == "LLM start: summary"
+    assert events[-1].startswith("LLM done: summary")
 
 
 class TestParseJson:
@@ -1499,10 +1545,10 @@ class TestCompileConceptsPlan:
 
         assert mock_acompletion.await_count == 2
         assert (wiki / "companies" / "台积电.md").exists()
-        assert (wiki / "companies" / "Alchip.md").exists()
+        assert (wiki / "companies" / "世芯.md").exists()
         index_text = (wiki / "index.md").read_text(encoding="utf-8")
         assert "[[companies/台积电]] - Company evidence from the report" in index_text
-        assert "[[companies/Alchip]] - Company evidence from the report" in index_text
+        assert "[[companies/世芯]] - Company evidence from the report" in index_text
 
     @pytest.mark.asyncio
     async def test_invalid_concept_plan_falls_back_to_summary_headings(self, tmp_path):
@@ -1592,7 +1638,7 @@ class TestCompileConceptsPlan:
                 summary, "test-doc", 5, doc_type="local-long",
             )
 
-        assert (wiki / "companies" / "TSMC.md").exists()
+        assert (wiki / "companies" / "台积电.md").exists()
         assert (wiki / "companies" / "MPI.md").exists()
         assert not (wiki / "concepts" / "台积电.md").exists()
         assert not (wiki / "concepts" / "MPI.md").exists()

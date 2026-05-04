@@ -607,6 +607,17 @@ th {
   align-content: start;
 }
 
+.key-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.key-input-row button {
+  min-width: 72px;
+}
+
 .editor-pane {
   display: grid;
   grid-template-rows: auto minmax(220px, 1fr) minmax(180px, 0.7fr);
@@ -739,6 +750,11 @@ th {
 .job-detail-grid strong {
   color: var(--text);
   font-weight: 600;
+}
+
+.job-detail-actions {
+  justify-content: flex-start;
+  margin: 8px 0 12px;
 }
 
 .progress-line {

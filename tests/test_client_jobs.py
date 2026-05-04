@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from openkb.client.jobs import JobRegistry
 
 
@@ -66,3 +68,55 @@ def test_job_progress_and_logs_are_serialized():
         "Processing second file",
         "Job succeeded",
     ]
+
+
+def test_job_registry_can_stop_running_job():
+    registry = JobRegistry()
+    started = threading.Event()
+    release = threading.Event()
+
+    def run(job):
+        started.set()
+        release.wait(timeout=2)
+        job.raise_if_stopped()
+        return "done"
+
+    job = registry.submit("add", run, message="Queued")
+    assert started.wait(timeout=2)
+
+    stopped = registry.stop(job.id)
+    release.set()
+    completed = registry.wait(job.id, timeout=2)
+
+    assert stopped is not None
+    assert completed is not None
+    assert completed.status == "stopped"
+    assert completed.stop_requested is True
+    assert completed.error is None
+    assert any(entry["message"] == "Stop requested" for entry in completed.logs)
+    assert completed.to_dict()["stop_requested"] is True
+
+
+def test_job_registry_can_retry_failed_job():
+    registry = JobRegistry()
+    attempts: list[str] = []
+
+    def run(job):
+        attempts.append(job.id)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary failure")
+        return {"ok": True}
+
+    job = registry.submit("add", run, message="Queued")
+    failed = registry.wait(job.id, timeout=2)
+    retry = registry.retry(job.id)
+    completed = registry.wait(retry.id, timeout=2)
+
+    assert failed is not None
+    assert failed.status == "failed"
+    assert retry.id != job.id
+    assert retry.type == "add"
+    assert completed is not None
+    assert completed.status == "succeeded"
+    assert completed.result == {"ok": True}
+    assert attempts == [job.id, retry.id]

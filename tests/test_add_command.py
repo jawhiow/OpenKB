@@ -190,6 +190,7 @@ class TestAddCommand:
             source_path,
             kb_dir,
             "gpt-4o-mini",
+            max_concurrency=2,
             cleanup_existing=False,
         )
         assert "local page index" in result.output
@@ -290,7 +291,42 @@ class TestAddCommand:
             source_path,
             kb_dir,
             "gpt-4o-mini",
+            max_concurrency=2,
             cleanup_existing=True,
+        )
+
+    def test_add_single_file_passes_configured_compile_concurrency(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "model: gpt-4o-mini\ncompile_max_concurrency: 3\n",
+            encoding="utf-8",
+        )
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+        source_path = kb_dir / "wiki" / "sources" / "test.md"
+        source_path.write_text("# Hello converted")
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "test.md",
+            source_path=source_path,
+            is_long_doc=False,
+        )
+
+        with patch("openkb.cli.convert_document", return_value=mock_result), \
+             patch("openkb.agent.compiler.compile_short_doc", new_callable=AsyncMock) as mock_compile:
+            mock_compile.return_value = []
+            add_single_file(doc, kb_dir)
+
+        mock_compile.assert_awaited_once_with(
+            "test",
+            source_path,
+            kb_dir,
+            "gpt-4o-mini",
+            max_concurrency=3,
+            cleanup_existing=False,
         )
 
 

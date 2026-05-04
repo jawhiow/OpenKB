@@ -9,9 +9,11 @@ import yaml
 from openkb.client.kb import (
     PathSecurityError,
     build_wiki_tree,
+    export_config_data,
     get_config_data,
     get_document_data,
     get_status_data,
+    import_config_data,
     init_kb,
     read_wiki_file,
     update_config_data,
@@ -104,7 +106,7 @@ def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
         write_wiki_file(kb_dir, "../outside.md", "bad")
 
 
-def test_config_data_can_be_updated_without_exposing_env(tmp_path: Path):
+def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".env").write_text("LLM_API_KEY=secret\n", encoding="utf-8")
 
@@ -113,8 +115,10 @@ def test_config_data_can_be_updated_without_exposing_env(tmp_path: Path):
         "model": "gpt-5.4-mini",
         "language": "zh",
         "pageindex_threshold": 20,
+        "compile_max_concurrency": 2,
         "wire_api": "responses",
         "base_url": "https://llm.example.com",
+        "api_key": "secret",
         "api_key_configured": True,
         "active_profile": "default",
         "profiles": [
@@ -124,6 +128,7 @@ def test_config_data_can_be_updated_without_exposing_env(tmp_path: Path):
                 "model": "gpt-5.4-mini",
                 "wire_api": "responses",
                 "base_url": "https://llm.example.com",
+                "api_key": "secret",
                 "api_key_configured": True,
                 "is_active": True,
             }
@@ -136,6 +141,7 @@ def test_config_data_can_be_updated_without_exposing_env(tmp_path: Path):
             "model": "anthropic/claude-sonnet-4-6",
             "language": "en",
             "pageindex_threshold": 30,
+            "compile_max_concurrency": 4,
             "wire_api": "chat_completions",
             "base_url": "https://gateway.example.com/v1",
             "api_key": "new-secret",
@@ -144,14 +150,15 @@ def test_config_data_can_be_updated_without_exposing_env(tmp_path: Path):
 
     assert updated["model"] == "anthropic/claude-sonnet-4-6"
     assert updated["base_url"] == "https://gateway.example.com/v1"
+    assert updated["api_key"] == "new-secret"
     assert updated["profiles"][0]["model"] == "anthropic/claude-sonnet-4-6"
-    assert "secret" not in json.dumps(updated)
-    assert "new-secret" not in json.dumps(updated)
+    assert updated["profiles"][0]["api_key"] == "new-secret"
     env_text = (kb_dir / ".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=new-secret\n" in env_text
     assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=new-secret\n" in env_text
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["pageindex_threshold"] == 30
+    assert saved["compile_max_concurrency"] == 4
     assert saved["base_url"] == "https://gateway.example.com/v1"
     assert saved["active_llm_profile"] == "default"
     assert saved["llm_profiles"][0]["id"] == "default"
@@ -176,7 +183,8 @@ def test_config_data_can_create_and_switch_llm_profiles_with_separate_keys(tmp_p
     assert created["active_profile"] == "claude-research"
     assert created["model"] == "anthropic/claude-sonnet-4-6"
     assert [profile["id"] for profile in created["profiles"]] == ["default", "claude-research"]
-    assert all("secret" not in json.dumps(profile) for profile in created["profiles"])
+    assert created["profiles"][0]["api_key"] == "default-secret"
+    assert created["profiles"][1]["api_key"] == "claude-secret"
     env_text = (kb_dir / ".env").read_text(encoding="utf-8")
     assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=default-secret\n" in env_text
     assert "OPENKB_LLM_PROFILE_CLAUDE_RESEARCH_API_KEY=claude-secret\n" in env_text
@@ -189,7 +197,52 @@ def test_config_data_can_create_and_switch_llm_profiles_with_separate_keys(tmp_p
     assert switched["wire_api"] == "responses"
     assert switched["profiles"][0]["is_active"] is True
     assert switched["profiles"][1]["is_active"] is False
+    assert switched["api_key"] == "default-secret"
     assert "LLM_API_KEY=default-secret\n" in (kb_dir / ".env").read_text(encoding="utf-8")
+
+
+def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Path):
+    source = _make_kb(tmp_path / "source")
+    (source / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")
+    update_config_data(
+        source,
+        {
+            "create_profile": True,
+            "profile_name": "Gateway",
+            "model": "openai/doubao-seed-2-0-pro-260215",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v1",
+            "compile_max_concurrency": 3,
+            "api_key": "gateway-secret",
+        },
+    )
+
+    exported = export_config_data(source)
+
+    assert exported["format"] == "openkb.llm-config.v1"
+    assert exported["active_profile"] == "gateway"
+    assert exported["settings"]["compile_max_concurrency"] == 3
+    assert [profile["id"] for profile in exported["profiles"]] == ["default", "gateway"]
+    assert exported["profiles"][0]["api_key"] == "default-secret"
+    assert exported["profiles"][1]["api_key"] == "gateway-secret"
+
+    target = _make_kb(tmp_path / "target")
+    (target / ".env").write_text("LLM_API_KEY=target-secret\n", encoding="utf-8")
+    imported = import_config_data(target, exported)
+
+    assert imported["active_profile"] == "gateway"
+    assert imported["model"] == "openai/doubao-seed-2-0-pro-260215"
+    assert imported["api_key"] == "gateway-secret"
+    assert imported["compile_max_concurrency"] == 3
+    assert [profile["id"] for profile in imported["profiles"]] == ["default", "gateway"]
+    assert imported["profiles"][0]["api_key"] == "default-secret"
+    assert imported["profiles"][1]["api_key"] == "gateway-secret"
+    saved = yaml.safe_load((target / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["llm_profiles"][1]["api_key_env"] == "OPENKB_LLM_PROFILE_GATEWAY_API_KEY"
+    env_text = (target / ".env").read_text(encoding="utf-8")
+    assert "LLM_API_KEY=gateway-secret\n" in env_text
+    assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=default-secret\n" in env_text
+    assert "OPENKB_LLM_PROFILE_GATEWAY_API_KEY=gateway-secret\n" in env_text
 
 
 def test_init_kb_creates_openkb_layout(tmp_path: Path):
@@ -200,6 +253,7 @@ def test_init_kb_creates_openkb_layout(tmp_path: Path):
         model="gpt-5.4-mini",
         language="zh",
         pageindex_threshold=12,
+        compile_max_concurrency=3,
         wire_api="responses",
         base_url="https://gateway.example.com",
         api_key="sk-test",
@@ -212,5 +266,8 @@ def test_init_kb_creates_openkb_layout(tmp_path: Path):
     assert (kb_dir / ".openkb" / "config.yaml").is_file()
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["base_url"] == "https://gateway.example.com"
+    assert saved["compile_max_concurrency"] == 3
     assert (kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8") == "{}"
-    assert (kb_dir / ".env").read_text(encoding="utf-8") == "LLM_API_KEY=sk-test\n"
+    env_text = (kb_dir / ".env").read_text(encoding="utf-8")
+    assert "LLM_API_KEY=sk-test\n" in env_text
+    assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=sk-test\n" in env_text

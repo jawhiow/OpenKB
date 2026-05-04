@@ -54,7 +54,7 @@ function escapeHTML(value) {
 }
 
 function badge(status) {
-  const cls = status === "succeeded" ? "good" : status === "failed" ? "bad" : status === "running" ? "warn" : "muted";
+  const cls = status === "succeeded" ? "good" : status === "failed" || status === "stopped" ? "bad" : status === "running" || status === "stopping" ? "warn" : "muted";
   return `<span class="badge ${cls}">${escapeHTML(status)}</span>`;
 }
 
@@ -79,9 +79,9 @@ function jobProgress(job) {
 
 function progressMarkup(job) {
   const progress = jobProgress(job);
-  const indeterminate = job.status === "running" && !progress.total;
+  const indeterminate = ["running", "stopping"].includes(job.status) && !progress.total;
   const width = indeterminate ? 38 : progress.pct;
-  const label = progress.total ? `${progress.current}/${progress.total}` : indeterminate ? "running" : `${progress.pct}%`;
+  const label = progress.total ? `${progress.current}/${progress.total}` : indeterminate ? job.status : `${progress.pct}%`;
   return `
     <div class="progress-line" title="${escapeHTML(label)}">
       <div class="progress" aria-label="Job progress">
@@ -263,7 +263,7 @@ function handleJobTransitions(previousStatuses) {
   let shouldRefresh = false;
   state.jobs.forEach((job) => {
     const previous = previousStatuses[job.id];
-    if (previous !== "running" || job.status === "running") return;
+    if (!["running", "stopping"].includes(previous) || ["running", "stopping"].includes(job.status)) return;
     if (job.status === "succeeded") {
       const hasFailures = Number(job.result?.failed || 0) > 0;
       notify(`${jobLabels[job.type] || job.type} finished${hasFailures ? " with failures" : ""}`, hasFailures ? "warning" : "success");
@@ -276,6 +276,8 @@ function handleJobTransitions(previousStatuses) {
       shouldRefresh = shouldRefresh || ["add", "lint", "query", "lint_fix_apply"].includes(job.type);
     } else if (job.status === "failed") {
       notify(job.error || `${jobLabels[job.type] || job.type} failed`, "error");
+    } else if (job.status === "stopped") {
+      notify(`${jobLabels[job.type] || job.type} stopped`, "warning");
     }
   });
   if (shouldRefresh && !state.loadingAll) {
@@ -303,7 +305,7 @@ function handleQueryJob() {
   if (job.status === "succeeded") {
     $("#answerBox").textContent = job.result?.answer || "";
     state.queryJobId = null;
-  } else if (job.status === "failed") {
+  } else if (job.status === "failed" || job.status === "stopped") {
     $("#answerBox").textContent = job.error || "Query failed";
     state.queryJobId = null;
   } else {
@@ -335,6 +337,30 @@ function trackJob(job, message) {
   state.selectedJobId = job.id;
   renderJobs();
   notify(message || `${jobLabels[job.type] || job.type} queued`, "info");
+}
+
+async function stopJob(jobId) {
+  if (!jobId) return;
+  try {
+    const job = await api(`/api/jobs/${jobId}/stop`, { method: "POST" });
+    state.jobs = [job, ...state.jobs.filter((item) => item.id !== job.id)];
+    state.jobStatuses[job.id] = job.status;
+    state.selectedJobId = job.id;
+    renderJobs();
+    notify("Stop requested", "warning");
+  } catch (error) {
+    notify(error.message, "error");
+  }
+}
+
+async function retryJob(jobId) {
+  if (!jobId) return;
+  try {
+    const result = await api(`/api/jobs/${jobId}/retry`, { method: "POST" });
+    trackJob(result.job, "Retry queued");
+  } catch (error) {
+    notify(error.message, "error");
+  }
 }
 
 function renderJobs() {
@@ -382,6 +408,8 @@ function renderJobDetails() {
   const job = state.jobs.find((item) => item.id === state.selectedJobId) || state.jobs[0];
   state.selectedJobId = job.id;
   const logs = job.logs || [];
+  const canStop = ["running", "stopping"].includes(job.status);
+  const canRetry = !canStop && ["failed", "stopped", "succeeded"].includes(job.status);
   details.innerHTML = `
     <div class="job-detail-head">
       <div>
@@ -395,6 +423,11 @@ function renderJobDetails() {
     <div class="job-detail-grid">
       <span>Created</span><strong>${escapeHTML(formatTime(job.created_at))}</strong>
       <span>Updated</span><strong>${escapeHTML(formatTime(job.updated_at))}</strong>
+      ${job.retry_of ? `<span>Retry of</span><strong>${escapeHTML(job.retry_of)}</strong>` : ""}
+    </div>
+    <div class="job-detail-actions row-actions">
+      ${canStop ? `<button type="button" class="danger" data-job-stop="${escapeHTML(job.id)}">Stop</button>` : ""}
+      ${canRetry ? `<button type="button" data-job-retry="${escapeHTML(job.id)}">Retry</button>` : ""}
     </div>
     <div id="jobLogList" class="job-log-list">
       ${
@@ -414,6 +447,8 @@ function renderJobDetails() {
       }
     </div>
   `;
+  details.querySelector("[data-job-stop]")?.addEventListener("click", () => stopJob(job.id));
+  details.querySelector("[data-job-retry]")?.addEventListener("click", () => retryJob(job.id));
 }
 
 function render() {
@@ -1102,6 +1137,18 @@ function renderProfileList(cfg) {
   `;
 }
 
+function toggleApiKeyVisibility() {
+  const apiKeyInput = $("#apiKeyInput");
+  const button = $("#toggleApiKeyBtn");
+  if (!apiKeyInput) return;
+  const nextType = apiKeyInput.type === "password" ? "text" : "password";
+  apiKeyInput.type = nextType;
+  if (button) {
+    button.textContent = nextType === "password" ? "Show" : "Hide";
+    button.setAttribute("aria-label", nextType === "password" ? "Show API key" : "Hide API key");
+  }
+}
+
 function renderSettings() {
   const cfg = state.config || {};
   const profile = activeProfile(cfg) || {
@@ -1131,6 +1178,10 @@ function renderSettings() {
           <div class="field">
             <label for="thresholdInput">PageIndex Threshold</label>
             <input id="thresholdInput" type="number" min="1" value="${escapeHTML(cfg.pageindex_threshold || 20)}" />
+          </div>
+          <div class="field">
+            <label for="compileConcurrencyInput">Compile Concurrency</label>
+            <input id="compileConcurrencyInput" type="number" min="1" value="${escapeHTML(cfg.compile_max_concurrency || 2)}" />
           </div>
         </div>
       </section>
@@ -1166,10 +1217,16 @@ function renderSettings() {
             </div>
             <div class="field full">
               <label for="apiKeyInput">API Key</label>
-              <input id="apiKeyInput" type="password" value="" placeholder="Leave blank to keep stored key" />
+              <div class="key-input-row">
+                <input id="apiKeyInput" type="password" value="${escapeHTML(profile.api_key || "")}" placeholder="Paste API key" />
+                <button id="toggleApiKeyBtn" type="button" aria-label="Show API key">Show</button>
+              </div>
             </div>
             <div class="row-actions full">
               <button id="testLlmBtn" type="button">Test LLM</button>
+              <button id="exportProfilesBtn" type="button">Export</button>
+              <button id="importProfilesBtn" type="button">Import</button>
+              <input id="importProfilesInput" type="file" accept="application/json,.json" hidden />
               <button id="saveNewProfileBtn" type="button">Save as New</button>
               <button id="saveProfileBtn" class="primary" type="button">Save Profile</button>
             </div>
@@ -1182,6 +1239,10 @@ function renderSettings() {
   $("#useKbBtn").addEventListener("click", useKb);
   $("#createKbBtn").addEventListener("click", createKb);
   $("#testLlmBtn").addEventListener("click", testLlm);
+  $("#toggleApiKeyBtn").addEventListener("click", toggleApiKeyVisibility);
+  $("#exportProfilesBtn").addEventListener("click", exportLlmConfig);
+  $("#importProfilesBtn").addEventListener("click", () => $("#importProfilesInput").click());
+  $("#importProfilesInput").addEventListener("change", importLlmConfig);
   $("#saveProfileBtn").addEventListener("click", saveConfig);
   $("#saveNewProfileBtn").addEventListener("click", saveNewProfile);
   mainView.querySelectorAll("[data-profile-id]").forEach((button) => {
@@ -1269,6 +1330,7 @@ async function createKb(event) {
         model: $("#modelInput").value.trim(),
         language: $("#languageInput").value.trim(),
         pageindex_threshold: Number($("#thresholdInput").value || 20),
+        compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
         wire_api: $("#wireApiInput").value,
         base_url: $("#baseUrlInput").value.trim(),
         api_key: $("#apiKeyInput").value,
@@ -1280,6 +1342,50 @@ async function createKb(event) {
     setError(error.message);
   } finally {
     setButtonBusy(button, false);
+  }
+}
+
+async function exportLlmConfig(event) {
+  const button = event?.currentTarget;
+  if (!state.kbDir) {
+    notify("Select or create a knowledge base first.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Exporting...");
+  try {
+    const result = await api(withKb("/api/config/export"));
+    const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "openkb-llm-config.json";
+    link.click();
+    URL.revokeObjectURL(url);
+    notify("LLM config exported", "success");
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function importLlmConfig(event) {
+  const input = event?.currentTarget;
+  const file = input?.files?.[0];
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    await api("/api/config/import", {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir, config: parsed }),
+    });
+    notify("LLM config imported", "success");
+    await loadKnowledgeData();
+    render();
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    if (input) input.value = "";
   }
 }
 
@@ -1324,6 +1430,7 @@ async function saveConfig(event, options = {}) {
         model: $("#modelInput").value.trim(),
         language: $("#languageInput").value.trim(),
         pageindex_threshold: Number($("#thresholdInput").value || 20),
+        compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
         wire_api: $("#wireApiInput").value,
         base_url: $("#baseUrlInput").value.trim(),
         api_key: $("#apiKeyInput").value,
@@ -1374,6 +1481,7 @@ async function testLlm(event) {
         model: $("#modelInput").value.trim(),
         language: $("#languageInput").value.trim(),
         pageindex_threshold: Number($("#thresholdInput").value || 20),
+        compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
         wire_api: $("#wireApiInput").value,
         base_url: $("#baseUrlInput").value.trim(),
         api_key: $("#apiKeyInput").value,

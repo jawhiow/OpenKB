@@ -12,6 +12,10 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class JobStopped(RuntimeError):
+    """Raised by cooperative job checkpoints after a stop request."""
+
+
 @dataclass
 class Job:
     id: str
@@ -25,8 +29,11 @@ class Job:
     logs: list[dict[str, str]] = field(default_factory=list)
     result: Any = None
     error: str | None = None
+    stop_requested: bool = False
+    retry_of: str | None = None
     _sequence: int = 0
     _thread: threading.Thread | None = field(default=None, repr=False, compare=False)
+    _fn: Callable[["Job"], Any] | None = field(default=None, repr=False, compare=False)
 
     def set_message(self, message: str) -> None:
         self.message = message
@@ -48,6 +55,16 @@ class Job:
         )
         self.updated_at = _utcnow_iso()
 
+    def request_stop(self) -> None:
+        self.stop_requested = True
+        if self.status == "running":
+            self.status = "stopping"
+        self.add_log("Stop requested", level="warning")
+
+    def raise_if_stopped(self) -> None:
+        if self.stop_requested:
+            raise JobStopped("Job stopped")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -63,6 +80,8 @@ class Job:
             "logs": list(self.logs),
             "result": self.result,
             "error": self.error,
+            "stop_requested": self.stop_requested,
+            "retry_of": self.retry_of,
         }
 
 
@@ -77,7 +96,7 @@ class JobRegistry:
         self._lock = threading.Lock()
         self._sequence = 0
 
-    def submit(self, job_type: str, fn: JobFunction, *, message: str = "") -> Job:
+    def submit(self, job_type: str, fn: JobFunction, *, message: str = "", retry_of: str | None = None) -> Job:
         with self._lock:
             self._sequence += 1
             sequence = self._sequence
@@ -89,14 +108,24 @@ class JobRegistry:
             created_at=now,
             updated_at=now,
             message=message,
+            retry_of=retry_of,
             _sequence=sequence,
+            _fn=fn,
         )
         if message:
             job.add_log(message)
 
         def run() -> None:
             try:
+                job.raise_if_stopped()
                 result = fn(job)
+                job.raise_if_stopped()
+            except JobStopped:
+                with self._lock:
+                    job.status = "stopped"
+                    job.error = None
+                    job.add_log("Job stopped", level="warning")
+                    job.updated_at = _utcnow_iso()
             except Exception as exc:  # pragma: no cover - exact exception type comes from caller
                 with self._lock:
                     job.status = "failed"
@@ -120,6 +149,27 @@ class JobRegistry:
     def get(self, job_id: str) -> Job | None:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def stop(self, job_id: str) -> Job | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.status in {"running", "stopping"}:
+                job.request_stop()
+            return job
+
+    def retry(self, job_id: str) -> Job | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job._fn is None:
+                return None
+            if job.status in {"running", "stopping"}:
+                raise ValueError("Running jobs cannot be retried.")
+            job_type = job.type
+            fn = job._fn
+            message = job.message
+        return self.submit(job_type, fn, message=message, retry_of=job_id)
 
     def list_jobs(self) -> list[Job]:
         with self._lock:

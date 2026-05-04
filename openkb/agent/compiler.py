@@ -20,7 +20,10 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
+from typing import Callable, Iterator
 
 import litellm
 
@@ -29,6 +32,28 @@ from openkb.schema import get_agents_md
 from openkb.llm_runtime import acompletion, completion
 
 logger = logging.getLogger(__name__)
+
+CompileProgressCallback = Callable[[str], None]
+_COMPILE_PROGRESS_CALLBACK: ContextVar[CompileProgressCallback | None] = ContextVar(
+    "openkb_compile_progress_callback",
+    default=None,
+)
+
+
+@contextmanager
+def compile_progress_callback(callback: CompileProgressCallback | None) -> Iterator[None]:
+    """Attach a progress callback to compiler LLM calls in the current context."""
+    token = _COMPILE_PROGRESS_CALLBACK.set(callback)
+    try:
+        yield
+    finally:
+        _COMPILE_PROGRESS_CALLBACK.reset(token)
+
+
+def _emit_compile_progress(message: str) -> None:
+    callback = _COMPILE_PROGRESS_CALLBACK.get()
+    if callback is not None:
+        callback(message)
 
 # ---------------------------------------------------------------------------
 # Prompt templates
@@ -84,7 +109,7 @@ Return a JSON object with one key:
 
 1. "companies" - public companies or clearly named investable businesses with
 material evidence in this document. Array of objects:
-   {{"name": "company-slug", "title": "Human-Readable Company Name", "action": "create"}}
+   {{"name": "中文公司名", "title": "Human-Readable Company Name", "action": "create"}}
 
 Rules:
 - Include only company-specific entities with investment relevance, such as
@@ -94,6 +119,8 @@ Rules:
   industry themes; those belong in `industries/`, `themes/`, `metrics/`,
   `risks/`, or `concepts/` as appropriate.
 - Prefer 3-8 high-signal companies when the report supports it.
+- Use a concise Chinese page filename in "name" when the KB language is
+  Chinese. Do not use English slugs.
 - Use "action": "update" for an existing company page and "create" otherwise.
 - If the report does not contain material company evidence, return
   {{"companies": []}}.
@@ -122,7 +149,7 @@ Return a JSON object with four keys:
 
 1. "industries" - sectors, industry structures, value chains, capacity cycles,
    bottlenecks, and competitive maps. Array of objects:
-   {{"name": "industry-slug", "title": "Human-Readable Industry", "action": "create"}}
+   {{"name": "中文行业文件名", "title": "Human-Readable Industry", "action": "create"}}
 
 2. "themes" - cross-company or cross-industry investment themes such as AI
    CAPEX, localization, pricing power, or policy shifts. Same object shape.
@@ -135,6 +162,8 @@ Return a JSON object with four keys:
 
 Rules:
 - Use "action": "update" for an existing page and "create" otherwise.
+- Use a concise Chinese page filename in "name" when the KB language is
+  Chinese. Do not use English slugs.
 - Do not duplicate company pages or ordinary reusable concepts.
 - Prefer a small set of high-signal pages. Empty arrays are fine.
 - For an industry report, create at least one `industries/` page when the
@@ -153,11 +182,11 @@ Existing concept pages:
 Return a JSON object with three keys:
 
 1. "create" — new concepts not covered by any existing page. Array of objects:
-   {{"name": "concept-slug", "title": "Human-Readable Title"}}
+   {{"name": "中文概念文件名", "title": "Human-Readable Title"}}
 
 2. "update" — existing concepts that have significant new information from \
 this document worth integrating. Array of objects:
-   {{"name": "existing-slug", "title": "Existing Title"}}
+   {{"name": "已有中文概念文件名", "title": "Existing Title"}}
 
 3. "related" — existing concepts tangentially related to this document but \
 not needing content changes, just a cross-reference link. Array of slug strings.
@@ -170,6 +199,8 @@ Rules:
   high-signal concepts over a shallow 2-3 concept cap when the report supports it.
 - Do NOT create a concept that overlaps with an existing one — use "update".
 - Do NOT create concepts that are just the document topic itself.
+- Use a concise Chinese page filename in "name" when the KB language is
+  Chinese. Do not use English slugs.
 - "related" is for lightweight cross-linking only, no content rewrite needed.
 
 Return ONLY valid JSON, no fences, no explanation.
@@ -356,15 +387,23 @@ def _llm_call(model: str, messages: list[dict], step_name: str, **kwargs) -> str
     logger.debug("LLM request [%s]:\n%s", step_name, _fmt_messages(messages))
     if kwargs:
         logger.debug("LLM kwargs [%s]: %s", step_name, kwargs)
+    _emit_compile_progress(f"LLM start: {step_name}")
 
     spinner = _Spinner(step_name)
     spinner.start()
     t0 = time.time()
 
-    response = completion(model=model, messages=messages, **kwargs)
+    try:
+        response = completion(model=model, messages=messages, **kwargs)
+    except Exception as exc:
+        spinner.stop("failed")
+        _emit_compile_progress(f"LLM failed: {step_name}: {exc}")
+        raise
     content = response.text
 
-    spinner.stop(_format_usage(time.time() - t0, response.usage))
+    usage = _format_usage(time.time() - t0, response.usage)
+    spinner.stop(usage)
+    _emit_compile_progress(f"LLM done: {step_name} {usage}")
     logger.debug("LLM response [%s]:\n%s", step_name, content[:500] + ("..." if len(content) > 500 else ""))
     return content.strip()
 
@@ -372,15 +411,22 @@ def _llm_call(model: str, messages: list[dict], step_name: str, **kwargs) -> str
 async def _llm_call_async(model: str, messages: list[dict], step_name: str) -> str:
     """Async LLM call with timing output and debug logging."""
     logger.debug("LLM request [%s]:\n%s", step_name, _fmt_messages(messages))
+    _emit_compile_progress(f"LLM start: {step_name}")
 
     t0 = time.time()
 
-    response = await acompletion(model=model, messages=messages)
+    try:
+        response = await acompletion(model=model, messages=messages)
+    except Exception as exc:
+        _emit_compile_progress(f"LLM failed: {step_name}: {exc}")
+        raise
     content = response.text
 
     elapsed = time.time() - t0
-    sys.stdout.write(f"    {step_name}... {_format_usage(elapsed, response.usage)}\n")
+    usage = _format_usage(elapsed, response.usage)
+    sys.stdout.write(f"    {step_name}... {usage}\n")
     sys.stdout.flush()
+    _emit_compile_progress(f"LLM done: {step_name} {usage}")
     logger.debug("LLM response [%s]:\n%s", step_name, content[:500] + ("..." if len(content) > 500 else ""))
     return content.strip()
 
@@ -630,6 +676,7 @@ def _write_summary(wiki_dir: Path, doc_name: str, summary: str,
 
 
 _SAFE_NAME_RE = re.compile(r'[^\w\-]')
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
 _CONCEPT_WIKILINK_RE = re.compile(r"\[\[concepts/([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
 DEFAULT_SUMMARY_LINK_FALLBACK_LIMIT = 8
@@ -686,6 +733,16 @@ def _sanitize_concept_name(name: str) -> str:
     name = unicodedata.normalize("NFKC", name)
     sanitized = _SAFE_NAME_RE.sub("-", name).strip("-")
     return sanitized or "unnamed-concept"
+
+
+def _preferred_generated_page_name(name: str, title: str) -> str:
+    """Prefer Chinese titles as filenames when an LLM returns an English slug."""
+    raw_name = str(name or "").strip()
+    raw_title = str(title or "").strip()
+    if raw_title and _CJK_RE.search(raw_title):
+        title_name = re.sub(r"[（(][^）)]*[）)]", "", raw_title).strip()
+        return _sanitize_concept_name(title_name or raw_title)
+    return _sanitize_concept_name(raw_name)
 
 
 def _concept_alias_key(value: str) -> str:
@@ -873,6 +930,22 @@ def _company_alias_keys(company_items: list[dict]) -> set[str]:
     return keys
 
 
+def _canonicalize_company_item(item: dict) -> dict | None:
+    """Normalize company plan items to safe filenames."""
+    name = str(item.get("name", "")).strip()
+    if not name:
+        return None
+    title = str(item.get("title", name)).strip() or name
+    action = str(item.get("action", "create")).strip().lower()
+    if action not in {"create", "update"}:
+        action = "create"
+    return {
+        "name": _preferred_generated_page_name(name, title),
+        "title": title,
+        "action": action,
+    }
+
+
 def _canonicalize_investment_page_item(item: dict) -> dict | None:
     """Normalize dedicated investment page plan items to safe slugs."""
     name = str(item.get("name", "")).strip()
@@ -883,7 +956,7 @@ def _canonicalize_investment_page_item(item: dict) -> dict | None:
     if action not in {"create", "update"}:
         action = "create"
     return {
-        "name": _sanitize_concept_name(name),
+        "name": _preferred_generated_page_name(name, title),
         "title": title,
         "action": action,
     }
@@ -934,7 +1007,7 @@ def _canonicalize_concept_item(item: dict) -> dict | None:
     alias = _CONCEPT_PLAN_NAME_ALIASES.get(_concept_alias_key(name))
     if alias is not None:
         name, title = alias
-    return {"name": _sanitize_concept_name(name), "title": title}
+    return {"name": _preferred_generated_page_name(name, title), "title": title}
 
 
 def _filter_concept_plan_against_companies(plan: dict, company_keys: set[str]) -> dict:
@@ -1715,19 +1788,20 @@ DEFAULT_LOCAL_LONG_TOTAL_CHARS = 65000
 
 def get_compile_max_concurrency(value: int | None = None) -> int:
     """Return a safe page-generation concurrency limit."""
+    configured = os.getenv("OPENKB_COMPILE_MAX_CONCURRENCY", "").strip()
+    if configured:
+        try:
+            return max(int(configured), 1)
+        except ValueError:
+            pass
+
     if value is not None:
         try:
             return max(int(value), 1)
         except (TypeError, ValueError):
             return DEFAULT_COMPILE_CONCURRENCY
 
-    configured = os.getenv("OPENKB_COMPILE_MAX_CONCURRENCY", "").strip()
-    if not configured:
-        return DEFAULT_COMPILE_CONCURRENCY
-    try:
-        return max(int(configured), 1)
-    except ValueError:
-        return DEFAULT_COMPILE_CONCURRENCY
+    return DEFAULT_COMPILE_CONCURRENCY
 
 
 def _build_local_long_doc_context(
@@ -1807,14 +1881,20 @@ async def _compile_concepts(
             "companies": _extract_company_candidates_from_summary(summary),
         }
 
-    fallback_company_items = _extract_company_candidates_from_summary(summary)
+    fallback_company_items = [
+        canonical for item in _extract_company_candidates_from_summary(summary)
+        for canonical in [_canonicalize_company_item(item)]
+        if canonical is not None
+    ]
     company_items: list[dict] = []
     if isinstance(company_parsed, dict):
         raw_company_items = company_parsed.get("companies", [])
         if isinstance(raw_company_items, list):
             company_items = [
-                item for item in raw_company_items
-                if isinstance(item, dict) and str(item.get("name", "")).strip()
+                canonical for item in raw_company_items
+                if isinstance(item, dict)
+                for canonical in [_canonicalize_company_item(item)]
+                if canonical is not None
             ]
     if not company_items:
         company_items = fallback_company_items

@@ -10,7 +10,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from openkb.client.jobs import JobRegistry, default_registry
+from openkb.client.jobs import JobRegistry, JobStopped, default_registry
 from openkb.client import kb as kb_helpers
 from openkb.config import DEFAULT_CONFIG, load_config, load_global_config
 
@@ -230,6 +230,7 @@ def create_app(registry: JobRegistry | None = None):
                 model=model,
                 language=str(payload.get("language") or DEFAULT_CONFIG["language"]),
                 pageindex_threshold=int(payload.get("pageindex_threshold") or DEFAULT_CONFIG["pageindex_threshold"]),
+                compile_max_concurrency=int(payload.get("compile_max_concurrency") or DEFAULT_CONFIG["compile_max_concurrency"]),
                 wire_api=payload.get("wire_api"),
                 base_url=str(payload.get("base_url") or ""),
                 api_key=str(payload.get("api_key") or ""),
@@ -262,6 +263,10 @@ def create_app(registry: JobRegistry | None = None):
         def run(job):
             from openkb.cli import SUPPORTED_EXTENSIONS, add_single_file
 
+            def progress(message: str) -> None:
+                job.raise_if_stopped()
+                job.add_log(message)
+
             files: list[Path]
             if preset_files is not None:
                 files = list(preset_files)
@@ -291,6 +296,7 @@ def create_app(registry: JobRegistry | None = None):
             added = 0
             failures: list[dict[str, str]] = []
             for index, file_path in enumerate(files, 1):
+                job.raise_if_stopped()
                 if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     raise ValueError(f"Unsupported file type: {file_path.suffix}")
                 job.set_progress(index - 1, len(files))
@@ -300,9 +306,12 @@ def create_app(registry: JobRegistry | None = None):
                         file_path,
                         target_kb,
                         strict=True,
-                        progress_callback=job.add_log,
+                        progress_callback=progress,
                     )
+                    job.raise_if_stopped()
                 except Exception as exc:
+                    if isinstance(exc, JobStopped):
+                        raise
                     job.add_log(f"Failed {file_path.name}: {exc}", level="error")
                     if len(files) == 1:
                         raise
@@ -326,6 +335,7 @@ def create_app(registry: JobRegistry | None = None):
                     f"Completed with {added} added and {len(failures)} {failure_word}.",
                     level="warning",
                 )
+            job.raise_if_stopped()
             return {
                 "added": added,
                 "failed": len(failures),
@@ -415,6 +425,7 @@ def create_app(registry: JobRegistry | None = None):
             from openkb.agent.query import run_query
             from openkb.cli import _setup_llm_key
 
+            _job.raise_if_stopped()
             _job.add_log("Loading model configuration")
             config = load_config(target_kb / ".openkb" / "config.yaml")
             _setup_llm_key(target_kb)
@@ -427,6 +438,7 @@ def create_app(registry: JobRegistry | None = None):
                     stream=False,
                 )
             )
+            _job.raise_if_stopped()
             if payload.get("save") and answer:
                 import re
 
@@ -481,8 +493,10 @@ def create_app(registry: JobRegistry | None = None):
         def run(_job):
             from openkb.cli import run_lint
 
+            _job.raise_if_stopped()
             _job.add_log("Running structural and knowledge lint")
             report = asyncio.run(run_lint(target_kb))
+            _job.raise_if_stopped()
             if report:
                 _job.add_log(f"Report written: {report}")
             return {"report": str(report) if report else None}
@@ -499,8 +513,10 @@ def create_app(registry: JobRegistry | None = None):
             raise translate_error(exc) from exc
 
         def run(job):
+            job.raise_if_stopped()
             job.add_log("Extracting safe fix candidates")
             plan = kb_helpers.build_lint_fix_plan(target_kb, report)
+            job.raise_if_stopped()
             job.add_log(f"Found {len(plan['candidates'])} candidate(s)")
             return plan
 
@@ -516,8 +532,10 @@ def create_app(registry: JobRegistry | None = None):
             raise translate_error(exc) from exc
 
         def run(job):
+            job.raise_if_stopped()
             job.add_log("Applying approved lint fixes")
             result = kb_helpers.apply_lint_fix_candidates(target_kb, candidates)
+            job.raise_if_stopped()
             job.add_log(f"Created {len(result['created'])} draft page(s)")
             return result
 
@@ -535,6 +553,23 @@ def create_app(registry: JobRegistry | None = None):
             raise HTTPException(status_code=404, detail="Job not found")
         return found.to_dict()
 
+    @app.post("/api/jobs/{job_id}/stop")
+    def stop_job(job_id: str) -> dict[str, Any]:
+        found = registry.stop(job_id)
+        if not found:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return found.to_dict()
+
+    @app.post("/api/jobs/{job_id}/retry")
+    def retry_job(job_id: str) -> dict[str, Any]:
+        try:
+            retried = registry.retry(job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not retried:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"job": retried.to_dict()}
+
     @app.get("/api/config")
     def config(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
         try:
@@ -546,6 +581,23 @@ def create_app(registry: JobRegistry | None = None):
     def update_config(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             return kb_helpers.update_config_data(_resolve_kb_dir(payload.get("kb_dir")), payload)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.get("/api/config/export")
+    def export_config(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            return kb_helpers.export_config_data(_resolve_kb_dir(kb_dir))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.post("/api/config/import")
+    def import_config(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            imported = payload.get("config") if isinstance(payload.get("config"), dict) else {
+                key: value for key, value in payload.items() if key != "kb_dir"
+            }
+            return kb_helpers.import_config_data(_resolve_kb_dir(payload.get("kb_dir")), imported)
         except Exception as exc:
             raise translate_error(exc) from exc
 

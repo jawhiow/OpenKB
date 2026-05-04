@@ -275,6 +275,7 @@ def add_single_file(
         compile_local_long_doc,
         compile_long_doc,
         compile_short_doc,
+        compile_progress_callback,
     )
     from openkb.state import HashRegistry
 
@@ -283,6 +284,7 @@ def add_single_file(
     config = load_config(openkb_dir / "config.yaml")
     _setup_llm_key(kb_dir)
     model: str = config.get("model", DEFAULT_CONFIG["model"])
+    compile_max_concurrency = max(int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])), 1)
     registry = HashRegistry(openkb_dir / "hashes.json")
 
     # 2. Convert document
@@ -311,15 +313,17 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling local long document: {file_path.name}")
         for attempt in range(2):
             try:
-                removed_stale_pages = asyncio.run(
-                    compile_local_long_doc(
-                        doc_name,
-                        result.source_path,
-                        kb_dir,
-                        model,
-                        cleanup_existing=force,
+                with compile_progress_callback(progress_callback):
+                    removed_stale_pages = asyncio.run(
+                        compile_local_long_doc(
+                            doc_name,
+                            result.source_path,
+                            kb_dir,
+                            model,
+                            max_concurrency=compile_max_concurrency,
+                            cleanup_existing=force,
+                        )
                     )
-                )
                 break
             except Exception as exc:
                 if attempt == 0:
@@ -349,17 +353,19 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling long document: {file_path.name}")
         for attempt in range(2):
             try:
-                removed_stale_pages = asyncio.run(
-                    compile_long_doc(
-                        doc_name,
-                        summary_path,
-                        index_result.doc_id,
-                        kb_dir,
-                        model,
-                        doc_description=index_result.description,
-                        cleanup_existing=force,
+                with compile_progress_callback(progress_callback):
+                    removed_stale_pages = asyncio.run(
+                        compile_long_doc(
+                            doc_name,
+                            summary_path,
+                            index_result.doc_id,
+                            kb_dir,
+                            model,
+                            doc_description=index_result.description,
+                            max_concurrency=compile_max_concurrency,
+                            cleanup_existing=force,
+                        )
                     )
-                )
                 break
             except Exception as exc:
                 if attempt == 0:
@@ -376,15 +382,17 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling short document: {file_path.name}")
         for attempt in range(2):
             try:
-                removed_stale_pages = asyncio.run(
-                    compile_short_doc(
-                        doc_name,
-                        result.source_path,
-                        kb_dir,
-                        model,
-                        cleanup_existing=force,
+                with compile_progress_callback(progress_callback):
+                    removed_stale_pages = asyncio.run(
+                        compile_short_doc(
+                            doc_name,
+                            result.source_path,
+                            kb_dir,
+                            model,
+                            max_concurrency=compile_max_concurrency,
+                            cleanup_existing=force,
+                        )
                     )
-                )
                 break
             except Exception as exc:
                 if attempt == 0:
@@ -526,6 +534,7 @@ def init():
         "model": model,
         "language": DEFAULT_CONFIG["language"],
         "pageindex_threshold": DEFAULT_CONFIG["pageindex_threshold"],
+        "compile_max_concurrency": DEFAULT_CONFIG["compile_max_concurrency"],
         "wire_api": resolved_wire_api,
         "base_url": DEFAULT_CONFIG["base_url"],
     }

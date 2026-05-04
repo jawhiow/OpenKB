@@ -9,6 +9,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "model": "gpt-5.4-mini",
     "language": "en",
     "pageindex_threshold": 20,
+    "compile_max_concurrency": 2,
     "wire_api": "chat_completions",
     "base_url": "",
 }

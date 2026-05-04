@@ -23,6 +23,10 @@ def test_client_script_renders_job_progress_logs_and_busy_buttons():
     assert "function renderJobDetails" in script
     assert "progress-bar" in script
     assert "job-log-list" in script
+    assert "async function stopJob" in script
+    assert "async function retryJob" in script
+    assert "`/api/jobs/${jobId}/stop`" in script
+    assert "`/api/jobs/${jobId}/retry`" in script
 
 
 def test_client_script_summarizes_partial_add_failures():
@@ -69,9 +73,21 @@ def test_client_settings_support_llm_profile_switching():
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
 
     assert "renderProfileList" in script
+    assert 'id="compileConcurrencyInput"' in script
     assert 'id="profileNameInput"' in script
     assert 'id="saveProfileBtn"' in script
     assert 'id="saveNewProfileBtn"' in script
+    assert 'id="exportProfilesBtn"' in script
+    assert 'id="importProfilesInput"' in script
+    assert 'id="toggleApiKeyBtn"' in script
+    assert 'value="${escapeHTML(profile.api_key || "")}"' in script
+    assert "function toggleApiKeyVisibility" in script
+    assert 'apiKeyInput.type === "password" ? "text" : "password"' in script
+    assert 'async function exportLlmConfig(event)' in script
+    assert 'async function importLlmConfig(event)' in script
+    assert '"/api/config/export"' in script
+    assert '"/api/config/import"' in script
+    assert "compile_max_concurrency" in script
     assert "switchProfile" in script
     assert "create_profile: true" in script
     assert "active_profile" in script

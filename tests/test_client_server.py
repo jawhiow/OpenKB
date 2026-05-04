@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -180,6 +181,56 @@ def test_upload_document_accepts_multiple_files_in_one_add_job(tmp_path, monkeyp
     assert job.result["added"] == 2
     assert job.result["failed"] == 0
     assert job.result["total"] == 2
+
+
+def test_job_endpoints_can_stop_and_retry_jobs(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    source = tmp_path / "doc.txt"
+    source.write_text("hello", encoding="utf-8")
+    registry = JobRegistry()
+    started = threading.Event()
+    release = threading.Event()
+    attempts: list[Path] = []
+
+    def fake_add_single_file(file_path, target_kb, *, strict=False, progress_callback=None):
+        attempts.append(file_path)
+        if len(attempts) == 1:
+            started.set()
+            release.wait(timeout=2)
+            return
+        if progress_callback:
+            progress_callback("Retry finished")
+
+    monkeypatch.setattr("openkb.cli.add_single_file", fake_add_single_file)
+
+    client = TestClient(create_app(registry=registry))
+    response = client.post(
+        "/api/documents/add",
+        json={"kb_dir": str(kb_dir), "path": str(source)},
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    assert started.wait(timeout=2)
+
+    stop_response = client.post(f"/api/jobs/{job_id}/stop")
+    release.set()
+    stopped = registry.wait(job_id, timeout=2)
+
+    assert stop_response.status_code == 200
+    assert stop_response.json()["status"] in {"running", "stopping", "stopped"}
+    assert stopped is not None
+    assert stopped.status == "stopped"
+
+    retry_response = client.post(f"/api/jobs/{job_id}/retry")
+
+    assert retry_response.status_code == 200
+    retry_job_id = retry_response.json()["job"]["id"]
+    retried = registry.wait(retry_job_id, timeout=2)
+    assert retried is not None
+    assert retried.status == "succeeded"
+    assert retry_job_id != job_id
+    assert attempts == [source, source]
 
 
 def test_lint_fix_plan_job_extracts_candidates_without_writing_pages(tmp_path):
@@ -531,7 +582,8 @@ def test_config_endpoint_can_create_and_switch_profiles(tmp_path):
     assert created["active_profile"] == "gateway"
     assert created["model"] == "openai/doubao-seed-2-0-pro-260215"
     assert [profile["id"] for profile in created["profiles"]] == ["default", "gateway"]
-    assert "gateway-secret" not in json.dumps(created)
+    assert created["api_key"] == "gateway-secret"
+    assert created["profiles"][1]["api_key"] == "gateway-secret"
 
     switch_response = client.put(
         "/api/config",
@@ -542,6 +594,50 @@ def test_config_endpoint_can_create_and_switch_profiles(tmp_path):
     switched = switch_response.json()
     assert switched["active_profile"] == "default"
     assert switched["model"] == "gpt-5.4-mini"
+
+
+def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
+    source = _make_kb(tmp_path / "source")
+    (source / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")
+    target = _make_kb(tmp_path / "target")
+    client = TestClient(create_app())
+
+    create_response = client.put(
+        "/api/config",
+        json={
+            "kb_dir": str(source),
+            "create_profile": True,
+            "profile_name": "Gateway",
+            "model": "openai/doubao-seed-2-0-pro-260215",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v1",
+            "compile_max_concurrency": 3,
+            "api_key": "gateway-secret",
+        },
+    )
+    assert create_response.status_code == 200
+
+    export_response = client.get("/api/config/export", params={"kb_dir": str(source)})
+
+    assert export_response.status_code == 200
+    exported = export_response.json()
+    assert exported["format"] == "openkb.llm-config.v1"
+    assert exported["settings"]["compile_max_concurrency"] == 3
+    assert exported["profiles"][0]["api_key"] == "default-secret"
+    assert exported["profiles"][1]["api_key"] == "gateway-secret"
+
+    import_response = client.post(
+        "/api/config/import",
+        json={"kb_dir": str(target), "config": exported},
+    )
+
+    assert import_response.status_code == 200
+    imported = import_response.json()
+    assert imported["active_profile"] == "gateway"
+    assert imported["compile_max_concurrency"] == 3
+    assert [profile["id"] for profile in imported["profiles"]] == ["default", "gateway"]
+    assert imported["api_key"] == "gateway-secret"
+    assert imported["profiles"][1]["api_key"] == "gateway-secret"
 
 
 def test_test_llm_endpoint_returns_rich_error_context(tmp_path, monkeypatch):
