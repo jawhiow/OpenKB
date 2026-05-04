@@ -121,6 +121,26 @@ def get_response_retry_max_delay() -> float:
         return 10.0
 
 
+def get_llm_max_retries() -> int:
+    value = os.getenv("OPENKB_LLM_MAX_RETRIES", os.getenv("OPENKB_RESPONSE_MAX_RETRIES", "")).strip()
+    if not value:
+        return 2
+    try:
+        return max(int(value), 0)
+    except ValueError:
+        return 2
+
+
+def get_llm_retry_max_delay() -> float:
+    value = os.getenv("OPENKB_LLM_RETRY_MAX_DELAY", os.getenv("OPENKB_RESPONSE_RETRY_MAX_DELAY", "")).strip()
+    if not value:
+        return 10.0
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        return 10.0
+
+
 def get_llm_timeout() -> float | None:
     value = os.getenv("OPENKB_LLM_TIMEOUT", "").strip().lower()
     if value in {"0", "none", "false", "off"}:
@@ -195,7 +215,11 @@ def _custom_openai_completion_via_requests(model: str, messages: list[dict], **k
 
 def _status_code(exc: Exception) -> int | None:
     status = getattr(exc, "status_code", None)
-    return status if isinstance(status, int) else None
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    return response_status if isinstance(response_status, int) else None
 
 
 def _error_body(exc: Exception) -> dict[str, Any]:
@@ -224,7 +248,16 @@ def _retry_after_seconds(exc: Exception) -> float | None:
 
 
 def _is_retryable_responses_error(exc: Exception) -> bool:
-    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+    return _is_retryable_llm_error(exc)
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    if isinstance(exc, (
+        APIConnectionError,
+        APITimeoutError,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+    )):
         return True
 
     body = _error_body(exc)
@@ -236,7 +269,7 @@ def _is_retryable_responses_error(exc: Exception) -> bool:
 
 
 def _retry_delay_seconds(attempt: int, exc: Exception) -> float:
-    max_delay = get_response_retry_max_delay()
+    max_delay = get_llm_retry_max_delay()
     retry_after = _retry_after_seconds(exc)
     if retry_after is not None:
         return min(retry_after, max_delay)
@@ -321,7 +354,7 @@ def _responses_request_kwargs(model: str, messages: list[dict], **kwargs) -> dic
     })
 
 
-def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
+def _completion_once(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     if not uses_responses_api(model):
         normalized_model = normalize_model_name(model)
         if is_custom_openai_compatible(normalized_model):
@@ -336,19 +369,24 @@ def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
 
     client = _get_sync_openai_client(model)
     request_kwargs = _responses_request_kwargs(model, messages, **kwargs)
-    max_retries = get_response_max_retries()
+    response = client.responses.create(**request_kwargs)
+    return CompletionResult(text=(response.output_text or "").strip(), usage=response.usage)
+
+
+def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
+    max_retries = get_llm_max_retries()
 
     for attempt in range(max_retries + 1):
         try:
-            response = client.responses.create(**request_kwargs)
-            return CompletionResult(text=(response.output_text or "").strip(), usage=response.usage)
+            return _completion_once(model, messages, **kwargs)
         except Exception as exc:
-            if attempt >= max_retries or not _is_retryable_responses_error(exc):
+            if attempt >= max_retries or not _is_retryable_llm_error(exc):
                 raise
             time.sleep(_retry_delay_seconds(attempt, exc))
+    raise RuntimeError("LLM completion retry loop exhausted.")
 
 
-async def acompletion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
+async def _acompletion_once(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     if not uses_responses_api(model):
         normalized_model = normalize_model_name(model)
         if is_custom_openai_compatible(normalized_model):
@@ -363,13 +401,18 @@ async def acompletion(model: str, messages: list[dict], **kwargs) -> CompletionR
 
     client = _get_async_openai_client(model)
     request_kwargs = _responses_request_kwargs(model, messages, **kwargs)
-    max_retries = get_response_max_retries()
+    response = await client.responses.create(**request_kwargs)
+    return CompletionResult(text=(response.output_text or "").strip(), usage=response.usage)
+
+
+async def acompletion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
+    max_retries = get_llm_max_retries()
 
     for attempt in range(max_retries + 1):
         try:
-            response = await client.responses.create(**request_kwargs)
-            return CompletionResult(text=(response.output_text or "").strip(), usage=response.usage)
+            return await _acompletion_once(model, messages, **kwargs)
         except Exception as exc:
-            if attempt >= max_retries or not _is_retryable_responses_error(exc):
+            if attempt >= max_retries or not _is_retryable_llm_error(exc):
                 raise
             await asyncio.sleep(_retry_delay_seconds(attempt, exc))
+    raise RuntimeError("LLM completion retry loop exhausted.")

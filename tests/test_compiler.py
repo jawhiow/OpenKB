@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 import pytest
 
 from openkb.agent.compiler import (
+    DEFAULT_COMPILE_CONCURRENCY,
     compile_long_doc,
     compile_local_long_doc,
     compile_short_doc,
@@ -30,9 +31,28 @@ from openkb.agent.compiler import (
     _add_related_link,
     _backlink_summary,
     _backlink_concepts,
+    get_compile_max_concurrency,
 )
 from openkb.lint import find_broken_links
 from openkb.llm_runtime import CompletionResult
+
+
+def test_compile_max_concurrency_defaults_to_conservative_value(monkeypatch):
+    monkeypatch.delenv("OPENKB_COMPILE_MAX_CONCURRENCY", raising=False)
+
+    assert DEFAULT_COMPILE_CONCURRENCY == 2
+    assert get_compile_max_concurrency() == 2
+
+
+def test_compile_max_concurrency_can_be_overridden_by_env(monkeypatch):
+    monkeypatch.setenv("OPENKB_COMPILE_MAX_CONCURRENCY", "1")
+    assert get_compile_max_concurrency() == 1
+
+    monkeypatch.setenv("OPENKB_COMPILE_MAX_CONCURRENCY", "bad")
+    assert get_compile_max_concurrency() == DEFAULT_COMPILE_CONCURRENCY
+
+    monkeypatch.setenv("OPENKB_COMPILE_MAX_CONCURRENCY", "0")
+    assert get_compile_max_concurrency() == 1
 
 
 class TestParseJson:

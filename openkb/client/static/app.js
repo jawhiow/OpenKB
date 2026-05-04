@@ -99,6 +99,7 @@ function lastLogMessage(job) {
 
 function resultSummary(job) {
   if (job.error) return job.error;
+  if (job.result?.added !== undefined && job.result?.failed) return `${job.result.added} added, ${job.result.failed} failed`;
   if (job.result?.added !== undefined) return `${job.result.added} file(s) added`;
   if (job.result?.candidates) return `${job.result.candidates.length} fix candidate(s)`;
   if (job.result?.created) return `${job.result.created.length} draft page(s) created`;
@@ -264,7 +265,8 @@ function handleJobTransitions(previousStatuses) {
     const previous = previousStatuses[job.id];
     if (previous !== "running" || job.status === "running") return;
     if (job.status === "succeeded") {
-      notify(`${jobLabels[job.type] || job.type} finished`, "success");
+      const hasFailures = Number(job.result?.failed || 0) > 0;
+      notify(`${jobLabels[job.type] || job.type} finished${hasFailures ? " with failures" : ""}`, hasFailures ? "warning" : "success");
       if (job.type === "lint_fix_plan") {
         captureFixPlan(job.result);
       }
@@ -580,7 +582,7 @@ function renderDocuments() {
           <hr />
           <div class="field full">
             <label for="uploadInput">File</label>
-            <input id="uploadInput" type="file" />
+            <input id="uploadInput" type="file" multiple />
           </div>
           <div class="row-actions">
             <button id="uploadBtn" type="button">Upload</button>
@@ -625,8 +627,9 @@ async function uploadFile(event) {
     notify("Choose a file first.", "warning");
     return;
   }
+  const files = Array.from(input.files);
   const form = new FormData();
-  form.append("file", input.files[0]);
+  Array.from(input.files).forEach((file) => form.append("file", file));
   setButtonBusy(button, true, "Uploading...");
   try {
     const result = await api(`/api/documents/upload?kb_dir=${encodeURIComponent(state.kbDir)}`, {
@@ -634,7 +637,7 @@ async function uploadFile(event) {
       body: form,
     });
     input.value = "";
-    trackJob(result.job, "Upload queued");
+    trackJob(result.job, files.length > 1 ? `${files.length} uploads queued` : "Upload queued");
   } catch (error) {
     setError(error.message);
   } finally {

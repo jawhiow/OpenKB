@@ -25,6 +25,16 @@ def test_client_script_renders_job_progress_logs_and_busy_buttons():
     assert "job-log-list" in script
 
 
+def test_client_script_summarizes_partial_add_failures():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "job.result?.failed" in script
+    assert "`${job.result.added} added, ${job.result.failed} failed`" in script
+    assert '" with failures"' in script
+    assert 'id="uploadInput" type="file" multiple' in script
+    assert 'Array.from(input.files).forEach((file) => form.append("file", file))' in script
+
+
 def test_client_api_error_path_reads_response_body_once():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 

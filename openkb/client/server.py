@@ -252,40 +252,44 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
-    @app.post("/api/documents/add")
-    def add_document(payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
-            source = Path(str(payload["path"]))
-        except Exception as exc:
-            raise translate_error(exc) from exc
-
+    def _submit_add_job(
+        target_kb: Path,
+        source: Path,
+        *,
+        preset_files: list[Path] | None = None,
+        message_source: str | None = None,
+    ):
         def run(job):
             from openkb.cli import SUPPORTED_EXTENSIONS, add_single_file
 
-            if not source.exists():
-                raise FileNotFoundError(source)
             files: list[Path]
-            if source.is_dir():
-                job.add_log(f"Scanning folder: {source}")
-                unsupported = [
-                    p
-                    for p in sorted(source.rglob("*"))
-                    if p.is_file() and p.suffix.lower() not in SUPPORTED_EXTENSIONS
-                ]
-                if unsupported:
-                    job.add_log(f"Skipped {len(unsupported)} unsupported file(s)")
-                files = [
-                    p
-                    for p in sorted(source.rglob("*"))
-                    if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
-                ]
+            if preset_files is not None:
+                files = list(preset_files)
             else:
-                files = [source]
+                if not source.exists():
+                    raise FileNotFoundError(source)
+                if source.is_dir():
+                    job.add_log(f"Scanning folder: {source}")
+                    unsupported = [
+                        p
+                        for p in sorted(source.rglob("*"))
+                        if p.is_file() and p.suffix.lower() not in SUPPORTED_EXTENSIONS
+                    ]
+                    if unsupported:
+                        job.add_log(f"Skipped {len(unsupported)} unsupported file(s)")
+                    files = [
+                        p
+                        for p in sorted(source.rglob("*"))
+                        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+                    ]
+                else:
+                    files = [source]
             if not files:
                 raise ValueError("No supported files found.")
             job.set_progress(0, len(files))
             job.add_log(f"Found {len(files)} supported file(s)")
+            added = 0
+            failures: list[dict[str, str]] = []
             for index, file_path in enumerate(files, 1):
                 if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     raise ValueError(f"Unsupported file type: {file_path.suffix}")
@@ -300,30 +304,77 @@ def create_app(registry: JobRegistry | None = None):
                     )
                 except Exception as exc:
                     job.add_log(f"Failed {file_path.name}: {exc}", level="error")
-                    raise
+                    if len(files) == 1:
+                        raise
+                    failures.append({
+                        "name": file_path.name,
+                        "path": str(file_path),
+                        "error": str(exc),
+                    })
+                    job.set_progress(index, len(files))
+                    continue
+                added += 1
                 job.set_progress(index, len(files))
                 job.add_log(f"Finished {index}/{len(files)}: {file_path.name}")
-            return {"added": len(files)}
+            if failures and added == 0:
+                if len(failures) == 1:
+                    raise RuntimeError(failures[0]["error"])
+                raise RuntimeError(f"All {len(failures)} file(s) failed. First failure: {failures[0]['error']}")
+            if failures:
+                failure_word = "failure" if len(failures) == 1 else "failures"
+                job.add_log(
+                    f"Completed with {added} added and {len(failures)} {failure_word}.",
+                    level="warning",
+                )
+            return {
+                "added": added,
+                "failed": len(failures),
+                "total": len(files),
+                "failures": failures,
+            }
 
-        job = registry.submit("add", run, message=f"Queued add: {source}")
+        job = registry.submit("add", run, message=f"Queued add: {message_source or source}")
+        return job
+
+    @app.post("/api/documents/add")
+    def add_document(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            source = Path(str(payload["path"]))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        job = _submit_add_job(target_kb, source)
         return {"job": job.to_dict()}
 
     @app.post("/api/documents/upload")
-    async def upload_document(file: UploadFile = File(...), kb_dir: str | None = None) -> dict[str, Any]:
+    async def upload_document(file: list[UploadFile] = File(...), kb_dir: str | None = None) -> dict[str, Any]:
         try:
             target_kb = _resolve_kb_dir(kb_dir)
             from openkb.cli import SUPPORTED_EXTENSIONS
 
-            suffix = Path(file.filename or "").suffix.lower()
-            if suffix not in SUPPORTED_EXTENSIONS:
-                raise ValueError(f"Unsupported file type: {suffix}")
+            uploads = list(file)
+            if not uploads:
+                raise ValueError("No files uploaded.")
             raw_dir = target_kb / "raw"
             raw_dir.mkdir(exist_ok=True)
-            destination = raw_dir / Path(file.filename or "upload").name
-            destination.write_bytes(await file.read())
+            destinations: list[Path] = []
+            for upload in uploads:
+                suffix = Path(upload.filename or "").suffix.lower()
+                if suffix not in SUPPORTED_EXTENSIONS:
+                    raise ValueError(f"Unsupported file type: {suffix}")
+                destination = raw_dir / Path(upload.filename or "upload").name
+                destination.write_bytes(await upload.read())
+                destinations.append(destination)
         except Exception as exc:
             raise translate_error(exc) from exc
-        return add_document({"kb_dir": str(target_kb), "path": str(destination)})
+        job = _submit_add_job(
+            target_kb,
+            destinations[0],
+            preset_files=destinations,
+            message_source=f"{len(destinations)} uploaded file(s)",
+        )
+        return {"job": job.to_dict()}
 
     @app.get("/api/wiki/tree")
     def wiki_tree(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import requests
 
 from openkb.llm_runtime import acompletion, completion, resolve_agent_model, uses_responses_api
 
@@ -119,6 +120,49 @@ def test_completion_does_not_retry_bad_request(monkeypatch):
     mock_sleep.assert_not_called()
 
 
+def test_completion_retries_retryable_chat_completion_error(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    _clear_gateway_env(monkeypatch)
+
+    mock_chat_completion = MagicMock(side_effect=[
+        _RetryableError(status_code=429),
+        _fake_chat_response("OK"),
+    ])
+
+    with patch("openkb.llm_runtime.litellm.completion", mock_chat_completion), \
+         patch("openkb.llm_runtime.time.sleep") as mock_sleep:
+        result = completion(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+
+    assert result.text == "OK"
+    assert mock_chat_completion.call_count == 2
+    mock_sleep.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_acompletion_retries_retryable_chat_completion_error(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    _clear_gateway_env(monkeypatch)
+
+    mock_chat_completion = AsyncMock(side_effect=[
+        _RetryableError(status_code=429),
+        _fake_chat_response("OK"),
+    ])
+
+    with patch("openkb.llm_runtime.litellm.acompletion", mock_chat_completion), \
+         patch("openkb.llm_runtime.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        result = await acompletion(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+
+    assert result.text == "OK"
+    assert mock_chat_completion.await_count == 2
+    mock_sleep.assert_awaited_once()
+
+
 def test_gpt5_respects_explicit_chat_completions_configuration(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
     _clear_gateway_env(monkeypatch)
@@ -190,6 +234,28 @@ def test_completion_prefixes_openai_for_custom_gateway_models(monkeypatch):
     mock_client.responses.create.assert_not_called()
     assert mock_post.call_args.kwargs["json"]["model"] == "doubao-seed-2-0-pro-260215"
     assert mock_post.call_args.kwargs["json"]["stream"] is False
+
+
+def test_completion_retries_custom_gateway_transport_error(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    mock_post = MagicMock(side_effect=[
+        requests.exceptions.Timeout("gateway timeout"),
+        _fake_requests_response("OK"),
+    ])
+
+    with patch("openkb.llm_runtime.requests.post", mock_post), \
+         patch("openkb.llm_runtime.time.sleep") as mock_sleep:
+        result = completion(
+            model="doubao-seed-2-0-pro-260215",
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+
+    assert result.text == "OK"
+    assert mock_post.call_count == 2
+    mock_sleep.assert_called_once()
 
 
 @pytest.mark.asyncio

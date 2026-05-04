@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -1707,9 +1708,26 @@ def _update_index(
 # Public API
 # ---------------------------------------------------------------------------
 
-DEFAULT_COMPILE_CONCURRENCY = 5
+DEFAULT_COMPILE_CONCURRENCY = 2
 DEFAULT_LOCAL_LONG_PAGE_CHARS = 1800
 DEFAULT_LOCAL_LONG_TOTAL_CHARS = 65000
+
+
+def get_compile_max_concurrency(value: int | None = None) -> int:
+    """Return a safe page-generation concurrency limit."""
+    if value is not None:
+        try:
+            return max(int(value), 1)
+        except (TypeError, ValueError):
+            return DEFAULT_COMPILE_CONCURRENCY
+
+    configured = os.getenv("OPENKB_COMPILE_MAX_CONCURRENCY", "").strip()
+    if not configured:
+        return DEFAULT_COMPILE_CONCURRENCY
+    try:
+        return max(int(configured), 1)
+    except ValueError:
+        return DEFAULT_COMPILE_CONCURRENCY
 
 
 def _build_local_long_doc_context(
@@ -2241,7 +2259,7 @@ async def _compile_short_doc_to_wiki(
     kb_dir: Path,
     wiki_dir: Path,
     model: str,
-    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+    max_concurrency: int | None = None,
 ) -> None:
     """Compile a short document using a multi-step LLM pipeline with caching.
 
@@ -2249,6 +2267,8 @@ async def _compile_short_doc_to_wiki(
     Steps 2-4: Delegated to ``_compile_concepts``.
     """
     from openkb.config import load_config
+
+    max_concurrency = get_compile_max_concurrency(max_concurrency)
 
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
@@ -2289,10 +2309,12 @@ async def compile_short_doc(
     source_path: Path,
     kb_dir: Path,
     model: str,
-    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+    max_concurrency: int | None = None,
     cleanup_existing: bool = False,
 ) -> list[str]:
     """Compile a short document and commit generated wiki files atomically."""
+    max_concurrency = get_compile_max_concurrency(max_concurrency)
+
     async def operation(staged_wiki: Path) -> list[str]:
         removed = cleanup_generated_pages_for_source(staged_wiki, doc_name) if cleanup_existing else []
         await _compile_short_doc_to_wiki(
@@ -2314,10 +2336,12 @@ async def _compile_local_long_doc_to_wiki(
     kb_dir: Path,
     wiki_dir: Path,
     model: str,
-    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+    max_concurrency: int | None = None,
 ) -> None:
     """Compile a long PDF converted to local page JSON."""
     from openkb.config import load_config
+
+    max_concurrency = get_compile_max_concurrency(max_concurrency)
 
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
@@ -2355,10 +2379,12 @@ async def compile_local_long_doc(
     source_path: Path,
     kb_dir: Path,
     model: str,
-    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+    max_concurrency: int | None = None,
     cleanup_existing: bool = False,
 ) -> list[str]:
     """Compile a local-long document and commit generated wiki files atomically."""
+    max_concurrency = get_compile_max_concurrency(max_concurrency)
+
     async def operation(staged_wiki: Path) -> list[str]:
         removed = cleanup_generated_pages_for_source(staged_wiki, doc_name) if cleanup_existing else []
         await _compile_local_long_doc_to_wiki(
@@ -2382,7 +2408,7 @@ async def _compile_long_doc_to_wiki(
     wiki_dir: Path,
     model: str,
     doc_description: str = "",
-    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+    max_concurrency: int | None = None,
 ) -> None:
     """Compile a long (PageIndex) document's concepts and index.
 
@@ -2390,6 +2416,8 @@ async def _compile_long_doc_to_wiki(
     generates concept pages and updates the index.
     """
     from openkb.config import load_config
+
+    max_concurrency = get_compile_max_concurrency(max_concurrency)
 
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
@@ -2429,10 +2457,12 @@ async def compile_long_doc(
     kb_dir: Path,
     model: str,
     doc_description: str = "",
-    max_concurrency: int = DEFAULT_COMPILE_CONCURRENCY,
+    max_concurrency: int | None = None,
     cleanup_existing: bool = False,
 ) -> list[str]:
     """Compile a PageIndex long document and commit generated wiki files atomically."""
+    max_concurrency = get_compile_max_concurrency(max_concurrency)
+
     async def operation(staged_wiki: Path) -> list[str]:
         removed = cleanup_generated_pages_for_source(staged_wiki, doc_name) if cleanup_existing else []
         await _compile_long_doc_to_wiki(

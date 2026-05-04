@@ -71,6 +71,55 @@ def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monke
     assert job.progress_total == 1
 
 
+def test_add_document_folder_continues_after_one_file_failure(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    source = tmp_path / "incoming"
+    source.mkdir()
+    good = source / "good.txt"
+    bad = source / "bad.txt"
+    good.write_text("ok", encoding="utf-8")
+    bad.write_text("temporary gateway failure", encoding="utf-8")
+    registry = JobRegistry()
+    calls: list[Path] = []
+
+    def fake_add_single_file(file_path, target_kb, *, strict=False, progress_callback=None):
+        calls.append(file_path)
+        assert target_kb == kb_dir
+        assert strict is True
+        if file_path.name == "bad.txt":
+            raise RuntimeError("downstream 429")
+        if progress_callback:
+            progress_callback(f"Finished compile: {file_path.name}")
+
+    monkeypatch.setattr("openkb.cli.add_single_file", fake_add_single_file)
+
+    client = TestClient(create_app(registry=registry))
+    response = client.post(
+        "/api/documents/add",
+        json={"kb_dir": str(kb_dir), "path": str(source)},
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert calls == [bad, good]
+    assert job.progress_current == 2
+    assert job.progress_total == 2
+    assert job.result == {
+        "added": 1,
+        "failed": 1,
+        "total": 2,
+        "failures": [
+            {"name": "bad.txt", "path": str(bad), "error": "downstream 429"},
+        ],
+    }
+    assert any(entry["level"] == "error" and "Failed bad.txt" in entry["message"] for entry in job.logs)
+    assert any(entry["level"] == "warning" and "1 added and 1 failure" in entry["message"] for entry in job.logs)
+
+
 def test_upload_document_accepts_single_file_and_queues_add_job(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     registry = JobRegistry()
@@ -98,6 +147,39 @@ def test_upload_document_accepts_single_file_and_queues_add_job(tmp_path, monkey
     assert calls["file_path"] == kb_dir / "raw" / "doc.txt"
     assert calls["target_kb"] == kb_dir
     assert calls["strict"] is True
+
+
+def test_upload_document_accepts_multiple_files_in_one_add_job(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    calls: list[Path] = []
+
+    def fake_add_single_file(file_path, target_kb, *, strict=False, progress_callback=None):
+        calls.append(file_path)
+        assert target_kb == kb_dir
+        assert strict is True
+
+    monkeypatch.setattr("openkb.cli.add_single_file", fake_add_single_file)
+
+    client = TestClient(create_app(registry=registry))
+    response = client.post(
+        f"/api/documents/upload?kb_dir={kb_dir}",
+        files=[
+            ("file", ("a.txt", b"first", "text/plain")),
+            ("file", ("b.txt", b"second", "text/plain")),
+        ],
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert calls == [kb_dir / "raw" / "a.txt", kb_dir / "raw" / "b.txt"]
+    assert job.result["added"] == 2
+    assert job.result["failed"] == 0
+    assert job.result["total"] == 2
 
 
 def test_lint_fix_plan_job_extracts_candidates_without_writing_pages(tmp_path):
