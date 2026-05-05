@@ -1,0 +1,84 @@
+<h2>推荐方案：结构重排 + 大数据渲染治理</h2>
+<p class="subtitle">保持原生 HTML/CSS/JS，不引入构建栈。核心是让主工作区变宽、列表可承载大量数据、jobs/wiki 不再整页重绘。</p>
+
+<div class="mockup">
+  <div class="mockup-header">Proposed OpenKB Workbench</div>
+  <div class="mockup-body">
+    <div style="height:520px;background:#eef2f6;border:1px solid #d6dde5;border-radius:8px;display:grid;grid-template-columns:236px minmax(0,1fr) 340px;grid-template-rows:56px 1fr;overflow:hidden;color:#17202a;font-size:12px">
+      <div style="grid-column:1/4;background:#fff;border-bottom:1px solid #d6dde5;display:flex;align-items:center;justify-content:space-between;padding:0 18px">
+        <div style="display:flex;align-items:center;gap:10px"><span style="display:grid;place-items:center;width:34px;height:34px;border:1px solid #bdd4cf;border-radius:7px;background:#eef8f6;color:#0f5f5a;font-weight:800">OK</span><b>OpenKB Workbench</b><span style="color:#677482">D:\kb\investment</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="border:1px solid #c7d1dc;border-radius:16px;padding:5px 10px;background:#f7f9fb">Ready</span><button class="mock-button">Refresh</button></div>
+      </div>
+      <aside style="background:#17202a;color:#e8eef5;padding:14px;display:grid;grid-template-rows:auto 1fr auto;gap:16px">
+        <div style="display:grid;gap:6px">
+          <div style="background:#263445;border-radius:6px;padding:9px;font-weight:700">Overview</div>
+          <div style="padding:9px;color:#aebaca">Documents</div>
+          <div style="padding:9px;color:#aebaca">Sources</div>
+          <div style="padding:9px;color:#aebaca">Wiki</div>
+          <div style="padding:9px;color:#aebaca">Quality</div>
+          <div style="padding:9px;color:#aebaca">Settings</div>
+        </div>
+        <div style="display:grid;align-content:start;gap:8px">
+          <div style="background:#223041;border:1px solid #3a4756;border-radius:6px;padding:10px"><b>Active</b><br><span style="color:#aebaca">3 running jobs</span></div>
+          <div style="background:#223041;border:1px solid #3a4756;border-radius:6px;padding:10px"><b>Corpus</b><br><span style="color:#aebaca">1,248 docs · 8,912 pages</span></div>
+        </div>
+        <div style="color:#aebaca">v0.1 · local</div>
+      </aside>
+      <main style="padding:16px;overflow:hidden;display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:12px">
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px">
+          <div style="background:white;border:1px solid #d6dde5;border-radius:6px;padding:10px"><span style="color:#677482">Indexed</span><br><b style="font-size:22px">1,248</b></div>
+          <div style="background:white;border:1px solid #d6dde5;border-radius:6px;padding:10px"><span style="color:#677482">Wiki</span><br><b style="font-size:22px">8,912</b></div>
+          <div style="background:white;border:1px solid #d6dde5;border-radius:6px;padding:10px"><span style="color:#677482">Reports</span><br><b style="font-size:22px">42</b></div>
+          <div style="background:white;border:1px solid #d6dde5;border-radius:6px;padding:10px"><span style="color:#677482">Issues</span><br><b style="font-size:22px">14</b></div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div><b style="font-size:16px">Sources</b><span style="color:#677482;margin-left:8px">filtered list with stable columns</span></div>
+          <div style="display:flex;gap:8px"><span style="background:#fff;border:1px solid #d6dde5;border-radius:18px;padding:7px 12px;color:#677482">Search documents/wiki</span><button class="mock-button">Add</button></div>
+        </div>
+        <div style="background:white;border:1px solid #d6dde5;border-radius:6px;overflow:hidden;display:grid;grid-template-rows:38px minmax(0,1fr) 42px">
+          <div style="display:grid;grid-template-columns:minmax(260px,1.8fr) 100px 80px 140px 180px 120px;background:#f7f9fb;border-bottom:1px solid #d6dde5;padding:10px;font-weight:700;color:#526170"><span>Name</span><span>Type</span><span>Pages</span><span>Wiki Pages</span><span>Updated</span><span>Actions</span></div>
+          <div style="overflow:hidden">
+            <div style="display:grid;grid-template-columns:minmax(260px,1.8fr) 100px 80px 140px 180px 120px;padding:10px;border-bottom:1px solid #edf0f3"><b>TSMC Earnings Call 2026.pdf</b><span>short</span><span>42</span><span>18</span><span>2026-05-05</span><span>Open</span></div>
+            <div style="display:grid;grid-template-columns:minmax(260px,1.8fr) 100px 80px 140px 180px 120px;padding:10px;border-bottom:1px solid #edf0f3"><b>AI Capex Supply Chain.md</b><span>short</span><span></span><span>11</span><span>2026-05-04</span><span>Open</span></div>
+            <div style="display:grid;grid-template-columns:minmax(260px,1.8fr) 100px 80px 140px 180px 120px;padding:10px;border-bottom:1px solid #edf0f3"><b>Semiconductor Industry Primer.pdf</b><span>local-long</span><span>188</span><span>64</span><span>2026-05-03</span><span>Open</span></div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:0 10px;background:#fbfcfd;border-top:1px solid #edf0f3;color:#677482"><span>Showing 1-50 of 1,248</span><span>‹ Page 1 / 25 ›</span></div>
+        </div>
+      </main>
+      <aside style="background:#fff;border-left:1px solid #d6dde5;display:grid;grid-template-rows:44px 1fr;overflow:hidden">
+        <div style="display:flex;align-items:center;border-bottom:1px solid #d6dde5">
+          <div style="flex:1;text-align:center;font-weight:700;border-right:1px solid #d6dde5;padding:13px;background:#f7f9fb">Jobs</div>
+          <div style="flex:1;text-align:center;color:#677482;padding:13px">Assistant</div>
+        </div>
+        <div style="padding:12px;display:grid;grid-template-rows:auto minmax(0,1fr);gap:10px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:1fr auto;gap:8px"><span style="background:#f7f9fb;border:1px solid #d6dde5;border-radius:16px;padding:7px 10px;color:#677482">Running · Failed · Done</span><button class="mock-button">Clear</button></div>
+          <div style="overflow:hidden;display:grid;gap:8px;align-content:start">
+            <div style="border:1px solid #d6dde5;border-radius:6px;padding:9px"><b>Add</b><span style="float:right;color:#9a6412">running</span><br><span style="color:#677482">31/100 · OCR page plan...</span></div>
+            <div style="border:1px solid #d6dde5;border-radius:6px;padding:9px"><b>Lint</b><span style="float:right;color:#2f7d4f">done</span><br><span style="color:#677482">42 issues · report ready</span></div>
+            <div style="border:1px solid #d6dde5;border-radius:6px;padding:9px"><b>Query</b><span style="float:right;color:#aa3636">failed</span><br><span style="color:#677482">timeout</span></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons">
+  <div class="pros">
+    <h4>What changes</h4>
+    <ul>
+      <li>Main area gets real width for tables/editors.</li>
+      <li>Jobs render incrementally and show filtered history.</li>
+      <li>Wiki/source lists use search + paging/virtual windows.</li>
+      <li>Tables get stable min widths and horizontal scroll only when needed.</li>
+    </ul>
+  </div>
+  <div class="cons">
+    <h4>Trade-offs</h4>
+    <ul>
+      <li>More JS structure than today, though still no build step.</li>
+      <li>Some existing snapshot-style static tests need updates.</li>
+      <li>Large lists become paged/windowed, so “all rows in DOM” is gone by design.</li>
+    </ul>
+  </div>
+</div>

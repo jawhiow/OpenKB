@@ -1,0 +1,81 @@
+﻿<h2>OpenKB 客户端重构：先选整体信息架构</h2>
+<p class="subtitle">目标是处理大量 job 和 wiki 页面时不卡顿，同时让列表、阅读、编辑和任务反馈更像专业工作台。点击你倾向的方向，也可以直接在终端补充想法。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:260px;background:#f4f6f8;border:1px solid #d8dee6;border-radius:8px;display:grid;grid-template-columns:72px 1fr 320px;grid-template-rows:48px 1fr 180px;overflow:hidden;color:#17202a;font-size:11px">
+        <div style="grid-column:1/4;background:#fff;border-bottom:1px solid #d8dee6;display:flex;align-items:center;justify-content:space-between;padding:0 14px"><b>OpenKB</b><span>Ready · KB path</span></div>
+        <div style="grid-row:2/4;background:#17202a;color:white;display:grid;align-content:start;gap:10px;padding:12px 8px"><span>⌂</span><span>▤</span><span>☰</span><span>⚙</span></div>
+        <div style="padding:14px;overflow:hidden">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+            <div style="background:white;border:1px solid #d8dee6;border-radius:6px;padding:8px"><small>Docs</small><br><b>1,248</b></div>
+            <div style="background:white;border:1px solid #d8dee6;border-radius:6px;padding:8px"><small>Wiki</small><br><b>8,912</b></div>
+            <div style="background:white;border:1px solid #d8dee6;border-radius:6px;padding:8px"><small>Jobs</small><br><b>27</b></div>
+            <div style="background:white;border:1px solid #d8dee6;border-radius:6px;padding:8px"><small>Issues</small><br><b>14</b></div>
+          </div>
+          <div style="height:160px;background:white;border:1px solid #d8dee6;border-radius:6px;padding:8px">
+            <b>Documents</b>
+            <div style="margin-top:8px;display:grid;gap:5px">
+              <span style="height:22px;background:#eef2f5;border-radius:4px"></span><span style="height:22px;background:#eef2f5;border-radius:4px"></span><span style="height:22px;background:#eef2f5;border-radius:4px"></span><span style="height:22px;background:#eef2f5;border-radius:4px"></span>
+            </div>
+          </div>
+        </div>
+        <div style="grid-column:3;grid-row:2/4;background:white;border-left:1px solid #d8dee6;padding:12px;overflow:hidden"><b>Assistant</b><div style="height:90px;background:#f4f6f8;border:1px solid #d8dee6;border-radius:6px;margin:10px 0"></div><b>Jobs</b><div style="display:grid;gap:6px;margin-top:8px"><span style="height:30px;background:#f4f6f8;border-radius:4px"></span><span style="height:30px;background:#f4f6f8;border-radius:4px"></span><span style="height:30px;background:#f4f6f8;border-radius:4px"></span></div></div>
+        <div style="grid-column:2;grid-row:3;background:white;border-top:1px solid #d8dee6;padding:10px"><b>Selected job log</b><div style="height:96px;background:#f8fafc;border-radius:4px;margin-top:8px"></div></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 保留三栏工作台，但变精致</h3>
+      <p>左侧导航更窄，中间主工作区，右侧 Assistant，底部 job 抽屉。改动相对小，最稳定，但低宽屏空间仍紧张。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:260px;background:#eef1f5;border:1px solid #d6dde5;border-radius:8px;display:grid;grid-template-columns:248px 1fr;grid-template-rows:56px 1fr;overflow:hidden;color:#17202a;font-size:11px">
+        <div style="grid-column:1/3;background:#fff;border-bottom:1px solid #d6dde5;display:flex;align-items:center;justify-content:space-between;padding:0 16px"><b>OpenKB Workbench</b><span>Search · Ask · Refresh</span></div>
+        <div style="background:#17202a;color:#eaf0f6;padding:12px;display:grid;grid-template-rows:auto auto 1fr;gap:12px">
+          <div style="display:grid;gap:7px"><span style="background:#2b3848;border-radius:5px;padding:7px">Overview</span><span style="padding:7px">Sources</span><span style="padding:7px">Wiki</span><span style="padding:7px">Quality</span></div>
+          <div style="background:#223041;border:1px solid #3a4756;border-radius:6px;padding:8px"><b>Active jobs</b><br><small>3 running · 24 total</small></div>
+          <div style="background:#223041;border:1px solid #3a4756;border-radius:6px;padding:8px"><b>Assistant</b><div style="height:68px;background:#162231;border-radius:4px;margin-top:8px"></div></div>
+        </div>
+        <div style="padding:16px;overflow:hidden">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px"><b style="font-size:15px">Sources</b><span style="background:#fff;border:1px solid #d6dde5;border-radius:20px;padding:5px 10px">Search wiki/pages</span></div>
+          <div style="height:178px;background:white;border:1px solid #d6dde5;border-radius:6px;overflow:hidden">
+            <div style="display:grid;grid-template-columns:minmax(220px,1.5fr) 90px 80px 140px 140px;background:#f7f9fb;border-bottom:1px solid #d6dde5;padding:8px;font-weight:700"><span>Name</span><span>Type</span><span>Pages</span><span>Wiki Links</span><span>Updated</span></div>
+            <div style="display:grid;gap:0">
+              <span style="height:30px;border-bottom:1px solid #edf0f3;background:#fff"></span><span style="height:30px;border-bottom:1px solid #edf0f3;background:#fff"></span><span style="height:30px;border-bottom:1px solid #edf0f3;background:#fff"></span><span style="height:30px;border-bottom:1px solid #edf0f3;background:#fff"></span><span style="height:30px;background:#fff"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 推荐：两栏主工作台 + 侧栏任务/助手</h3>
+      <p>把 jobs 和 assistant 合进可折叠侧栏，主区给列表和编辑器更大宽度。更适合大量数据，视觉也更干净。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:260px;background:#f5f7f9;border:1px solid #d8dee6;border-radius:8px;display:grid;grid-template-columns:1fr;grid-template-rows:54px 1fr 42px;overflow:hidden;color:#17202a;font-size:11px">
+        <div style="background:white;border-bottom:1px solid #d8dee6;display:flex;align-items:center;gap:10px;padding:0 14px"><b>OpenKB</b><span style="background:#eef2f5;border-radius:16px;padding:6px 12px">Overview</span><span>Documents</span><span>Wiki</span><span>Jobs</span><span>Settings</span></div>
+        <div style="padding:16px;overflow:hidden">
+          <div style="height:184px;background:white;border:1px solid #d8dee6;border-radius:6px;padding:10px">
+            <b>Wiki command center</b>
+            <div style="display:grid;grid-template-columns:260px 1fr;gap:12px;margin-top:10px;height:140px">
+              <div style="background:#f4f6f8;border:1px solid #d8dee6;border-radius:5px"></div>
+              <div style="display:grid;grid-template-rows:1fr 1fr;gap:8px"><div style="background:#f4f6f8;border:1px solid #d8dee6;border-radius:5px"></div><div style="background:#f4f6f8;border:1px solid #d8dee6;border-radius:5px"></div></div>
+            </div>
+          </div>
+        </div>
+        <div style="background:white;border-top:1px solid #d8dee6;display:flex;align-items:center;gap:14px;padding:0 14px"><span>3 running jobs</span><span>Assistant ready</span><span>Last sync 20:16</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 顶部导航 + 状态栏</h3>
+      <p>最像轻量桌面应用，空间开阔，但会改变现有使用习惯，也需要更多状态管理改造。</p>
+    </div>
+  </div>
+</div>

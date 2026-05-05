@@ -385,5 +385,65 @@ Use PowerShell `Get-ChildItem` and `Select-String` when `rg.exe` is unavailable 
 ### Metadata
 - Reproducible: yes
 - Related Files: none
+- Recurrence-Count: 2
+- Last-Seen: 2026-05-05T20:14:59+08:00
+
+---
+
+## [ERR-20260505-004] system_python_missing_agents_dependency
+
+**Logged**: 2026-05-05T20:14:59+08:00
+**Priority**: low
+**Status**: pending
+**Area**: tests
+
+### Summary
+The system `python` interpreter could not import `agents`, so OpenKB tests had to run with the project virtual environment.
+
+### Error
+```text
+ModuleNotFoundError: No module named 'agents'
+```
+
+### Context
+- Command attempted: `python -m pytest tests/test_query.py tests/test_agent_tools.py -q`
+- The repository already contains a `.venv` with the project dependencies installed.
+
+### Suggested Fix
+Use `.\\.venv\\Scripts\\python.exe -m pytest ...` for local verification inside this workspace.
+
+### Metadata
+- Reproducible: yes
+- Related Files: tests/test_query.py, tests/test_agent_tools.py
+
+---
+
+## [ERR-20260505-005] openkb_query_no_windows_console
+
+**Logged**: 2026-05-05T20:31:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+`openkb query` can start the query agent in the Codex PowerShell environment, but fails before completion because no Windows console is available.
+
+### Error
+```text
+[ERROR] Query failed: No Windows console found. Are you running cmd.exe?
+```
+
+### Context
+- Command attempted: `.venv\Scripts\python.exe -m openkb --kb-dir D:\知识库\openkb-test5 query "..."`
+- The command printed the agent's first step, such as needing to read `index.md`, then failed.
+- File-level inspection and `openkb status/list/lint/source` still work through the project virtual environment.
+
+### Suggested Fix
+Audit any console-specific prompt or rendering dependency in the query path and add a non-interactive fallback for hosted shells, CI, and Codex desktop sessions.
+
+### Metadata
+- Reproducible: yes
+- Related Files: openkb/cli.py, openkb/agent/query.py
+- See Also: ERR-20260505-004
 
 ---
