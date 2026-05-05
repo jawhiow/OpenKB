@@ -9,9 +9,11 @@ import yaml
 from openkb.client.kb import (
     PathSecurityError,
     build_wiki_tree,
+    delete_source_document_data,
     export_config_data,
     get_config_data,
     get_document_data,
+    get_source_document_data,
     get_status_data,
     import_config_data,
     init_kb,
@@ -67,16 +69,86 @@ def test_get_status_data_returns_counts(tmp_path: Path):
 
 def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
+    (kb_dir / "wiki" / "concepts" / "retrieval.md").write_text(
+        "---\nsources: [summaries/paper.md]\n---\n\n# Retrieval\n",
+        encoding="utf-8",
+    )
 
     data = get_document_data(kb_dir)
 
     assert data["documents"] == [
-        {"hash": "hash-a", "name": "paper.pdf", "type": "short", "pages": 12},
-        {"hash": "hash-b", "name": "manual.pdf", "type": "pageindex", "pages": 80},
+        {
+            "hash": "hash-a",
+            "name": "paper.pdf",
+            "type": "short",
+            "pages": 12,
+            "stem": "paper",
+            "related_count": 2,
+            "related_pages": {
+                "summaries": [
+                    {"path": "summaries/paper.md", "page": "summaries/paper", "title": "paper", "shared": False}
+                ],
+                "companies": [],
+                "industries": [],
+                "themes": [],
+                "metrics": [],
+                "risks": [],
+                "concepts": [
+                    {"path": "concepts/retrieval.md", "page": "concepts/retrieval", "title": "retrieval", "shared": False}
+                ],
+            },
+        },
+        {
+            "hash": "hash-b",
+            "name": "manual.pdf",
+            "type": "pageindex",
+            "pages": 80,
+            "stem": "manual",
+            "related_count": 0,
+            "related_pages": {
+                "summaries": [],
+                "companies": [],
+                "industries": [],
+                "themes": [],
+                "metrics": [],
+                "risks": [],
+                "concepts": [],
+            },
+        },
     ]
     assert data["summaries"] == ["paper"]
     assert data["concepts"] == ["retrieval"]
     assert data["reports"] == ["lint.md"]
+
+
+def test_source_document_data_and_delete_are_shared_with_client(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / "wiki" / "companies").mkdir()
+    (kb_dir / "wiki" / "sources" / "paper.md").write_text("# Full", encoding="utf-8")
+    (kb_dir / "wiki" / "companies" / "TSMC.md").write_text(
+        "---\nsources: [summaries/paper.md]\n---\n\n# TSMC",
+        encoding="utf-8",
+    )
+    (kb_dir / "wiki" / "concepts" / "retrieval.md").write_text(
+        "---\nsources: [summaries/paper.md, summaries/manual.md]\n---\n\n"
+        "# Retrieval\n\n## Related Documents\n- [[summaries/paper]]\n- [[summaries/manual]]\n",
+        encoding="utf-8",
+    )
+
+    detail = get_source_document_data(kb_dir, "paper")
+    assert detail["name"] == "paper.pdf"
+    assert detail["related_count"] == 3
+    assert detail["related_pages"]["companies"][0]["path"] == "companies/TSMC.md"
+    assert detail["related_pages"]["concepts"][0]["shared"] is True
+
+    result = delete_source_document_data(kb_dir, "paper")
+
+    assert result["removed_pages"] == ["summaries/paper.md", "companies/TSMC.md"]
+    assert result["updated_pages"] == ["concepts/retrieval.md"]
+    assert not (kb_dir / "wiki" / "companies" / "TSMC.md").exists()
+    retrieval = (kb_dir / "wiki" / "concepts" / "retrieval.md").read_text(encoding="utf-8")
+    assert "summaries/paper.md" not in retrieval
+    assert "[[summaries/paper]]" not in retrieval
 
 
 def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):

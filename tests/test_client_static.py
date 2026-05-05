@@ -39,6 +39,20 @@ def test_client_script_summarizes_partial_add_failures():
     assert 'Array.from(input.files).forEach((file) => form.append("file", file))' in script
 
 
+def test_client_documents_show_related_pages_and_delete_source_action():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "function documentRelatedMarkup" in script
+    assert "related_count" in script
+    assert "data-delete-source" in script
+    assert "async function deleteSourceDocument" in script
+    assert "DELETE" in script
+    assert "delete_source" in script
+    assert ".doc-relations" in styles
+    assert ".source-actions" in styles
+
+
 def test_client_api_error_path_reads_response_body_once():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 

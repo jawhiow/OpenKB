@@ -253,6 +253,13 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
+    @app.get("/api/documents/{selector}")
+    def document_detail(selector: str, kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            return kb_helpers.get_source_document_data(_resolve_kb_dir(kb_dir), selector)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
     def _submit_add_job(
         target_kb: Path,
         source: Path,
@@ -384,6 +391,26 @@ def create_app(registry: JobRegistry | None = None):
             preset_files=destinations,
             message_source=f"{len(destinations)} uploaded file(s)",
         )
+        return {"job": job.to_dict()}
+
+    @app.delete("/api/documents/{selector}")
+    def delete_document(selector: str, kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(kb_dir)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            job.raise_if_stopped()
+            job.add_log(f"Resolving source document: {selector}")
+            result = kb_helpers.delete_source_document_data(target_kb, selector)
+            job.raise_if_stopped()
+            removed = len(result["removed_pages"])
+            updated = len(result["updated_pages"])
+            job.add_log(f"Removed {removed} page(s), updated {updated} shared page(s)")
+            return result
+
+        job = registry.submit("delete_source", run, message=f"Deleting source: {selector}")
         return {"job": job.to_dict()}
 
     @app.get("/api/wiki/tree")

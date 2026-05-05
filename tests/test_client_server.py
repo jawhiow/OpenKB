@@ -183,6 +183,64 @@ def test_upload_document_accepts_multiple_files_in_one_add_job(tmp_path, monkeyp
     assert job.result["total"] == 2
 
 
+def test_document_detail_endpoint_returns_related_pages(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "hashes.json").write_text(
+        json.dumps({"abc123": {"name": "paper.pdf", "type": "pdf"}}),
+        encoding="utf-8",
+    )
+    (kb_dir / "wiki" / "summaries" / "paper.md").write_text(
+        "---\ndoc_type: short\nfull_text: sources/paper.md\n---\n\n# Paper",
+        encoding="utf-8",
+    )
+    (kb_dir / "wiki" / "concepts" / "Retrieval.md").write_text(
+        "---\nsources: [summaries/paper.md]\n---\n\n# Retrieval",
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app())
+    response = client.get("/api/documents/paper", params={"kb_dir": str(kb_dir)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "paper.pdf"
+    assert body["related_count"] == 2
+    assert body["related_pages"]["concepts"][0]["path"] == "concepts/Retrieval.md"
+
+
+def test_delete_document_endpoint_runs_cleanup_job(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    (kb_dir / "raw" / "paper.pdf").write_bytes(b"%PDF")
+    (kb_dir / ".openkb" / "hashes.json").write_text(
+        json.dumps({"abc123": {"name": "paper.pdf", "type": "pdf"}}),
+        encoding="utf-8",
+    )
+    (kb_dir / "wiki" / "summaries" / "paper.md").write_text(
+        "---\ndoc_type: short\nfull_text: sources/paper.md\n---\n\n# Paper",
+        encoding="utf-8",
+    )
+    (kb_dir / "wiki" / "concepts" / "Retrieval.md").write_text(
+        "---\nsources: [summaries/paper.md]\n---\n\n# Retrieval",
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(registry=registry))
+    response = client.delete("/api/documents/paper", params={"kb_dir": str(kb_dir)})
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.type == "delete_source"
+    assert job.result["document"]["name"] == "paper.pdf"
+    assert job.result["removed_pages"] == ["summaries/paper.md", "concepts/Retrieval.md"]
+    assert not (kb_dir / "raw" / "paper.pdf").exists()
+    assert not (kb_dir / "wiki" / "concepts" / "Retrieval.md").exists()
+
+
 def test_job_endpoints_can_stop_and_retry_jobs(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     source = tmp_path / "doc.txt"

@@ -38,6 +38,7 @@ const viewLabels = {
 
 const jobLabels = {
   add: "Add",
+  delete_source: "Delete",
   lint: "Lint",
   lint_fix_plan: "Fix Plan",
   lint_fix_apply: "Apply Fixes",
@@ -273,7 +274,7 @@ function handleJobTransitions(previousStatuses) {
       if (job.type === "lint_fix_apply") {
         state.lastFixApply = job.result || null;
       }
-      shouldRefresh = shouldRefresh || ["add", "lint", "query", "lint_fix_apply"].includes(job.type);
+      shouldRefresh = shouldRefresh || ["add", "delete_source", "lint", "query", "lint_fix_apply"].includes(job.type);
     } else if (job.status === "failed") {
       notify(job.error || `${jobLabels[job.type] || job.type} failed`, "error");
     } else if (job.status === "stopped") {
@@ -577,11 +578,63 @@ function documentsTable(limit) {
   if (!docs.length) return `<div class="empty">No documents</div>`;
   return `
     <table>
-      <thead><tr><th>Name</th><th>Type</th><th>Pages</th></tr></thead>
+      <thead><tr><th>Name</th><th>Type</th><th>Pages</th><th>Related</th><th></th></tr></thead>
       <tbody>
-        ${docs.map((doc) => `<tr><td>${escapeHTML(doc.name)}</td><td>${escapeHTML(doc.type)}</td><td>${escapeHTML(doc.pages || "")}</td></tr>`).join("")}
+        ${docs
+          .map(
+            (doc) => `
+              <tr>
+                <td>${escapeHTML(doc.name)}</td>
+                <td>${escapeHTML(doc.type)}</td>
+                <td>${escapeHTML(doc.pages || "")}</td>
+                <td>${documentRelatedMarkup(doc)}</td>
+                <td class="source-actions">
+                  <button class="danger" type="button" data-delete-source="${escapeHTML(doc.hash)}">Delete</button>
+                </td>
+              </tr>
+            `,
+          )
+          .join("")}
       </tbody>
     </table>
+  `;
+}
+
+function documentRelatedMarkup(doc) {
+  const related = doc.related_pages || {};
+  const groups = [
+    ["summaries", "Summaries"],
+    ["companies", "Companies"],
+    ["industries", "Industries"],
+    ["themes", "Themes"],
+    ["metrics", "Metrics"],
+    ["risks", "Risks"],
+    ["concepts", "Concepts"],
+  ]
+    .map(([key, label]) => [label, related[key] || []])
+    .filter(([, pages]) => pages.length);
+  if (!groups.length) return `<span class="muted-text">0 pages</span>`;
+  return `
+    <details class="doc-relations">
+      <summary>${escapeHTML(doc.related_count || 0)} page(s)</summary>
+      <div>
+        ${groups
+          .map(
+            ([label, pages]) => `
+              <section>
+                <strong>${escapeHTML(label)}</strong>
+                ${pages
+                  .map((page) => {
+                    const shared = page.shared ? ` <span class="badge info">shared</span>` : "";
+                    return `<button type="button" data-wiki-open="${escapeHTML(page.path)}">${escapeHTML(page.path)}${shared}</button>`;
+                  })
+                  .join("")}
+              </section>
+            `,
+          )
+          .join("")}
+      </div>
+    </details>
   `;
 }
 
@@ -632,6 +685,15 @@ function renderDocuments() {
   `;
   $("#addPathBtn").addEventListener("click", addPath);
   $("#uploadBtn").addEventListener("click", uploadFile);
+  mainView.querySelectorAll("[data-wiki-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedWikiPath = button.dataset.wikiOpen;
+      switchView("wiki");
+    });
+  });
+  mainView.querySelectorAll("[data-delete-source]").forEach((button) => {
+    button.addEventListener("click", deleteSourceDocument);
+  });
 }
 
 async function addPath(event) {
@@ -948,6 +1010,24 @@ function renderReports() {
   });
   if (state.selectedReport && state.reportPreview.path !== state.selectedReport && state.reportPreviewLoading !== state.selectedReport) {
     loadReportPreview(state.selectedReport);
+  }
+}
+
+async function deleteSourceDocument(event) {
+  const button = event?.currentTarget;
+  const selector = button?.dataset.deleteSource;
+  if (!selector) return;
+  const row = button.closest("tr");
+  const name = row?.querySelector("td")?.textContent?.trim() || "this source document";
+  if (!window.confirm(`Delete ${name} and clean its generated pages?`)) return;
+  setButtonBusy(button, true, "Deleting...");
+  try {
+    const result = await api(withKb(`/api/documents/${encodeURIComponent(selector)}`), { method: "DELETE" });
+    trackJob(result.job, "Delete job queued");
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
   }
 }
 

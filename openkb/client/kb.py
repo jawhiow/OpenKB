@@ -34,6 +34,7 @@ class PathSecurityError(ClientError, ValueError):
 
 _TYPE_DISPLAY_MAP = {
     "long_pdf": "pageindex",
+    "local_long_pdf": "local-long",
 }
 
 _SHORT_DOC_TYPES = {"pdf", "docx", "md", "markdown", "html", "htm", "txt", "csv", "pptx", "xlsx"}
@@ -131,15 +132,19 @@ def get_status_data(kb_dir: Path) -> dict[str, Any]:
 def get_document_data(kb_dir: Path) -> dict[str, Any]:
     """Return indexed documents and wiki page lists."""
     kb_dir = require_kb_dir(kb_dir)
-    hashes = _read_hashes(kb_dir)
+    from openkb.source_relations import get_source_documents
+
     documents = []
-    for file_hash, meta in hashes.items():
+    for document in get_source_documents(kb_dir):
         documents.append(
             {
-                "hash": file_hash,
-                "name": meta.get("name", "unknown"),
-                "type": _display_type(str(meta.get("type", "unknown"))),
-                "pages": meta.get("pages", ""),
+                "hash": document["hash"],
+                "name": document["name"],
+                "type": _display_type(str(document.get("type", "unknown"))),
+                "pages": document.get("pages", ""),
+                "stem": document["stem"],
+                "related_count": document["related_count"],
+                "related_pages": document["related_pages"],
             }
         )
 
@@ -155,6 +160,26 @@ def get_document_data(kb_dir: Path) -> dict[str, Any]:
         "concepts": _list_stems(wiki_dir / "concepts"),
         "reports": _list_names(wiki_dir / "reports"),
     }
+
+
+def get_source_document_data(kb_dir: Path, selector: str) -> dict[str, Any]:
+    """Return one indexed document with generated wiki page relations."""
+    kb_dir = require_kb_dir(kb_dir)
+    from openkb.source_relations import get_source_document_detail
+
+    document = get_source_document_detail(kb_dir, selector)
+    document["type"] = _display_type(str(document.get("type", "unknown")))
+    return document
+
+
+def delete_source_document_data(kb_dir: Path, selector: str) -> dict[str, Any]:
+    """Delete one indexed document and clean its generated wiki relations."""
+    kb_dir = require_kb_dir(kb_dir)
+    from openkb.source_relations import delete_source_document
+
+    result = delete_source_document(kb_dir, selector)
+    result["document"]["type"] = _display_type(str(result["document"].get("type", "unknown")))
+    return result
 
 
 def _resolve_wiki_path(kb_dir: Path, relative_path: str) -> Path:

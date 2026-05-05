@@ -145,6 +145,87 @@ class TestListCommand:
         assert "Risks (1):" in result.output
         assert "export-controls" in result.output
 
+    def test_source_command_shows_pages_related_to_one_document(self, tmp_path):
+        kb_dir = _setup_kb(tmp_path)
+        (kb_dir / "wiki" / "companies").mkdir(exist_ok=True)
+        hashes = {"abc123": {"name": "paper.pdf", "type": "pdf", "pages": 12}}
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes), encoding="utf-8")
+        (kb_dir / "wiki" / "summaries" / "paper.md").write_text(
+            "---\ndoc_type: short\nfull_text: sources/paper.md\n---\n\n# Paper",
+            encoding="utf-8",
+        )
+        (kb_dir / "wiki" / "companies" / "TSMC.md").write_text(
+            "---\nsources: [summaries/paper.md]\n---\n\n# TSMC",
+            encoding="utf-8",
+        )
+        (kb_dir / "wiki" / "concepts" / "Shared.md").write_text(
+            "---\nsources: [summaries/other.md, summaries/paper.md]\n---\n\n# Shared",
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["source", "paper"])
+
+        assert result.exit_code == 0
+        assert "paper.pdf" in result.output
+        assert "Related pages (3)" in result.output
+        assert "summaries/paper.md" in result.output
+        assert "companies/TSMC.md" in result.output
+        assert "concepts/Shared.md (shared)" in result.output
+
+    def test_delete_source_command_cleans_related_pages_with_confirmation(self, tmp_path):
+        kb_dir = _setup_kb(tmp_path)
+        (kb_dir / "wiki" / "companies").mkdir(exist_ok=True)
+        (kb_dir / "wiki" / "sources").mkdir(exist_ok=True)
+        (kb_dir / "wiki" / "sources" / "images" / "paper").mkdir(parents=True, exist_ok=True)
+        hashes = {
+            "abc123": {"name": "paper.pdf", "type": "pdf"},
+            "def456": {"name": "other.pdf", "type": "pdf"},
+        }
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes), encoding="utf-8")
+        (kb_dir / "raw" / "paper.pdf").write_bytes(b"%PDF")
+        (kb_dir / "wiki" / "sources" / "paper.md").write_text("# Full", encoding="utf-8")
+        (kb_dir / "wiki" / "sources" / "images" / "paper" / "chart.png").write_bytes(b"png")
+        (kb_dir / "wiki" / "summaries" / "paper.md").write_text(
+            "---\ndoc_type: short\nfull_text: sources/paper.md\n---\n\n# Paper",
+            encoding="utf-8",
+        )
+        (kb_dir / "wiki" / "companies" / "TSMC.md").write_text(
+            "---\nsources: [summaries/paper.md]\n---\n\n# TSMC",
+            encoding="utf-8",
+        )
+        (kb_dir / "wiki" / "concepts" / "Shared.md").write_text(
+            "---\nsources: [summaries/other.md, summaries/paper.md]\n---\n\n"
+            "# Shared\n\n## Related Documents\n- [[summaries/other]]\n- [[summaries/paper]]\n",
+            encoding="utf-8",
+        )
+        (kb_dir / "wiki" / "index.md").write_text(
+            "# Index\n\n"
+            "## Documents\n- [[summaries/paper]] (short)\n- [[summaries/other]] (short)\n\n"
+            "## Companies\n- [[companies/TSMC]]\n\n"
+            "## Concepts\n- [[concepts/Shared]]\n",
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["delete-source", "paper", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Deleted source document: paper.pdf" in result.output
+        assert "Removed pages: 2" in result.output
+        assert "Updated shared pages: 1" in result.output
+        assert not (kb_dir / "raw" / "paper.pdf").exists()
+        assert not (kb_dir / "wiki" / "summaries" / "paper.md").exists()
+        assert not (kb_dir / "wiki" / "companies" / "TSMC.md").exists()
+        shared = (kb_dir / "wiki" / "concepts" / "Shared.md").read_text(encoding="utf-8")
+        assert "summaries/paper.md" not in shared
+        assert "[[summaries/paper]]" not in shared
+        remaining_hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+        assert "abc123" not in remaining_hashes
+        assert "def456" in remaining_hashes
+
 
 class TestStatusCommand:
     def test_status_no_kb(self, tmp_path):

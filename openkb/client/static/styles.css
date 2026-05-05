@@ -437,6 +437,48 @@ th {
   font-weight: 650;
 }
 
+.source-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.doc-relations {
+  min-width: 220px;
+}
+
+.doc-relations summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.doc-relations > div {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.doc-relations section {
+  display: grid;
+  gap: 4px;
+}
+
+.doc-relations section > strong {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.doc-relations button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 7px;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .wiki-layout {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);

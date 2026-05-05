@@ -1091,6 +1091,141 @@ def list_cmd(ctx):
     print_list(kb_dir)
 
 
+def _iter_related_page_groups(document: dict) -> list[tuple[str, list[dict]]]:
+    labels = (
+        ("summaries", "Summaries"),
+        ("companies", "Companies"),
+        ("industries", "Industries"),
+        ("themes", "Themes"),
+        ("metrics", "Metrics"),
+        ("risks", "Risks"),
+        ("concepts", "Concepts"),
+    )
+    related = document.get("related_pages") or {}
+    return [
+        (label, list(related.get(key) or []))
+        for key, label in labels
+        if related.get(key)
+    ]
+
+
+def print_source_detail(document: dict) -> None:
+    """Print one indexed source document and its generated wiki pages."""
+    click.echo(f"Source document: {document.get('name', 'unknown')}")
+    click.echo(f"  Hash:     {document.get('hash', '')}")
+    click.echo(f"  Type:     {_display_type(str(document.get('type', 'unknown')))}")
+    pages = document.get("pages")
+    if pages:
+        click.echo(f"  Pages:    {pages}")
+    click.echo(f"  Raw:      {document.get('raw_path', '')}")
+    if document.get("source_path"):
+        click.echo(f"  Full text:{'':<2}{document.get('source_path')}")
+    click.echo(f"  Summary:  {document.get('source_summary', '')}")
+    click.echo(f"\nRelated pages ({document.get('related_count', 0)}):")
+    groups = _iter_related_page_groups(document)
+    if not groups:
+        click.echo("  (none)")
+        return
+    for label, pages in groups:
+        click.echo(f"  {label}:")
+        for page in pages:
+            suffix = " (shared)" if page.get("shared") else ""
+            click.echo(f"    - {page.get('path')}{suffix}")
+
+
+@cli.command(name="source")
+@click.argument("selector", required=False)
+@click.pass_context
+def source_cmd(ctx, selector):
+    """Show generated wiki pages associated with a source document."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    _ensure_wiki_schema(kb_dir)
+
+    from openkb.source_relations import get_source_documents, get_source_document_detail
+
+    if selector:
+        try:
+            document = get_source_document_detail(kb_dir, selector)
+        except ValueError as exc:
+            click.echo(f"[ERROR] {exc}")
+            return
+        print_source_detail(document)
+        return
+
+    documents = get_source_documents(kb_dir)
+    if not documents:
+        click.echo("No documents indexed yet.")
+        return
+    click.echo(f"Source documents ({len(documents)}):")
+    click.echo(f"  {'Name':<40} {'Type':<12} {'Related':<8}")
+    click.echo(f"  {'-'*40} {'-'*12} {'-'*8}")
+    for document in documents:
+        name = document.get("name", "unknown")
+        display = _display_type(str(document.get("type", "unknown")))
+        related = document.get("related_count", 0)
+        click.echo(f"  {name:<40} {display:<12} {related:<8}")
+    click.echo("\nUse `openkb source <name-or-hash>` to inspect related pages.")
+
+
+@cli.command(name="delete-source")
+@click.argument("selector")
+@click.option("--yes", "-y", is_flag=True, default=False, help="Delete without prompting for confirmation.")
+@click.pass_context
+def delete_source_cmd(ctx, selector, yes):
+    """Delete an indexed source document and safely clean generated pages."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    _ensure_wiki_schema(kb_dir)
+
+    from openkb.source_relations import delete_source_document, get_source_document_detail
+
+    try:
+        document = get_source_document_detail(kb_dir, selector)
+    except ValueError as exc:
+        click.echo(f"[ERROR] {exc}")
+        return
+
+    owned_pages = [
+        page["path"]
+        for _label, pages in _iter_related_page_groups(document)
+        for page in pages
+        if not page.get("shared")
+    ]
+    shared_pages = [
+        page["path"]
+        for _label, pages in _iter_related_page_groups(document)
+        for page in pages
+        if page.get("shared")
+    ]
+    if not yes:
+        click.echo(f"Delete source document: {document.get('name', 'unknown')}")
+        click.echo(f"  Owned pages to remove: {len(owned_pages)}")
+        click.echo(f"  Shared pages to update: {len(shared_pages)}")
+        if not click.confirm("Continue?"):
+            click.echo("Aborted.")
+            return
+
+    result = delete_source_document(kb_dir, selector)
+    append_log(kb_dir / "wiki", "delete-source", str(result["document"].get("name", selector)))
+
+    click.echo(f"Deleted source document: {result['document'].get('name', 'unknown')}")
+    click.echo(f"Removed pages: {len(result['removed_pages'])}")
+    for page in result["removed_pages"]:
+        click.echo(f"  - {page}")
+    click.echo(f"Updated shared pages: {len(result['updated_pages'])}")
+    for page in result["updated_pages"]:
+        click.echo(f"  - {page}")
+    if result["removed_files"]:
+        click.echo(f"Removed files: {len(result['removed_files'])}")
+        for path in result["removed_files"]:
+            click.echo(f"  - {path}")
+
+
 def print_status(kb_dir: Path) -> None:
     """Print knowledge base status. Usable from CLI and chat REPL."""
     wiki_dir = kb_dir / "wiki"
