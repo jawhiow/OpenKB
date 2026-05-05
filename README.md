@@ -194,7 +194,7 @@ Settings are initialized by `openkb init`, and stored in `.openkb/config.yaml`:
 ```yaml
 model: gpt-5.4                   # LLM model (any LiteLLM-supported provider)
 language: en                     # Wiki output language
-pageindex_threshold: 20          # PDF pages threshold for PageIndex
+pageindex_threshold: 20          # PDF pages threshold for PageIndex-style long-doc routing
 ocr_enabled: true                # Enable OCR recommendations for scanned PDFs
 ocr_default_model: PaddleOCR-VL-1.5
 ocr_chunk_pages: 100             # PaddleOCR requests are capped at 100 pages
@@ -240,7 +240,7 @@ PAGEINDEX_API_KEY=your_pageindex_api_key
 
 #### OCR for scanned PDFs
 
-OpenKB can detect long scanned PDFs and route them through PaddleOCR before wiki compilation. OCR artifacts are cached inside the KB at `.openkb/ocr/cache/<file_hash>/`, then reused by either the `local-long` compiler or the local PageIndex path. Store the PaddleOCR credential in the KB-local `.env`:
+OpenKB can detect scanned PDFs and route them through PaddleOCR before wiki compilation. OCR artifacts are cached inside the KB at `.openkb/ocr/cache/<file_hash>/`, then reused by either the `local-long` compiler or the local PageIndex path. Explicit OCR/local import strategies can also bypass the PageIndex page threshold when needed. Store the PaddleOCR credential in the KB-local `.env`:
 
 ```
 PADDLEOCR_TOKEN=your_paddleocr_token

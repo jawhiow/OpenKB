@@ -1597,6 +1597,7 @@ function toggleApiKeyVisibility() {
 
 function renderSettings() {
   const cfg = state.config || {};
+  const runtime = state.pageindexLocalStatus || {};
   const profile = activeProfile(cfg) || {
     id: "default",
     name: "Default",
@@ -1609,7 +1610,12 @@ function renderSettings() {
       <section class="section">
         <header>
           <h3>Knowledge Base</h3>
-          <button id="saveSettingsBtn" class="primary" type="button">Save Settings</button>
+          <div class="row-actions">
+            <button id="exportProfilesBtn" type="button">Export Settings</button>
+            <button id="importProfilesBtn" type="button">Import Settings</button>
+            <input id="importProfilesInput" type="file" accept="application/json,.json" hidden />
+            <button id="saveSettingsBtn" class="primary" type="button">Save Settings</button>
+          </div>
         </header>
         <div class="section-body form-grid">
           <div class="field full">
@@ -1686,6 +1692,26 @@ function renderSettings() {
             </select>
           </div>
           <div class="field full">
+            <label>Local PageIndex Runtime</label>
+            <div class="runtime-list">
+              <div><span>Ready</span><strong>${runtime.ready ? "yes" : "no"}</strong></div>
+              <div><span>Version</span><strong>${escapeHTML(runtime.manifest?.version || cfg.pageindex_local_version || "")}</strong></div>
+              <div><span>Root</span><strong>${escapeHTML(runtime.root || "")}</strong></div>
+            </div>
+          </div>
+          <div class="field full">
+            <label for="pageindexLocalRepoDirInput">Local PageIndex Repo Dir</label>
+            <input id="pageindexLocalRepoDirInput" type="text" value="${escapeHTML(cfg.pageindex_local_repo_dir || "")}" />
+          </div>
+          <div class="field full">
+            <label for="pageindexLocalPythonPathInput">Local PageIndex Python Path</label>
+            <input id="pageindexLocalPythonPathInput" type="text" value="${escapeHTML(cfg.pageindex_local_python_path || "")}" />
+          </div>
+          <div class="field full">
+            <label for="pageindexLocalScriptPathInput">Local PageIndex Script Path</label>
+            <input id="pageindexLocalScriptPathInput" type="text" value="${escapeHTML(cfg.pageindex_local_script_path || "")}" />
+          </div>
+          <div class="field full">
             <label for="paddleocrTokenInput">PaddleOCR Token</label>
             <input id="paddleocrTokenInput" type="password" value="${escapeHTML(cfg.paddleocr_token || "")}" />
           </div>
@@ -1730,9 +1756,6 @@ function renderSettings() {
             </div>
             <div class="row-actions full">
               <button id="testLlmBtn" type="button">Test LLM</button>
-              <button id="exportProfilesBtn" type="button">Export</button>
-              <button id="importProfilesBtn" type="button">Import</button>
-              <input id="importProfilesInput" type="file" accept="application/json,.json" hidden />
               <button id="saveNewProfileBtn" type="button">Save as New</button>
               <button id="saveProfileBtn" class="primary" type="button">Save Profile</button>
             </div>
@@ -1774,6 +1797,9 @@ function settingsPayload() {
     pageindex_local_enabled: $("#pageindexLocalEnabledInput").checked,
     pageindex_local_model: $("#pageindexLocalModelInput").value.trim(),
     pageindex_local_installation_state: $("#pageindexLocalInstallationStateInput").value,
+    pageindex_local_repo_dir: $("#pageindexLocalRepoDirInput").value.trim(),
+    pageindex_local_python_path: $("#pageindexLocalPythonPathInput").value.trim(),
+    pageindex_local_script_path: $("#pageindexLocalScriptPathInput").value.trim(),
   };
 }
 
@@ -1885,10 +1911,10 @@ async function exportLlmConfig(event) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "openkb-llm-config.json";
+    link.download = "openkb-settings-config.json";
     link.click();
     URL.revokeObjectURL(url);
-    notify("LLM config exported", "success");
+    notify("Settings exported", "success");
   } catch (error) {
     setError(error.message);
   } finally {
@@ -1906,8 +1932,8 @@ async function importLlmConfig(event) {
       method: "POST",
       body: JSON.stringify({ kb_dir: state.kbDir, config: parsed }),
     });
-    notify("LLM config imported", "success");
-    await loadKnowledgeData();
+    notify("Settings imported", "success");
+    await loadAll();
     render();
   } catch (error) {
     setError(error.message);
@@ -1954,7 +1980,7 @@ async function saveSettings(event) {
       }),
     });
     notify("Settings saved", "success");
-    await loadKnowledgeData();
+    await loadAll();
     render();
   } catch (error) {
     setError(error.message);

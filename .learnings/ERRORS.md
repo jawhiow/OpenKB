@@ -118,6 +118,36 @@ Use `Get-ChildItem` plus `Select-String` as a fallback when `rg.exe` is blocked 
 **Area**: infra
 
 ### Summary
+
+## [ERR-20260505-001] pageindex_official_requirements_conflict
+
+**Logged**: 2026-05-05T18:25:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: infra
+
+### Summary
+The official `VectifyAI/PageIndex` `requirements.txt` currently pins `python-dotenv==1.2.2`, which conflicts with `litellm==1.83.7` because that LiteLLM version requires `python-dotenv==1.0.1`.
+
+### Error
+```text
+ERROR: Cannot install -r C:\Users\yt_wa\pageindex-local\repo\requirements.txt (line 1) and python-dotenv==1.2.2 because these package versions have conflicting dependencies.
+ERROR: ResolutionImpossible
+```
+
+### Context
+- Command attempted: `venv\Scripts\python.exe -m pip install -r C:\Users\yt_wa\pageindex-local\repo\requirements.txt`
+- Environment: Windows PowerShell, Python 3.12, local install root `C:\Users\yt_wa\pageindex-local`
+- The repository clone was the current `main` head at commit `a51d97f63cedbf1d36b1121ff47386ea4e088ff5`.
+
+### Suggested Fix
+Install the runtime with the same pinned set except override `python-dotenv` to `1.0.1`, or update the upstream `requirements.txt` to a dependency set that resolves cleanly.
+
+### Metadata
+- Reproducible: yes
+- Related Files: C:\Users\yt_wa\pageindex-local\repo\requirements.txt
+
+---
 Running `rg --files` directly against a Windows path containing Chinese characters failed with `Access is denied`.
 
 ### Error

@@ -397,9 +397,9 @@ def add_single_file(
     removed_stale_pages: list[str] = []
 
     # 3/4. Index and compile
-    if result.is_long_doc and result.local_long_doc:
-        click.echo(f"  Long document detected - compiling with local page index...")
-        _emit_progress(progress_callback, f"Compiling local long document: {file_path.name}")
+    if result.local_long_doc:
+        click.echo("  Document routed to local page index compilation...")
+        _emit_progress(progress_callback, f"Compiling local page index document: {file_path.name}")
         try:
             with compile_progress_callback(progress_callback):
                 removed_stale_pages = _run_compile_with_profile_fallback(
@@ -421,9 +421,9 @@ def add_single_file(
             if strict:
                 raise RuntimeError(f"Compilation failed: {exc}") from exc
             return
-    elif result.is_long_doc and result.selected_strategy == "ocr-pageindex-local":
-        click.echo(f"  Long document detected - indexing OCR Markdown with local PageIndex...")
-        _emit_progress(progress_callback, f"Indexing OCR long document locally: {file_path.name}")
+    elif result.selected_strategy == "ocr-pageindex-local":
+        click.echo("  Document routed to OCR + local PageIndex...")
+        _emit_progress(progress_callback, f"Indexing OCR document locally: {file_path.name}")
         try:
             if result.source_path is None or result.pageindex_input_path is None:
                 raise RuntimeError("OCR PageIndex artifacts are missing.")
@@ -562,7 +562,7 @@ def add_single_file(
         _emit_progress(progress_callback, f"Registering document: {file_path.name}")
         if result.local_long_doc:
             doc_type = "local_long_pdf"
-        elif result.is_long_doc:
+        elif result.is_long_doc or result.selected_strategy == "ocr-pageindex-local":
             doc_type = "long_pdf"
         else:
             doc_type = file_path.suffix.lstrip(".")

@@ -54,8 +54,14 @@ _GENERAL_CONFIG_KEYS = {
 }
 _PROFILE_CONFIG_KEYS = {"model", "wire_api", "base_url"}
 _DEFAULT_PROFILE_ID = "default"
-_CONFIG_EXPORT_FORMAT = "openkb.llm-config.v1"
+_CONFIG_EXPORT_FORMAT = "openkb.settings-config.v1"
 _PADDLEOCR_TOKEN_ENV = "PADDLEOCR_TOKEN"
+_PAGEINDEX_LOCAL_RUNTIME_FIELD_MAP = {
+    "pageindex_local_repo_dir": "repo_dir",
+    "pageindex_local_python_path": "python_path",
+    "pageindex_local_script_path": "script_path",
+    "pageindex_local_version": "version",
+}
 
 
 def is_kb_dir(path: Path) -> bool:
@@ -395,6 +401,46 @@ def _paddleocr_token(kb_dir: Path, env_values: dict[str, str] | None = None) -> 
     return (os.environ.get(_PADDLEOCR_TOKEN_ENV) or "").strip()
 
 
+def _pageindex_local_root(kb_dir: Path) -> Path:
+    return kb_dir / ".openkb" / "pageindex-local"
+
+
+def _pageindex_local_runtime_fields(kb_dir: Path, *, include_version: bool = False) -> dict[str, str]:
+    from openkb.pageindex_local.runtime import read_pageindex_local_manifest
+
+    manifest = read_pageindex_local_manifest(_pageindex_local_root(kb_dir)) or {}
+    keys = _PAGEINDEX_LOCAL_RUNTIME_FIELD_MAP.items()
+    if not include_version:
+        keys = [(field, manifest_key) for field, manifest_key in keys if field != "pageindex_local_version"]
+    return {
+        field: str(manifest.get(manifest_key) or "").strip()
+        for field, manifest_key in keys
+    }
+
+
+def _update_pageindex_local_runtime(kb_dir: Path, values: dict[str, Any]) -> None:
+    from openkb.pageindex_local.runtime import read_pageindex_local_manifest, write_pageindex_local_manifest
+
+    relevant = {
+        field: str(values.get(field) or "").strip()
+        for field in _PAGEINDEX_LOCAL_RUNTIME_FIELD_MAP
+        if field in values
+    }
+    if not relevant:
+        return
+
+    root = _pageindex_local_root(kb_dir)
+    manifest = read_pageindex_local_manifest(root) or {}
+    for field, manifest_key in _PAGEINDEX_LOCAL_RUNTIME_FIELD_MAP.items():
+        if field in relevant:
+            value = relevant[field]
+            if manifest_key == "version" and not value:
+                manifest.pop(manifest_key, None)
+            else:
+                manifest[manifest_key] = value
+    write_pageindex_local_manifest(manifest, root)
+
+
 def _profile_id_from_name(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug or "profile"
@@ -576,6 +622,7 @@ def get_config_data(kb_dir: Path) -> dict[str, Any]:
     profiles, active_id = _normalize_profiles(config)
     active_profile = _find_profile(profiles, active_id) or profiles[0]
     env_values = _read_env_values(kb_dir)
+    runtime_fields = _pageindex_local_runtime_fields(kb_dir)
     return {
         "model": active_profile.get("model", config.get("model", DEFAULT_CONFIG["model"])),
         "language": config.get("language", DEFAULT_CONFIG["language"]),
@@ -595,6 +642,7 @@ def get_config_data(kb_dir: Path) -> dict[str, Any]:
                 DEFAULT_CONFIG["pageindex_local_installation_state"],
             )
         ),
+        **runtime_fields,
         "wire_api": active_profile.get("wire_api", config.get("wire_api", DEFAULT_CONFIG["wire_api"])),
         "base_url": active_profile.get("base_url", config.get("base_url", DEFAULT_CONFIG.get("base_url", ""))) or "",
         "api_key": _profile_api_key(kb_dir, active_profile, active_id, env_values),
@@ -708,6 +756,7 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     profiles, active_id = _normalize_profiles(config)
     env_values = _read_env_values(kb_dir)
+    runtime_fields = _pageindex_local_runtime_fields(kb_dir, include_version=True)
     return {
         "format": _CONFIG_EXPORT_FORMAT,
         "active_profile": active_id,
@@ -720,6 +769,7 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
             "ocr_default_model": str(config.get("ocr_default_model", DEFAULT_CONFIG["ocr_default_model"])),
             "ocr_chunk_pages": int(config.get("ocr_chunk_pages", DEFAULT_CONFIG["ocr_chunk_pages"])),
             "ocr_auto_recommend": bool(config.get("ocr_auto_recommend", DEFAULT_CONFIG["ocr_auto_recommend"])),
+            "paddleocr_token": _paddleocr_token(kb_dir, env_values),
             "pageindex_local_enabled": bool(
                 config.get("pageindex_local_enabled", DEFAULT_CONFIG["pageindex_local_enabled"])
             ),
@@ -732,6 +782,7 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
                     DEFAULT_CONFIG["pageindex_local_installation_state"],
                 )
             ),
+            **runtime_fields,
         },
         "profiles": [
             {
@@ -809,6 +860,8 @@ def import_config_data(kb_dir: Path, imported: dict[str, Any]) -> dict[str, Any]
         config["ocr_chunk_pages"] = max(int(settings["ocr_chunk_pages"]), 1)
     if "ocr_auto_recommend" in settings:
         config["ocr_auto_recommend"] = bool(settings["ocr_auto_recommend"])
+    if "paddleocr_token" in settings:
+        _write_env_values(kb_dir, {_PADDLEOCR_TOKEN_ENV: str(settings["paddleocr_token"] or "").strip()})
     if "pageindex_local_enabled" in settings:
         config["pageindex_local_enabled"] = bool(settings["pageindex_local_enabled"])
     if "pageindex_local_model" in settings:
@@ -821,6 +874,7 @@ def import_config_data(kb_dir: Path, imported: dict[str, Any]) -> dict[str, Any]
             ).strip()
             or DEFAULT_CONFIG["pageindex_local_installation_state"]
         )
+    _update_pageindex_local_runtime(kb_dir, settings)
 
     active_id = str(imported.get("active_profile") or profiles[0]["id"]).strip()
     if active_id not in {profile["id"] for profile in profiles}:
@@ -907,6 +961,7 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
 
     if updates.get("paddleocr_token") is not None:
         _write_env_values(kb_dir, {_PADDLEOCR_TOKEN_ENV: str(updates.get("paddleocr_token") or "").strip()})
+    _update_pageindex_local_runtime(kb_dir, updates)
 
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)

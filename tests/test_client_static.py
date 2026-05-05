@@ -124,6 +124,7 @@ def test_client_settings_support_llm_profile_switching():
     assert 'async function importLlmConfig(event)' in script
     assert '"/api/config/export"' in script
     assert '"/api/config/import"' in script
+    assert '"openkb-settings-config.json"' in script
     assert "compile_max_concurrency" in script
     assert "switchProfile" in script
     assert "create_profile: true" in script
@@ -154,6 +155,9 @@ def test_client_settings_include_ocr_and_pageindex_local_controls():
     assert 'id="pageindexLocalEnabledInput"' in script
     assert 'id="pageindexLocalModelInput"' in script
     assert 'id="pageindexLocalInstallationStateInput"' in script
+    assert 'id="pageindexLocalRepoDirInput"' in script
+    assert 'id="pageindexLocalPythonPathInput"' in script
+    assert 'id="pageindexLocalScriptPathInput"' in script
     assert 'value="${escapeHTML(cfg.paddleocr_token || "")}"' in script
     assert 'ocr_enabled: $("#ocrEnabledInput").checked' in script
     assert 'ocr_detection_mode: $("#ocrDetectionModeInput").value' in script
@@ -164,6 +168,9 @@ def test_client_settings_include_ocr_and_pageindex_local_controls():
     assert 'pageindex_local_enabled: $("#pageindexLocalEnabledInput").checked' in script
     assert 'pageindex_local_model: $("#pageindexLocalModelInput").value.trim()' in script
     assert 'pageindex_local_installation_state: $("#pageindexLocalInstallationStateInput").value' in script
+    assert 'pageindex_local_repo_dir: $("#pageindexLocalRepoDirInput").value.trim()' in script
+    assert 'pageindex_local_python_path: $("#pageindexLocalPythonPathInput").value.trim()' in script
+    assert 'pageindex_local_script_path: $("#pageindexLocalScriptPathInput").value.trim()' in script
 
 
 def test_client_renders_ocr_page_and_import_strategy_controls():

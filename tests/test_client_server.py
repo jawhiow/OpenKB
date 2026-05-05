@@ -693,6 +693,11 @@ def test_config_endpoint_can_create_and_switch_profiles(tmp_path):
 def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".env").write_text("LLM_API_KEY=default-secret\nPADDLEOCR_TOKEN=paddle-secret\n", encoding="utf-8")
+    runtime_dir = kb_dir / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / "repo").mkdir()
+    (runtime_dir / "python.exe").write_text("", encoding="utf-8")
+    (runtime_dir / "run_pageindex.py").write_text("", encoding="utf-8")
     client = TestClient(create_app())
 
     get_response = client.get("/api/config", params={"kb_dir": str(kb_dir)})
@@ -704,6 +709,9 @@ def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):
     assert current["ocr_chunk_pages"] == 100
     assert current["paddleocr_token"] == "paddle-secret"
     assert current["pageindex_local_enabled"] is False
+    assert current["pageindex_local_repo_dir"] == ""
+    assert current["pageindex_local_python_path"] == ""
+    assert current["pageindex_local_script_path"] == ""
 
     update_response = client.put(
         "/api/config",
@@ -718,6 +726,9 @@ def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):
             "pageindex_local_enabled": True,
             "pageindex_local_model": "gpt-5.4",
             "pageindex_local_installation_state": "installed",
+            "pageindex_local_repo_dir": str(runtime_dir / "repo"),
+            "pageindex_local_python_path": str(runtime_dir / "python.exe"),
+            "pageindex_local_script_path": str(runtime_dir / "run_pageindex.py"),
         },
     )
 
@@ -732,13 +743,27 @@ def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):
     assert updated["pageindex_local_enabled"] is True
     assert updated["pageindex_local_model"] == "gpt-5.4"
     assert updated["pageindex_local_installation_state"] == "installed"
+    assert updated["pageindex_local_repo_dir"] == str(runtime_dir / "repo")
+    assert updated["pageindex_local_python_path"] == str(runtime_dir / "python.exe")
+    assert updated["pageindex_local_script_path"] == str(runtime_dir / "run_pageindex.py")
     env_text = (kb_dir / ".env").read_text(encoding="utf-8")
     assert "PADDLEOCR_TOKEN=new-paddle-token\n" in env_text
+    manifest = json.loads((kb_dir / ".openkb" / "pageindex-local" / "installation.json").read_text(encoding="utf-8"))
+    assert manifest == {
+        "repo_dir": str(runtime_dir / "repo"),
+        "python_path": str(runtime_dir / "python.exe"),
+        "script_path": str(runtime_dir / "run_pageindex.py"),
+    }
 
 
 def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
     source = _make_kb(tmp_path / "source")
     (source / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")
+    runtime_dir = source / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / "repo").mkdir()
+    (runtime_dir / "python.exe").write_text("", encoding="utf-8")
+    (runtime_dir / "run_pageindex.py").write_text("", encoding="utf-8")
     target = _make_kb(tmp_path / "target")
     client = TestClient(create_app())
 
@@ -752,6 +777,18 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
             "wire_api": "chat_completions",
             "base_url": "https://gateway.example.com/v1",
             "compile_max_concurrency": 3,
+            "ocr_enabled": False,
+            "ocr_detection_mode": "always_ask",
+            "ocr_default_model": "PP-StructureV3",
+            "ocr_chunk_pages": 60,
+            "ocr_auto_recommend": False,
+            "paddleocr_token": "paddle-secret",
+            "pageindex_local_enabled": True,
+            "pageindex_local_model": "gpt-5.4",
+            "pageindex_local_installation_state": "installed",
+            "pageindex_local_repo_dir": str(runtime_dir / "repo"),
+            "pageindex_local_python_path": str(runtime_dir / "python.exe"),
+            "pageindex_local_script_path": str(runtime_dir / "run_pageindex.py"),
             "api_key": "gateway-secret",
         },
     )
@@ -761,8 +798,20 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
 
     assert export_response.status_code == 200
     exported = export_response.json()
-    assert exported["format"] == "openkb.llm-config.v1"
+    assert exported["format"] == "openkb.settings-config.v1"
     assert exported["settings"]["compile_max_concurrency"] == 3
+    assert exported["settings"]["ocr_enabled"] is False
+    assert exported["settings"]["ocr_detection_mode"] == "always_ask"
+    assert exported["settings"]["ocr_default_model"] == "PP-StructureV3"
+    assert exported["settings"]["ocr_chunk_pages"] == 60
+    assert exported["settings"]["ocr_auto_recommend"] is False
+    assert exported["settings"]["paddleocr_token"] == "paddle-secret"
+    assert exported["settings"]["pageindex_local_enabled"] is True
+    assert exported["settings"]["pageindex_local_model"] == "gpt-5.4"
+    assert exported["settings"]["pageindex_local_installation_state"] == "installed"
+    assert exported["settings"]["pageindex_local_repo_dir"] == str(runtime_dir / "repo")
+    assert exported["settings"]["pageindex_local_python_path"] == str(runtime_dir / "python.exe")
+    assert exported["settings"]["pageindex_local_script_path"] == str(runtime_dir / "run_pageindex.py")
     assert exported["profiles"][0]["api_key"] == "default-secret"
     assert exported["profiles"][1]["api_key"] == "gateway-secret"
 
@@ -775,9 +824,27 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
     imported = import_response.json()
     assert imported["active_profile"] == "gateway"
     assert imported["compile_max_concurrency"] == 3
+    assert imported["ocr_enabled"] is False
+    assert imported["ocr_detection_mode"] == "always_ask"
+    assert imported["ocr_default_model"] == "PP-StructureV3"
+    assert imported["ocr_chunk_pages"] == 60
+    assert imported["ocr_auto_recommend"] is False
+    assert imported["paddleocr_token"] == "paddle-secret"
+    assert imported["pageindex_local_enabled"] is True
+    assert imported["pageindex_local_model"] == "gpt-5.4"
+    assert imported["pageindex_local_installation_state"] == "installed"
+    assert imported["pageindex_local_repo_dir"] == str(runtime_dir / "repo")
+    assert imported["pageindex_local_python_path"] == str(runtime_dir / "python.exe")
+    assert imported["pageindex_local_script_path"] == str(runtime_dir / "run_pageindex.py")
     assert [profile["id"] for profile in imported["profiles"]] == ["default", "gateway"]
     assert imported["api_key"] == "gateway-secret"
     assert imported["profiles"][1]["api_key"] == "gateway-secret"
+    target_manifest = json.loads((target / ".openkb" / "pageindex-local" / "installation.json").read_text(encoding="utf-8"))
+    assert target_manifest == {
+        "repo_dir": str(runtime_dir / "repo"),
+        "python_path": str(runtime_dir / "python.exe"),
+        "script_path": str(runtime_dir / "run_pageindex.py"),
+    }
 
 
 def test_test_llm_endpoint_returns_rich_error_context(tmp_path, monkeypatch):

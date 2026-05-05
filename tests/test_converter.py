@@ -200,6 +200,115 @@ class TestConvertDocumentPdfShort:
         assert result.source_path is not None
         assert result.source_path.exists()
 
+    def test_short_scanned_pdf_uses_ocr_local_long_below_threshold(self, kb_dir, tmp_path):
+        src = tmp_path / "short-scan.pdf"
+        src.write_bytes(b"%PDF-1.4 fake scanned content")
+        ocr_pages_path = tmp_path / "ocr-pages.json"
+        ocr_pages_path.write_text(
+            json.dumps([{"page": 1, "content": "OCR short page", "images": []}], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        ocr_md_path = tmp_path / "ocr-input.md"
+        ocr_md_path.write_text("## Page 1\n\nOCR short page", encoding="utf-8")
+
+        with (
+            patch("openkb.converter.pymupdf.open") as mock_mu,
+            patch("openkb.converter.is_probably_scanned_pdf", return_value=True),
+            patch(
+                "openkb.converter.prepare_ocr_artifacts",
+                return_value={
+                    "pages_path": ocr_pages_path,
+                    "pageindex_input_path": ocr_md_path,
+                },
+            ) as mock_prepare,
+            patch("openkb.converter.convert_pdf_with_images") as mock_cpwi,
+        ):
+            fake_doc = MagicMock()
+            fake_doc.page_count = 5
+            fake_doc.__enter__ = MagicMock(return_value=fake_doc)
+            fake_doc.__exit__ = MagicMock(return_value=False)
+            mock_mu.return_value = fake_doc
+
+            result = convert_document(src, kb_dir)
+
+        mock_prepare.assert_called_once()
+        mock_cpwi.assert_not_called()
+        assert result.is_long_doc is False
+        assert result.local_long_doc is True
+        assert result.selected_strategy == "ocr-local-long"
+        assert result.source_path is not None
+        assert result.source_path.suffix == ".json"
+        assert "OCR short page" in result.source_path.read_text(encoding="utf-8")
+
+    def test_short_pdf_plain_local_long_override_uses_page_json_below_threshold(self, kb_dir, tmp_path):
+        src = tmp_path / "short-plain-local.pdf"
+        src.write_bytes(b"%PDF-1.4 fake local-long content")
+
+        with (
+            patch("openkb.converter.pymupdf.open") as mock_mu,
+            patch(
+                "openkb.converter.convert_pdf_to_pages",
+                return_value=[{"page": 1, "content": "Local page one", "images": []}],
+            ) as mock_pages,
+            patch("openkb.converter.convert_pdf_with_images") as mock_cpwi,
+        ):
+            fake_doc = MagicMock()
+            fake_doc.page_count = 5
+            fake_doc.__enter__ = MagicMock(return_value=fake_doc)
+            fake_doc.__exit__ = MagicMock(return_value=False)
+            mock_mu.return_value = fake_doc
+
+            result = convert_document(src, kb_dir, strategy_override="plain-local-long")
+
+        mock_pages.assert_called_once()
+        mock_cpwi.assert_not_called()
+        assert result.is_long_doc is False
+        assert result.local_long_doc is True
+        assert result.selected_strategy == "plain-local-long"
+        assert result.source_path is not None
+        assert result.source_path.suffix == ".json"
+        assert "Local page one" in result.source_path.read_text(encoding="utf-8")
+
+    def test_short_pdf_ocr_pageindex_local_override_prepares_ocr_artifacts_below_threshold(self, kb_dir, tmp_path):
+        src = tmp_path / "short-pageindex.pdf"
+        src.write_bytes(b"%PDF-1.4 fake short content")
+        ocr_pages_path = tmp_path / "ocr-pages.json"
+        ocr_pages_path.write_text(
+            json.dumps([{"page": 1, "content": "OCR short pageindex", "images": []}], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        ocr_md_path = tmp_path / "ocr-input.md"
+        ocr_md_path.write_text("## Page 1\n\nOCR short pageindex", encoding="utf-8")
+
+        with (
+            patch("openkb.converter.pymupdf.open") as mock_mu,
+            patch("openkb.converter.is_probably_scanned_pdf", return_value=False),
+            patch(
+                "openkb.converter.prepare_ocr_artifacts",
+                return_value={
+                    "pages_path": ocr_pages_path,
+                    "pageindex_input_path": ocr_md_path,
+                },
+            ) as mock_prepare,
+            patch("openkb.converter.convert_pdf_with_images") as mock_cpwi,
+        ):
+            fake_doc = MagicMock()
+            fake_doc.page_count = 5
+            fake_doc.__enter__ = MagicMock(return_value=fake_doc)
+            fake_doc.__exit__ = MagicMock(return_value=False)
+            mock_mu.return_value = fake_doc
+
+            result = convert_document(src, kb_dir, strategy_override="ocr-pageindex-local")
+
+        mock_prepare.assert_called_once()
+        mock_cpwi.assert_not_called()
+        assert result.is_long_doc is False
+        assert result.local_long_doc is False
+        assert result.selected_strategy == "ocr-pageindex-local"
+        assert result.pageindex_input_path == ocr_md_path
+        assert result.source_path is not None
+        assert "OCR short pageindex" in result.source_path.read_text(encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # convert_document — PDF long doc

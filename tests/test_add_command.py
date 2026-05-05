@@ -199,6 +199,42 @@ class TestAddCommand:
         hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
         assert hashes["abc123"]["type"] == "local_long_pdf"
 
+    def test_add_local_long_pdf_runs_local_compiler_even_when_not_marked_long(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "scan-short.pdf"
+        doc.write_bytes(b"%PDF")
+
+        source_path = kb_dir / "wiki" / "sources" / "scan-short.json"
+        source_path.write_text("[]", encoding="utf-8")
+
+        from openkb.converter import ConvertResult
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "scan-short.pdf",
+            source_path=source_path,
+            is_long_doc=False,
+            local_long_doc=True,
+            file_hash="short-local-1",
+        )
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.cli.convert_document", return_value=mock_result), \
+             patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock) as mock_compile:
+            mock_compile.return_value = []
+            result = runner.invoke(cli, ["add", str(doc)])
+
+        mock_compile.assert_awaited_once_with(
+            "scan-short",
+            source_path,
+            kb_dir,
+            "gpt-4o-mini",
+            max_concurrency=2,
+            cleanup_existing=False,
+        )
+        assert "OK" in result.output
+        hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+        assert hashes["short-local-1"]["type"] == "local_long_pdf"
+
     def test_add_single_file_strict_raises_compilation_failure_with_progress(self, tmp_path):
         from openkb.cli import add_single_file
         from openkb.converter import ConvertResult
@@ -378,6 +414,67 @@ class TestAddCommand:
         )
         hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
         assert hashes["abc123"]["type"] == "long_pdf"
+
+    def test_add_single_file_short_pdf_ocr_pageindex_local_success_runs_long_compiler_and_registers_pageindex(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+        from openkb.indexer import IndexResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "scan-short.pdf"
+        doc.write_bytes(b"%PDF")
+        source_path = kb_dir / "wiki" / "sources" / "scan-short.json"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text('[{"page": 1, "content": "OCR short page"}]', encoding="utf-8")
+        pageindex_input_path = tmp_path / "pageindex_input.md"
+        pageindex_input_path.write_text("## Page 1\n\nOCR short page", encoding="utf-8")
+        summary_path = kb_dir / "wiki" / "summaries" / "scan-short.md"
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "scan-short.pdf",
+            source_path=source_path,
+            is_long_doc=False,
+            local_long_doc=False,
+            selected_strategy="ocr-pageindex-local",
+            pageindex_input_path=pageindex_input_path,
+            file_hash="short-pageindex-1",
+        )
+        index_result = IndexResult(
+            doc_id="local-short-doc-1",
+            description="Local short PageIndex summary",
+            tree={"structure": []},
+        )
+
+        with (
+            patch("openkb.cli.convert_document", return_value=mock_result),
+            patch("openkb.indexer.index_ocr_with_local_pageindex", return_value=index_result) as mock_index,
+            patch("openkb.agent.compiler.compile_long_doc", new_callable=AsyncMock) as mock_compile_long,
+            patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock) as mock_compile_local,
+        ):
+            mock_compile_long.return_value = []
+            add_single_file(doc, kb_dir, strategy_override="ocr-pageindex-local")
+
+        mock_index.assert_called_once_with(
+            "scan-short",
+            source_path,
+            pageindex_input_path,
+            kb_dir,
+            model="gpt-4o-mini",
+            job=None,
+        )
+        mock_compile_local.assert_not_called()
+        mock_compile_long.assert_awaited_once_with(
+            "scan-short",
+            summary_path,
+            "local-short-doc-1",
+            kb_dir,
+            "gpt-4o-mini",
+            doc_description="Local short PageIndex summary",
+            max_concurrency=2,
+            cleanup_existing=False,
+        )
+        hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+        assert hashes["short-pageindex-1"]["type"] == "long_pdf"
 
     def test_add_force_preserves_generated_pages_when_compilation_fails(self, tmp_path):
         from openkb.cli import add_single_file

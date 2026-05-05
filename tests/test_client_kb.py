@@ -21,6 +21,7 @@ from openkb.client.kb import (
     update_config_data,
     write_wiki_file,
 )
+from openkb.pageindex_local.runtime import read_pageindex_local_manifest
 
 
 def _make_kb(tmp_path: Path) -> Path:
@@ -207,6 +208,9 @@ def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
         "pageindex_local_enabled": False,
         "pageindex_local_model": "",
         "pageindex_local_installation_state": "not_installed",
+        "pageindex_local_repo_dir": "",
+        "pageindex_local_python_path": "",
+        "pageindex_local_script_path": "",
         "wire_api": "responses",
         "base_url": "https://llm.example.com",
         "api_key": "secret",
@@ -242,6 +246,9 @@ def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
             "pageindex_local_enabled": True,
             "pageindex_local_model": "anthropic/claude-sonnet-4-6",
             "pageindex_local_installation_state": "installed",
+            "pageindex_local_repo_dir": str(kb_dir / "runtime" / "repo"),
+            "pageindex_local_python_path": str(kb_dir / "runtime" / "python.exe"),
+            "pageindex_local_script_path": str(kb_dir / "runtime" / "run_pageindex.py"),
             "wire_api": "chat_completions",
             "base_url": "https://gateway.example.com/v1",
             "api_key": "new-secret",
@@ -260,12 +267,21 @@ def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
     assert updated["pageindex_local_enabled"] is True
     assert updated["pageindex_local_model"] == "anthropic/claude-sonnet-4-6"
     assert updated["pageindex_local_installation_state"] == "installed"
+    assert updated["pageindex_local_repo_dir"] == str(kb_dir / "runtime" / "repo")
+    assert updated["pageindex_local_python_path"] == str(kb_dir / "runtime" / "python.exe")
+    assert updated["pageindex_local_script_path"] == str(kb_dir / "runtime" / "run_pageindex.py")
     assert updated["profiles"][0]["model"] == "anthropic/claude-sonnet-4-6"
     assert updated["profiles"][0]["api_key"] == "new-secret"
     env_text = (kb_dir / ".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=new-secret\n" in env_text
     assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=new-secret\n" in env_text
     assert "PADDLEOCR_TOKEN=new-paddle-secret\n" in env_text
+    runtime_manifest = read_pageindex_local_manifest(kb_dir / ".openkb" / "pageindex-local")
+    assert runtime_manifest == {
+        "repo_dir": str(kb_dir / "runtime" / "repo"),
+        "python_path": str(kb_dir / "runtime" / "python.exe"),
+        "script_path": str(kb_dir / "runtime" / "run_pageindex.py"),
+    }
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["pageindex_threshold"] == 30
     assert saved["compile_max_concurrency"] == 4
@@ -322,6 +338,11 @@ def test_config_data_can_create_and_switch_llm_profiles_with_separate_keys(tmp_p
 def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Path):
     source = _make_kb(tmp_path / "source")
     (source / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")
+    runtime_dir = source / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / "repo").mkdir()
+    (runtime_dir / "python.exe").write_text("", encoding="utf-8")
+    (runtime_dir / "run_pageindex.py").write_text("", encoding="utf-8")
     update_config_data(
         source,
         {
@@ -331,15 +352,39 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
             "wire_api": "chat_completions",
             "base_url": "https://gateway.example.com/v1",
             "compile_max_concurrency": 3,
+            "ocr_enabled": False,
+            "ocr_detection_mode": "always_ask",
+            "ocr_default_model": "PP-StructureV3",
+            "ocr_chunk_pages": 60,
+            "ocr_auto_recommend": False,
+            "paddleocr_token": "paddle-secret",
+            "pageindex_local_enabled": True,
+            "pageindex_local_model": "gpt-5.4",
+            "pageindex_local_installation_state": "installed",
+            "pageindex_local_repo_dir": str(runtime_dir / "repo"),
+            "pageindex_local_python_path": str(runtime_dir / "python.exe"),
+            "pageindex_local_script_path": str(runtime_dir / "run_pageindex.py"),
             "api_key": "gateway-secret",
         },
     )
 
     exported = export_config_data(source)
 
-    assert exported["format"] == "openkb.llm-config.v1"
+    assert exported["format"] == "openkb.settings-config.v1"
     assert exported["active_profile"] == "gateway"
     assert exported["settings"]["compile_max_concurrency"] == 3
+    assert exported["settings"]["ocr_enabled"] is False
+    assert exported["settings"]["ocr_detection_mode"] == "always_ask"
+    assert exported["settings"]["ocr_default_model"] == "PP-StructureV3"
+    assert exported["settings"]["ocr_chunk_pages"] == 60
+    assert exported["settings"]["ocr_auto_recommend"] is False
+    assert exported["settings"]["paddleocr_token"] == "paddle-secret"
+    assert exported["settings"]["pageindex_local_enabled"] is True
+    assert exported["settings"]["pageindex_local_model"] == "gpt-5.4"
+    assert exported["settings"]["pageindex_local_installation_state"] == "installed"
+    assert exported["settings"]["pageindex_local_repo_dir"] == str(runtime_dir / "repo")
+    assert exported["settings"]["pageindex_local_python_path"] == str(runtime_dir / "python.exe")
+    assert exported["settings"]["pageindex_local_script_path"] == str(runtime_dir / "run_pageindex.py")
     assert [profile["id"] for profile in exported["profiles"]] == ["default", "gateway"]
     assert exported["profiles"][0]["api_key"] == "default-secret"
     assert exported["profiles"][1]["api_key"] == "gateway-secret"
@@ -352,15 +397,41 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
     assert imported["model"] == "openai/doubao-seed-2-0-pro-260215"
     assert imported["api_key"] == "gateway-secret"
     assert imported["compile_max_concurrency"] == 3
+    assert imported["ocr_enabled"] is False
+    assert imported["ocr_detection_mode"] == "always_ask"
+    assert imported["ocr_default_model"] == "PP-StructureV3"
+    assert imported["ocr_chunk_pages"] == 60
+    assert imported["ocr_auto_recommend"] is False
+    assert imported["paddleocr_token"] == "paddle-secret"
+    assert imported["pageindex_local_enabled"] is True
+    assert imported["pageindex_local_model"] == "gpt-5.4"
+    assert imported["pageindex_local_installation_state"] == "installed"
+    assert imported["pageindex_local_repo_dir"] == str(runtime_dir / "repo")
+    assert imported["pageindex_local_python_path"] == str(runtime_dir / "python.exe")
+    assert imported["pageindex_local_script_path"] == str(runtime_dir / "run_pageindex.py")
     assert [profile["id"] for profile in imported["profiles"]] == ["default", "gateway"]
     assert imported["profiles"][0]["api_key"] == "default-secret"
     assert imported["profiles"][1]["api_key"] == "gateway-secret"
     saved = yaml.safe_load((target / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["llm_profiles"][1]["api_key_env"] == "OPENKB_LLM_PROFILE_GATEWAY_API_KEY"
+    assert saved["ocr_enabled"] is False
+    assert saved["ocr_detection_mode"] == "always_ask"
+    assert saved["ocr_default_model"] == "PP-StructureV3"
+    assert saved["ocr_chunk_pages"] == 60
+    assert saved["ocr_auto_recommend"] is False
+    assert saved["pageindex_local_enabled"] is True
+    assert saved["pageindex_local_model"] == "gpt-5.4"
+    assert saved["pageindex_local_installation_state"] == "installed"
     env_text = (target / ".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=gateway-secret\n" in env_text
     assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=default-secret\n" in env_text
     assert "OPENKB_LLM_PROFILE_GATEWAY_API_KEY=gateway-secret\n" in env_text
+    assert "PADDLEOCR_TOKEN=paddle-secret\n" in env_text
+    assert read_pageindex_local_manifest(target / ".openkb" / "pageindex-local") == {
+        "repo_dir": str(runtime_dir / "repo"),
+        "python_path": str(runtime_dir / "python.exe"),
+        "script_path": str(runtime_dir / "run_pageindex.py"),
+    }
 
 
 def test_init_kb_creates_openkb_layout(tmp_path: Path):
