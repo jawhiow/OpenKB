@@ -5,6 +5,49 @@ import json
 from pathlib import Path
 
 
+def ocr_cache_root(kb_dir: Path) -> Path:
+    """Return the KB-local OCR cache root directory."""
+    return Path(kb_dir) / ".openkb" / "ocr" / "cache"
+
+
+def ocr_cache_entry_dir(kb_dir: Path, file_hash: str) -> Path:
+    """Return the OCR cache directory for one source file hash."""
+    return ocr_cache_root(kb_dir) / file_hash
+
+
+def ocr_cache_manifest_path(kb_dir: Path, file_hash: str) -> Path:
+    """Return the manifest path for one OCR cache entry."""
+    return ocr_cache_entry_dir(kb_dir, file_hash) / "manifest.json"
+
+
+def ocr_cache_pages_path(kb_dir: Path, file_hash: str) -> Path:
+    """Return the normalized page JSON path for one OCR cache entry."""
+    return ocr_cache_entry_dir(kb_dir, file_hash) / "normalized" / "pages.json"
+
+
+def ocr_cache_pageindex_input_path(kb_dir: Path, file_hash: str) -> Path:
+    """Return the normalized Markdown path used as local PageIndex input."""
+    return ocr_cache_entry_dir(kb_dir, file_hash) / "normalized" / "pageindex_input.md"
+
+
+def read_ocr_manifest(kb_dir: Path, file_hash: str) -> dict | None:
+    """Return the OCR cache manifest for *file_hash*, or None if missing."""
+    manifest_path = ocr_cache_manifest_path(kb_dir, file_hash)
+    if not manifest_path.exists():
+        return None
+    with manifest_path.open("r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def write_ocr_manifest(kb_dir: Path, file_hash: str, manifest: dict) -> Path:
+    """Persist and return the OCR cache manifest path for *file_hash*."""
+    manifest_path = ocr_cache_manifest_path(kb_dir, file_hash)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, ensure_ascii=False, indent=2)
+    return manifest_path
+
+
 class HashRegistry:
     """Persistent registry mapping file SHA-256 hashes to metadata dicts."""
 

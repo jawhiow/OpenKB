@@ -1,7 +1,16 @@
-import pytest
 import json
+import pytest
 from pathlib import Path
-from openkb.state import HashRegistry
+from openkb.state import (
+    HashRegistry,
+    ocr_cache_entry_dir,
+    ocr_cache_manifest_path,
+    ocr_cache_pageindex_input_path,
+    ocr_cache_pages_path,
+    ocr_cache_root,
+    read_ocr_manifest,
+    write_ocr_manifest,
+)
 
 
 def test_empty_registry_is_known_false(tmp_path):
@@ -82,3 +91,40 @@ def test_load_existing_json(tmp_path):
     registry = HashRegistry(path)
     assert registry.is_known("existinghash") is True
     assert registry.get("existinghash") == {"file": "pre.pdf"}
+
+
+def test_ocr_cache_paths_use_openkb_ocr_cache_layout(tmp_path):
+    kb_dir = tmp_path / "kb"
+    file_hash = "abc123"
+
+    assert ocr_cache_root(kb_dir) == kb_dir / ".openkb" / "ocr" / "cache"
+    assert ocr_cache_entry_dir(kb_dir, file_hash) == kb_dir / ".openkb" / "ocr" / "cache" / file_hash
+    assert ocr_cache_manifest_path(kb_dir, file_hash) == kb_dir / ".openkb" / "ocr" / "cache" / file_hash / "manifest.json"
+    assert ocr_cache_pages_path(kb_dir, file_hash) == kb_dir / ".openkb" / "ocr" / "cache" / file_hash / "normalized" / "pages.json"
+    assert (
+        ocr_cache_pageindex_input_path(kb_dir, file_hash)
+        == kb_dir / ".openkb" / "ocr" / "cache" / file_hash / "normalized" / "pageindex_input.md"
+    )
+
+
+def test_write_and_read_ocr_manifest_roundtrip(tmp_path):
+    kb_dir = tmp_path / "kb"
+    file_hash = "deadbeef"
+    manifest = {
+        "file_hash": file_hash,
+        "status": "ready",
+        "page_count": 87,
+        "ocr_model": "PaddleOCR-VL-1.5",
+        "chunks": [{"index": 1, "start_page": 1, "end_page": 87, "status": "done"}],
+    }
+
+    manifest_path = write_ocr_manifest(kb_dir, file_hash, manifest)
+
+    assert manifest_path == ocr_cache_manifest_path(kb_dir, file_hash)
+    assert manifest_path.exists()
+    assert read_ocr_manifest(kb_dir, file_hash) == manifest
+
+
+def test_read_ocr_manifest_returns_none_when_missing(tmp_path):
+    kb_dir = tmp_path / "kb"
+    assert read_ocr_manifest(kb_dir, "missing") is None

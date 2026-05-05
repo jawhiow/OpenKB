@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,10 +39,23 @@ _TYPE_DISPLAY_MAP = {
 
 _SHORT_DOC_TYPES = {"pdf", "docx", "md", "markdown", "html", "htm", "txt", "csv", "pptx", "xlsx"}
 
-_GENERAL_CONFIG_KEYS = {"language", "pageindex_threshold", "compile_max_concurrency"}
+_GENERAL_CONFIG_KEYS = {
+    "language",
+    "pageindex_threshold",
+    "compile_max_concurrency",
+    "ocr_enabled",
+    "ocr_detection_mode",
+    "ocr_default_model",
+    "ocr_chunk_pages",
+    "ocr_auto_recommend",
+    "pageindex_local_enabled",
+    "pageindex_local_model",
+    "pageindex_local_installation_state",
+}
 _PROFILE_CONFIG_KEYS = {"model", "wire_api", "base_url"}
 _DEFAULT_PROFILE_ID = "default"
 _CONFIG_EXPORT_FORMAT = "openkb.llm-config.v1"
+_PADDLEOCR_TOKEN_ENV = "PADDLEOCR_TOKEN"
 
 
 def is_kb_dir(path: Path) -> bool:
@@ -374,6 +387,14 @@ def _write_api_key(kb_dir: Path, api_key: str) -> None:
     _write_env_values(kb_dir, {"LLM_API_KEY": api_key})
 
 
+def _paddleocr_token(kb_dir: Path, env_values: dict[str, str] | None = None) -> str:
+    env_values = env_values if env_values is not None else _read_env_values(kb_dir)
+    token = env_values.get(_PADDLEOCR_TOKEN_ENV, "").strip()
+    if token:
+        return token
+    return (os.environ.get(_PADDLEOCR_TOKEN_ENV) or "").strip()
+
+
 def _profile_id_from_name(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug or "profile"
@@ -554,17 +575,130 @@ def get_config_data(kb_dir: Path) -> dict[str, Any]:
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     profiles, active_id = _normalize_profiles(config)
     active_profile = _find_profile(profiles, active_id) or profiles[0]
+    env_values = _read_env_values(kb_dir)
     return {
         "model": active_profile.get("model", config.get("model", DEFAULT_CONFIG["model"])),
         "language": config.get("language", DEFAULT_CONFIG["language"]),
         "pageindex_threshold": config.get("pageindex_threshold", DEFAULT_CONFIG["pageindex_threshold"]),
         "compile_max_concurrency": int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])),
+        "ocr_enabled": bool(config.get("ocr_enabled", DEFAULT_CONFIG["ocr_enabled"])),
+        "ocr_detection_mode": str(config.get("ocr_detection_mode", DEFAULT_CONFIG["ocr_detection_mode"])),
+        "ocr_default_model": str(config.get("ocr_default_model", DEFAULT_CONFIG["ocr_default_model"])),
+        "ocr_chunk_pages": int(config.get("ocr_chunk_pages", DEFAULT_CONFIG["ocr_chunk_pages"])),
+        "ocr_auto_recommend": bool(config.get("ocr_auto_recommend", DEFAULT_CONFIG["ocr_auto_recommend"])),
+        "paddleocr_token": _paddleocr_token(kb_dir, env_values),
+        "pageindex_local_enabled": bool(config.get("pageindex_local_enabled", DEFAULT_CONFIG["pageindex_local_enabled"])),
+        "pageindex_local_model": str(config.get("pageindex_local_model", DEFAULT_CONFIG["pageindex_local_model"])),
+        "pageindex_local_installation_state": str(
+            config.get(
+                "pageindex_local_installation_state",
+                DEFAULT_CONFIG["pageindex_local_installation_state"],
+            )
+        ),
         "wire_api": active_profile.get("wire_api", config.get("wire_api", DEFAULT_CONFIG["wire_api"])),
         "base_url": active_profile.get("base_url", config.get("base_url", DEFAULT_CONFIG.get("base_url", ""))) or "",
-        "api_key": _profile_api_key(kb_dir, active_profile, active_id),
-        "api_key_configured": _profile_has_api_key(kb_dir, active_profile, active_id),
+        "api_key": _profile_api_key(kb_dir, active_profile, active_id, env_values),
+        "api_key_configured": _profile_has_api_key(kb_dir, active_profile, active_id, env_values),
         "active_profile": active_id,
         "profiles": _public_profiles(kb_dir, profiles, active_id),
+    }
+
+
+def list_ocr_cache_entries(kb_dir: Path) -> dict[str, Any]:
+    """Return non-secret OCR cache metadata for the KB."""
+    kb_dir = require_kb_dir(kb_dir)
+    cache_root = kb_dir / ".openkb" / "ocr" / "cache"
+    entries: list[dict[str, Any]] = []
+    if cache_root.exists():
+        for entry_dir in sorted(path for path in cache_root.iterdir() if path.is_dir()):
+            manifest_path = entry_dir / "manifest.json"
+            manifest: dict[str, Any] = {}
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8") or "{}")
+                except json.JSONDecodeError:
+                    manifest = {"status": "invalid_manifest"}
+            file_hash = str(manifest.get("file_hash") or entry_dir.name)
+            entries.append(
+                {
+                    "file_hash": file_hash,
+                    "status": str(manifest.get("status") or "unknown"),
+                    "doc_name": str(manifest.get("doc_name") or ""),
+                    "page_count": int(manifest.get("page_count") or 0),
+                    "ocr_model": str(manifest.get("ocr_model") or ""),
+                    "has_pages": (entry_dir / "normalized" / "pages.json").exists(),
+                    "has_pageindex_input": (entry_dir / "normalized" / "pageindex_input.md").exists(),
+                }
+            )
+    return {"entries": entries}
+
+
+def invalidate_ocr_cache_entry(kb_dir: Path, file_hash: str) -> dict[str, Any]:
+    """Mark an OCR cache entry invalidated without deleting artifacts."""
+    kb_dir = require_kb_dir(kb_dir)
+    file_hash = str(file_hash).strip()
+    if not file_hash:
+        raise ClientError("OCR cache hash is required.")
+    manifest_path = kb_dir / ".openkb" / "ocr" / "cache" / file_hash / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"OCR cache entry not found: {file_hash}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8") or "{}")
+    manifest["file_hash"] = str(manifest.get("file_hash") or file_hash)
+    manifest["status"] = "invalidated"
+    manifest["invalidated_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"entry": _ocr_cache_entry_payload(kb_dir, file_hash, manifest)}
+
+
+def _ocr_cache_entry_payload(kb_dir: Path, file_hash: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    entry_dir = kb_dir / ".openkb" / "ocr" / "cache" / file_hash
+    payload = {
+        "file_hash": str(manifest.get("file_hash") or file_hash),
+        "status": str(manifest.get("status") or "unknown"),
+        "doc_name": str(manifest.get("doc_name") or ""),
+        "page_count": int(manifest.get("page_count") or 0),
+        "ocr_model": str(manifest.get("ocr_model") or ""),
+        "has_pages": (entry_dir / "normalized" / "pages.json").exists(),
+        "has_pageindex_input": (entry_dir / "normalized" / "pageindex_input.md").exists(),
+    }
+    if manifest.get("invalidated_at"):
+        payload["invalidated_at"] = str(manifest["invalidated_at"])
+    return payload
+
+
+def source_path_for_ocr_cache_entry(kb_dir: Path, file_hash: str) -> Path:
+    """Return the raw source path for a cached OCR entry."""
+    kb_dir = require_kb_dir(kb_dir)
+    file_hash = str(file_hash).strip()
+    hashes = _read_hashes(kb_dir)
+    meta = hashes.get(file_hash)
+    if not meta:
+        raise FileNotFoundError(f"Source document not found for OCR cache entry: {file_hash}")
+    raw_path = kb_dir / "raw" / Path(str(meta.get("name") or "")).name
+    if not raw_path.exists():
+        raise FileNotFoundError(f"Raw source file not found: {raw_path}")
+    return raw_path
+
+
+def get_pageindex_local_status(kb_dir: Path) -> dict[str, Any]:
+    """Return local PageIndex configuration and runtime readiness."""
+    kb_dir = require_kb_dir(kb_dir)
+    from openkb.pageindex_local.runtime import read_pageindex_local_manifest, runtime_is_ready
+
+    config = load_config(kb_dir / ".openkb" / "config.yaml")
+    root = kb_dir / ".openkb" / "pageindex-local"
+    manifest = read_pageindex_local_manifest(root)
+    return {
+        "enabled": bool(config.get("pageindex_local_enabled", DEFAULT_CONFIG["pageindex_local_enabled"])),
+        "ready": runtime_is_ready(root),
+        "installation_state": str(
+            config.get(
+                "pageindex_local_installation_state",
+                DEFAULT_CONFIG["pageindex_local_installation_state"],
+            )
+        ),
+        "root": str(root),
+        "manifest": manifest,
     }
 
 
@@ -581,6 +715,23 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
             "language": config.get("language", DEFAULT_CONFIG["language"]),
             "pageindex_threshold": int(config.get("pageindex_threshold", DEFAULT_CONFIG["pageindex_threshold"])),
             "compile_max_concurrency": int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])),
+            "ocr_enabled": bool(config.get("ocr_enabled", DEFAULT_CONFIG["ocr_enabled"])),
+            "ocr_detection_mode": str(config.get("ocr_detection_mode", DEFAULT_CONFIG["ocr_detection_mode"])),
+            "ocr_default_model": str(config.get("ocr_default_model", DEFAULT_CONFIG["ocr_default_model"])),
+            "ocr_chunk_pages": int(config.get("ocr_chunk_pages", DEFAULT_CONFIG["ocr_chunk_pages"])),
+            "ocr_auto_recommend": bool(config.get("ocr_auto_recommend", DEFAULT_CONFIG["ocr_auto_recommend"])),
+            "pageindex_local_enabled": bool(
+                config.get("pageindex_local_enabled", DEFAULT_CONFIG["pageindex_local_enabled"])
+            ),
+            "pageindex_local_model": str(
+                config.get("pageindex_local_model", DEFAULT_CONFIG["pageindex_local_model"])
+            ),
+            "pageindex_local_installation_state": str(
+                config.get(
+                    "pageindex_local_installation_state",
+                    DEFAULT_CONFIG["pageindex_local_installation_state"],
+                )
+            ),
         },
         "profiles": [
             {
@@ -642,6 +793,34 @@ def import_config_data(kb_dir: Path, imported: dict[str, Any]) -> dict[str, Any]
         config["pageindex_threshold"] = max(int(settings["pageindex_threshold"]), 1)
     if "compile_max_concurrency" in settings:
         config["compile_max_concurrency"] = max(int(settings["compile_max_concurrency"]), 1)
+    if "ocr_enabled" in settings:
+        config["ocr_enabled"] = bool(settings["ocr_enabled"])
+    if "ocr_detection_mode" in settings:
+        config["ocr_detection_mode"] = (
+            str(settings["ocr_detection_mode"] or DEFAULT_CONFIG["ocr_detection_mode"]).strip()
+            or DEFAULT_CONFIG["ocr_detection_mode"]
+        )
+    if "ocr_default_model" in settings:
+        config["ocr_default_model"] = (
+            str(settings["ocr_default_model"] or DEFAULT_CONFIG["ocr_default_model"]).strip()
+            or DEFAULT_CONFIG["ocr_default_model"]
+        )
+    if "ocr_chunk_pages" in settings:
+        config["ocr_chunk_pages"] = max(int(settings["ocr_chunk_pages"]), 1)
+    if "ocr_auto_recommend" in settings:
+        config["ocr_auto_recommend"] = bool(settings["ocr_auto_recommend"])
+    if "pageindex_local_enabled" in settings:
+        config["pageindex_local_enabled"] = bool(settings["pageindex_local_enabled"])
+    if "pageindex_local_model" in settings:
+        config["pageindex_local_model"] = str(settings["pageindex_local_model"] or "").strip()
+    if "pageindex_local_installation_state" in settings:
+        config["pageindex_local_installation_state"] = (
+            str(
+                settings["pageindex_local_installation_state"]
+                or DEFAULT_CONFIG["pageindex_local_installation_state"]
+            ).strip()
+            or DEFAULT_CONFIG["pageindex_local_installation_state"]
+        )
 
     active_id = str(imported.get("active_profile") or profiles[0]["id"]).strip()
     if active_id not in {profile["id"] for profile in profiles}:
@@ -712,8 +891,12 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
                 value = str(value or "").strip()
             target_profile[key] = value
         elif key in _GENERAL_CONFIG_KEYS:
-            if key in {"pageindex_threshold", "compile_max_concurrency"}:
+            if key in {"pageindex_threshold", "compile_max_concurrency", "ocr_chunk_pages"}:
                 value = max(int(value), 1)
+            elif key in {"ocr_enabled", "ocr_auto_recommend", "pageindex_local_enabled"}:
+                value = bool(value)
+            else:
+                value = str(value or "").strip() if key not in {"language"} else value
             config[key] = value
 
     api_key = str(updates.get("api_key") or "").strip()
@@ -721,6 +904,9 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
         _write_profile_api_key(kb_dir, target_profile, api_key)
     else:
         _sync_legacy_key_from_profile(kb_dir, target_profile)
+
+    if updates.get("paddleocr_token") is not None:
+        _write_env_values(kb_dir, {_PADDLEOCR_TOKEN_ENV: str(updates.get("paddleocr_token") or "").strip()})
 
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)
@@ -791,6 +977,14 @@ def init_kb(
         "language": language,
         "pageindex_threshold": int(pageindex_threshold),
         "compile_max_concurrency": max(int(compile_max_concurrency), 1),
+        "ocr_enabled": DEFAULT_CONFIG["ocr_enabled"],
+        "ocr_detection_mode": DEFAULT_CONFIG["ocr_detection_mode"],
+        "ocr_default_model": DEFAULT_CONFIG["ocr_default_model"],
+        "ocr_chunk_pages": DEFAULT_CONFIG["ocr_chunk_pages"],
+        "ocr_auto_recommend": DEFAULT_CONFIG["ocr_auto_recommend"],
+        "pageindex_local_enabled": DEFAULT_CONFIG["pageindex_local_enabled"],
+        "pageindex_local_model": DEFAULT_CONFIG["pageindex_local_model"],
+        "pageindex_local_installation_state": DEFAULT_CONFIG["pageindex_local_installation_state"],
         "wire_api": resolved_wire_api,
         "base_url": resolved_base_url,
     }

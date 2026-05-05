@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from openkb.pageindex_local.translate import normalize_pageindex_local_tree
 from openkb.tree_renderer import render_summary_md
 
 
@@ -39,3 +40,63 @@ class TestRenderSummaryMd:
         assert "Summary: Historical context." in output
         # Raw text should NOT appear in summary view
         assert "This document introduces the core concepts of the system." not in output
+
+
+def test_normalize_pageindex_local_tree_accepts_nested_children_and_page_ranges():
+    payload = {
+        "doc": {"id": "local-doc-1", "name": "OCR Report", "description": "OCR-generated tree"},
+        "tree": [
+            {
+                "heading": "Executive Summary",
+                "page_start": 1,
+                "page_end": 2,
+                "node_summary": "Main findings.",
+                "children": [
+                    {
+                        "heading": "Revenue",
+                        "page_start": 2,
+                        "page_end": 4,
+                        "node_summary": "Revenue details.",
+                    }
+                ],
+            }
+        ],
+    }
+
+    tree = normalize_pageindex_local_tree(payload, fallback_doc_name="report")
+
+    assert tree == {
+        "doc_name": "OCR Report",
+        "doc_description": "OCR-generated tree",
+        "structure": [
+            {
+                "title": "Executive Summary",
+                "node_id": "local-1",
+                "start_index": 1,
+                "end_index": 2,
+                "summary": "Main findings.",
+                "nodes": [
+                    {
+                        "title": "Revenue",
+                        "node_id": "local-1-1",
+                        "start_index": 2,
+                        "end_index": 4,
+                        "summary": "Revenue details.",
+                        "nodes": [],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_render_summary_md_uses_existing_page_range_format_for_pageindex_local_tree():
+    tree = {
+        "structure": [
+            {"title": "Section", "start_index": 1, "end_index": 3, "summary": "Summary.", "nodes": []},
+        ]
+    }
+
+    output = render_summary_md(tree, "report", "local-doc-1")
+
+    assert "# Section (pages 1\u20133)" in output

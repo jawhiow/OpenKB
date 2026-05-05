@@ -348,7 +348,9 @@ def add_single_file(
     *,
     force: bool = False,
     strict: bool = False,
+    strategy_override: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    job=None,
 ) -> None:
     """Convert, index, and compile a single document into the knowledge base.
 
@@ -378,7 +380,7 @@ def add_single_file(
     click.echo(f"Adding: {file_path.name}")
     _emit_progress(progress_callback, f"Converting: {file_path.name}")
     try:
-        result = convert_document(file_path, kb_dir, force=force)
+        result = convert_document(file_path, kb_dir, force=force, strategy_override=strategy_override, job=job)
     except Exception as exc:
         click.echo(f"  [ERROR] Conversion failed: {exc}")
         logger.debug("Conversion traceback:", exc_info=True)
@@ -419,6 +421,75 @@ def add_single_file(
             if strict:
                 raise RuntimeError(f"Compilation failed: {exc}") from exc
             return
+    elif result.is_long_doc and result.selected_strategy == "ocr-pageindex-local":
+        click.echo(f"  Long document detected - indexing OCR Markdown with local PageIndex...")
+        _emit_progress(progress_callback, f"Indexing OCR long document locally: {file_path.name}")
+        try:
+            if result.source_path is None or result.pageindex_input_path is None:
+                raise RuntimeError("OCR PageIndex artifacts are missing.")
+            from openkb.indexer import index_ocr_with_local_pageindex
+
+            pageindex_model = str(config.get("pageindex_local_model") or profiles[0]["model"]).strip()
+            index_result = index_ocr_with_local_pageindex(
+                doc_name,
+                result.source_path,
+                result.pageindex_input_path,
+                kb_dir,
+                model=pageindex_model,
+                job=job,
+            )
+        except Exception as exc:
+            click.echo(f"  [WARN] Local PageIndex failed; falling back to OCR local-long: {exc}")
+            logger.debug("Local PageIndex traceback:", exc_info=True)
+            _emit_progress(progress_callback, f"Falling back to OCR local-long: {file_path.name}")
+            try:
+                with compile_progress_callback(progress_callback):
+                    removed_stale_pages = _run_compile_with_profile_fallback(
+                        kb_dir,
+                        profiles,
+                        progress_callback,
+                        lambda model: compile_local_long_doc(
+                            doc_name,
+                            result.source_path,
+                            kb_dir,
+                            model,
+                            max_concurrency=compile_max_concurrency,
+                            cleanup_existing=force,
+                        )
+                    )
+            except Exception as fallback_exc:
+                click.echo(f"  [ERROR] Compilation failed: {fallback_exc}")
+                logger.debug("Fallback compilation traceback:", exc_info=True)
+                if strict:
+                    raise RuntimeError(f"Compilation failed: {fallback_exc}") from fallback_exc
+                return
+        else:
+            summary_path = kb_dir / "wiki" / "summaries" / f"{doc_name}.md"
+            click.echo(f"  Compiling local PageIndex doc (doc_id={index_result.doc_id})...")
+            _emit_progress(progress_callback, f"Compiling local PageIndex document: {file_path.name}")
+            try:
+                with compile_progress_callback(progress_callback):
+                    removed_stale_pages = _run_compile_with_profile_fallback(
+                        kb_dir,
+                        profiles,
+                        progress_callback,
+                        lambda model: compile_long_doc(
+                            doc_name,
+                            summary_path,
+                            index_result.doc_id,
+                            kb_dir,
+                            model,
+                            doc_description=index_result.description,
+                            max_concurrency=compile_max_concurrency,
+                            cleanup_existing=force,
+                        )
+                    )
+            except Exception as exc:
+                click.echo(f"  [ERROR] Compilation failed: {exc}")
+                logger.debug("Compilation traceback:", exc_info=True)
+                if strict:
+                    raise RuntimeError(f"Compilation failed: {exc}") from exc
+                return
     elif result.is_long_doc:
         click.echo(f"  Long document detected — indexing with PageIndex...")
         _emit_progress(progress_callback, f"Indexing long document: {file_path.name}")

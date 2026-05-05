@@ -142,6 +142,51 @@ def test_client_settings_exposes_general_save_button():
     assert "compile_max_concurrency: Number($(\"#compileConcurrencyInput\").value || 2)" in script
 
 
+def test_client_settings_include_ocr_and_pageindex_local_controls():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="ocrEnabledInput"' in script
+    assert 'id="ocrDetectionModeInput"' in script
+    assert 'id="ocrDefaultModelInput"' in script
+    assert 'id="ocrChunkPagesInput"' in script
+    assert 'id="ocrAutoRecommendInput"' in script
+    assert 'id="paddleocrTokenInput"' in script
+    assert 'id="pageindexLocalEnabledInput"' in script
+    assert 'id="pageindexLocalModelInput"' in script
+    assert 'id="pageindexLocalInstallationStateInput"' in script
+    assert 'value="${escapeHTML(cfg.paddleocr_token || "")}"' in script
+    assert 'ocr_enabled: $("#ocrEnabledInput").checked' in script
+    assert 'ocr_detection_mode: $("#ocrDetectionModeInput").value' in script
+    assert 'ocr_default_model: $("#ocrDefaultModelInput").value' in script
+    assert 'ocr_chunk_pages: Number($("#ocrChunkPagesInput").value || 100)' in script
+    assert 'ocr_auto_recommend: $("#ocrAutoRecommendInput").checked' in script
+    assert 'paddleocr_token: $("#paddleocrTokenInput").value' in script
+    assert 'pageindex_local_enabled: $("#pageindexLocalEnabledInput").checked' in script
+    assert 'pageindex_local_model: $("#pageindexLocalModelInput").value.trim()' in script
+    assert 'pageindex_local_installation_state: $("#pageindexLocalInstallationStateInput").value' in script
+
+
+def test_client_renders_ocr_page_and_import_strategy_controls():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'data-view="ocr"' in html
+    assert 'ocr: "OCR"' in script
+    assert "function renderOcr" in script
+    assert "function loadOcrData" in script
+    assert '"/api/ocr/cache"' in script
+    assert '"/api/pageindex-local/status"' in script
+    assert 'id="importStrategyInput"' in script
+    assert 'strategy_override: importStrategy()' in script
+    assert 'searchParams.set("strategy_override", importStrategy())' in script
+    assert "async function invalidateOcrCache" in script
+    assert "async function rerunOcrCache" in script
+    assert "async function retryOcrCache" in script
+    assert "data-ocr-invalidate" in script
+    assert "data-ocr-rerun" in script
+    assert "data-ocr-retry" in script
+
+
 def test_client_fix_plan_renders_report_reason_and_preview_content():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 

@@ -190,7 +190,7 @@ def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
 
 def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
-    (kb_dir / ".env").write_text("LLM_API_KEY=secret\n", encoding="utf-8")
+    (kb_dir / ".env").write_text("LLM_API_KEY=secret\nPADDLEOCR_TOKEN=paddle-secret\n", encoding="utf-8")
 
     config_data = get_config_data(kb_dir)
     assert config_data == {
@@ -198,6 +198,15 @@ def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
         "language": "zh",
         "pageindex_threshold": 20,
         "compile_max_concurrency": 2,
+        "ocr_enabled": True,
+        "ocr_detection_mode": "auto_recommend",
+        "ocr_default_model": "PaddleOCR-VL-1.5",
+        "ocr_chunk_pages": 100,
+        "ocr_auto_recommend": True,
+        "paddleocr_token": "paddle-secret",
+        "pageindex_local_enabled": False,
+        "pageindex_local_model": "",
+        "pageindex_local_installation_state": "not_installed",
         "wire_api": "responses",
         "base_url": "https://llm.example.com",
         "api_key": "secret",
@@ -224,6 +233,15 @@ def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
             "language": "en",
             "pageindex_threshold": 30,
             "compile_max_concurrency": 4,
+            "ocr_enabled": False,
+            "ocr_detection_mode": "always_ask",
+            "ocr_default_model": "PP-StructureV3",
+            "ocr_chunk_pages": 80,
+            "ocr_auto_recommend": False,
+            "paddleocr_token": "new-paddle-secret",
+            "pageindex_local_enabled": True,
+            "pageindex_local_model": "anthropic/claude-sonnet-4-6",
+            "pageindex_local_installation_state": "installed",
             "wire_api": "chat_completions",
             "base_url": "https://gateway.example.com/v1",
             "api_key": "new-secret",
@@ -233,14 +251,32 @@ def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
     assert updated["model"] == "anthropic/claude-sonnet-4-6"
     assert updated["base_url"] == "https://gateway.example.com/v1"
     assert updated["api_key"] == "new-secret"
+    assert updated["ocr_enabled"] is False
+    assert updated["ocr_detection_mode"] == "always_ask"
+    assert updated["ocr_default_model"] == "PP-StructureV3"
+    assert updated["ocr_chunk_pages"] == 80
+    assert updated["ocr_auto_recommend"] is False
+    assert updated["paddleocr_token"] == "new-paddle-secret"
+    assert updated["pageindex_local_enabled"] is True
+    assert updated["pageindex_local_model"] == "anthropic/claude-sonnet-4-6"
+    assert updated["pageindex_local_installation_state"] == "installed"
     assert updated["profiles"][0]["model"] == "anthropic/claude-sonnet-4-6"
     assert updated["profiles"][0]["api_key"] == "new-secret"
     env_text = (kb_dir / ".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=new-secret\n" in env_text
     assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=new-secret\n" in env_text
+    assert "PADDLEOCR_TOKEN=new-paddle-secret\n" in env_text
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["pageindex_threshold"] == 30
     assert saved["compile_max_concurrency"] == 4
+    assert saved["ocr_enabled"] is False
+    assert saved["ocr_detection_mode"] == "always_ask"
+    assert saved["ocr_default_model"] == "PP-StructureV3"
+    assert saved["ocr_chunk_pages"] == 80
+    assert saved["ocr_auto_recommend"] is False
+    assert saved["pageindex_local_enabled"] is True
+    assert saved["pageindex_local_model"] == "anthropic/claude-sonnet-4-6"
+    assert saved["pageindex_local_installation_state"] == "installed"
     assert saved["base_url"] == "https://gateway.example.com/v1"
     assert saved["active_llm_profile"] == "default"
     assert saved["llm_profiles"][0]["id"] == "default"
@@ -349,6 +385,10 @@ def test_init_kb_creates_openkb_layout(tmp_path: Path):
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["base_url"] == "https://gateway.example.com"
     assert saved["compile_max_concurrency"] == 3
+    assert saved["ocr_enabled"] is True
+    assert saved["ocr_default_model"] == "PaddleOCR-VL-1.5"
+    assert saved["ocr_chunk_pages"] == 100
+    assert saved["pageindex_local_enabled"] is False
     assert (kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8") == "{}"
     env_text = (kb_dir / ".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=sk-test\n" in env_text

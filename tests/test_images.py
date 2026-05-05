@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from openkb.images import copy_relative_images, extract_base64_images
+from openkb.ocr.chunking import build_page_chunks
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +168,17 @@ class TestCopyRelativeImages:
         assert "![b](sources/images/doc/b.jpg)" in result
         assert (images_dir / "a.png").exists()
         assert (images_dir / "b.jpg").exists()
+
+
+class TestOcrChunking:
+    def test_build_page_chunks_splits_documents_at_100_pages(self):
+        assert build_page_chunks(250, chunk_size=100) == [
+            {"index": 1, "start_page": 1, "end_page": 100, "page_count": 100},
+            {"index": 2, "start_page": 101, "end_page": 200, "page_count": 100},
+            {"index": 3, "start_page": 201, "end_page": 250, "page_count": 50},
+        ]
+
+    def test_build_page_chunks_keeps_small_documents_in_one_chunk(self):
+        assert build_page_chunks(40, chunk_size=100) == [
+            {"index": 1, "start_page": 1, "end_page": 40, "page_count": 40},
+        ]

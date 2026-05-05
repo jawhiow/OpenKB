@@ -8,6 +8,10 @@ def test_default_config_keys():
     assert "language" in DEFAULT_CONFIG
     assert "pageindex_threshold" in DEFAULT_CONFIG
     assert "wire_api" in DEFAULT_CONFIG
+    assert "ocr_enabled" in DEFAULT_CONFIG
+    assert "ocr_default_model" in DEFAULT_CONFIG
+    assert "ocr_chunk_pages" in DEFAULT_CONFIG
+    assert "pageindex_local_enabled" in DEFAULT_CONFIG
 
 
 def test_default_config_values():
@@ -15,6 +19,10 @@ def test_default_config_values():
     assert DEFAULT_CONFIG["language"] == "en"
     assert DEFAULT_CONFIG["pageindex_threshold"] == 20
     assert DEFAULT_CONFIG["wire_api"] == "chat_completions"
+    assert DEFAULT_CONFIG["ocr_enabled"] is True
+    assert DEFAULT_CONFIG["ocr_default_model"] == "PaddleOCR-VL-1.5"
+    assert DEFAULT_CONFIG["ocr_chunk_pages"] == 100
+    assert DEFAULT_CONFIG["pageindex_local_enabled"] is False
 
 
 def test_load_missing_file_returns_defaults(tmp_path):
@@ -50,3 +58,4 @@ def test_load_overrides_defaults(tmp_path):
     # Non-overridden defaults still present
     assert loaded["language"] == "en"
     assert loaded["wire_api"] == "chat_completions"
+    assert loaded["ocr_chunk_pages"] == 100

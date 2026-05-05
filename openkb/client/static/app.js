@@ -3,6 +3,8 @@ const state = {
   kbDir: null,
   status: null,
   documents: null,
+  ocrCache: null,
+  pageindexLocalStatus: null,
   sourceSearch: "",
   selectedSourceHash: null,
   wikiTree: [],
@@ -33,6 +35,7 @@ const viewLabels = {
   overview: "Overview",
   documents: "Documents",
   sources: "Sources",
+  ocr: "OCR",
   wiki: "Wiki",
   sessions: "Sessions",
   reports: "Quality",
@@ -186,19 +189,33 @@ function setError(message) {
 
 async function loadKnowledgeData() {
   if (!state.kbDir) return;
-  const [status, documents, tree, chats, config] = await Promise.all([
+  const [status, documents, tree, chats, config, ocrCache, pageindexLocalStatus] = await Promise.all([
     api(withKb("/api/status")),
     api(withKb("/api/documents")),
     api(withKb("/api/wiki/tree")),
     api(withKb("/api/chats")),
     api(withKb("/api/config")),
+    api(withKb("/api/ocr/cache")),
+    api(withKb("/api/pageindex-local/status")),
   ]);
   state.status = status;
   state.documents = documents;
   state.wikiTree = tree.files || [];
   state.chats = chats.sessions || [];
   state.config = config;
+  state.ocrCache = ocrCache;
+  state.pageindexLocalStatus = pageindexLocalStatus;
   state.selectedProfileId = config?.active_profile || null;
+}
+
+async function loadOcrData() {
+  if (!state.kbDir) return;
+  const [ocrCache, pageindexLocalStatus] = await Promise.all([
+    api(withKb("/api/ocr/cache")),
+    api(withKb("/api/pageindex-local/status")),
+  ]);
+  state.ocrCache = ocrCache;
+  state.pageindexLocalStatus = pageindexLocalStatus;
 }
 
 async function refreshKnowledgeData() {
@@ -227,6 +244,8 @@ async function loadAll(event) {
     } else {
       state.status = null;
       state.documents = null;
+      state.ocrCache = null;
+      state.pageindexLocalStatus = null;
       state.wikiTree = [];
       state.chats = [];
       state.config = null;
@@ -475,6 +494,7 @@ function render() {
   if (state.view === "overview") renderOverview();
   if (state.view === "documents") renderDocuments();
   if (state.view === "sources") renderSources();
+  if (state.view === "ocr") renderOcr();
   if (state.view === "wiki") renderWiki();
   if (state.view === "sessions") renderSessions();
   if (state.view === "reports") renderReports();
@@ -665,6 +685,15 @@ function renderDocuments() {
             <label for="addPathInput">Path</label>
             <input id="addPathInput" type="text" placeholder="D:\\path\\to\\folder-or-document.pdf" />
           </div>
+          <div class="field full">
+            <label for="importStrategyInput">Import Strategy</label>
+            <select id="importStrategyInput">
+              <option value="">auto</option>
+              <option value="plain-local-long">plain-local-long</option>
+              <option value="ocr-local-long">ocr-local-long</option>
+              <option value="ocr-pageindex-local">ocr-pageindex-local</option>
+            </select>
+          </div>
           <div class="row-actions">
             <button id="addPathBtn" class="primary" type="button">Add Folder / File</button>
           </div>
@@ -694,6 +723,10 @@ function renderDocuments() {
   $("#uploadBtn").addEventListener("click", uploadFile);
   bindViewButtons();
   bindSourceDocumentActions();
+}
+
+function importStrategy() {
+  return $("#importStrategyInput")?.value || "";
 }
 
 function bindSourceDocumentActions(root = mainView) {
@@ -902,7 +935,7 @@ async function addPath(event) {
   try {
     const result = await api("/api/documents/add", {
       method: "POST",
-      body: JSON.stringify({ kb_dir: state.kbDir, path }),
+      body: JSON.stringify({ kb_dir: state.kbDir, path, strategy_override: importStrategy() }),
     });
     trackJob(result.job, "Add job queued");
   } catch (error) {
@@ -924,7 +957,10 @@ async function uploadFile(event) {
   Array.from(input.files).forEach((file) => form.append("file", file));
   setButtonBusy(button, true, "Uploading...");
   try {
-    const result = await api(`/api/documents/upload?kb_dir=${encodeURIComponent(state.kbDir)}`, {
+    const uploadUrl = new URL("/api/documents/upload", window.location.origin);
+    uploadUrl.searchParams.set("kb_dir", state.kbDir);
+    if (importStrategy()) uploadUrl.searchParams.set("strategy_override", importStrategy());
+    const result = await api(`${uploadUrl.pathname}${uploadUrl.search}`, {
       method: "POST",
       body: form,
     });
@@ -962,6 +998,138 @@ function buildWikiDirectory(files) {
   };
   finalize(root);
   return root;
+}
+
+function renderOcr() {
+  const entries = state.ocrCache?.entries || [];
+  const runtime = state.pageindexLocalStatus || {};
+  mainView.innerHTML = `
+    <div class="content-grid">
+      <section class="section">
+        <header>
+          <div>
+            <h3>OCR Cache</h3>
+            <span class="muted-text">${escapeHTML(entries.length)} cached file(s)</span>
+          </div>
+          <button id="refreshOcrBtn" type="button">Refresh</button>
+        </header>
+        <div class="section-body">
+          ${ocrCacheTable(entries)}
+        </div>
+      </section>
+      <section class="section">
+        <header>
+          <div>
+            <h3>Local PageIndex</h3>
+            <span class="muted-text">${escapeHTML(runtime.root || "")}</span>
+          </div>
+          ${runtime.ready ? `<span class="badge good">ready</span>` : `<span class="badge warn">setup</span>`}
+        </header>
+        <div class="section-body runtime-list">
+          <div><span>Enabled</span><strong>${runtime.enabled ? "yes" : "no"}</strong></div>
+          <div><span>State</span><strong>${escapeHTML(runtime.installation_state || "not_installed")}</strong></div>
+          <div><span>Version</span><strong>${escapeHTML(runtime.manifest?.version || "")}</strong></div>
+        </div>
+      </section>
+    </div>
+  `;
+  $("#refreshOcrBtn").addEventListener("click", refreshOcr);
+  bindOcrActions();
+}
+
+function ocrCacheTable(entries) {
+  if (!entries.length) return `<div class="empty">No OCR cache entries</div>`;
+  return `
+    <table>
+      <thead><tr><th>Document</th><th>Status</th><th>Pages</th><th>Model</th><th>Artifacts</th><th></th></tr></thead>
+      <tbody>
+        ${entries
+          .map(
+            (entry) => `
+              <tr>
+                <td>${escapeHTML(entry.doc_name || entry.file_hash)}</td>
+                <td>${badge(entry.status || "unknown")}</td>
+                <td>${escapeHTML(entry.page_count || "")}</td>
+                <td>${escapeHTML(entry.ocr_model || "")}</td>
+                <td>${entry.has_pages ? `<span class="badge good">pages</span>` : `<span class="badge warn">pages</span>`} ${entry.has_pageindex_input ? `<span class="badge good">md</span>` : `<span class="badge warn">md</span>`}</td>
+                <td class="source-actions">
+                  <button type="button" data-ocr-rerun="${escapeHTML(entry.file_hash)}">Rerun</button>
+                  <button type="button" data-ocr-retry="${escapeHTML(entry.file_hash)}">Retry</button>
+                  <button class="danger" type="button" data-ocr-invalidate="${escapeHTML(entry.file_hash)}">Invalidate</button>
+                </td>
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function bindOcrActions() {
+  mainView.querySelectorAll("[data-ocr-invalidate]").forEach((button) => {
+    button.addEventListener("click", () => invalidateOcrCache(button.dataset.ocrInvalidate));
+  });
+  mainView.querySelectorAll("[data-ocr-rerun]").forEach((button) => {
+    button.addEventListener("click", () => rerunOcrCache(button.dataset.ocrRerun));
+  });
+  mainView.querySelectorAll("[data-ocr-retry]").forEach((button) => {
+    button.addEventListener("click", () => retryOcrCache(button.dataset.ocrRetry));
+  });
+}
+
+async function refreshOcr(event) {
+  const button = event?.currentTarget;
+  setButtonBusy(button, true, "Refreshing...");
+  try {
+    await loadOcrData();
+    renderOcr();
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function invalidateOcrCache(fileHash) {
+  if (!fileHash) return;
+  try {
+    await api(`/api/ocr/cache/${encodeURIComponent(fileHash)}/invalidate`, {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir }),
+    });
+    await loadOcrData();
+    renderOcr();
+    notify("OCR cache invalidated", "success");
+  } catch (error) {
+    notify(error.message, "error");
+  }
+}
+
+async function rerunOcrCache(fileHash) {
+  if (!fileHash) return;
+  try {
+    const result = await api(`/api/ocr/cache/${encodeURIComponent(fileHash)}/rerun`, {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir, strategy_override: "ocr-pageindex-local" }),
+    });
+    trackJob(result.job, "OCR rerun queued");
+  } catch (error) {
+    notify(error.message, "error");
+  }
+}
+
+async function retryOcrCache(fileHash) {
+  if (!fileHash) return;
+  try {
+    const result = await api(`/api/ocr/cache/${encodeURIComponent(fileHash)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir, strategy_override: "ocr-local-long" }),
+    });
+    trackJob(result.job, "OCR retry queued");
+  } catch (error) {
+    notify(error.message, "error");
+  }
 }
 
 function renderWikiDirectory(node, depth = 0) {
@@ -1464,6 +1632,63 @@ function renderSettings() {
             <label for="compileConcurrencyInput">Compile Concurrency</label>
             <input id="compileConcurrencyInput" type="number" min="1" value="${escapeHTML(cfg.compile_max_concurrency || 2)}" />
           </div>
+          <div class="field">
+            <label for="ocrEnabledInput">OCR</label>
+            <label class="checkline">
+              <input id="ocrEnabledInput" type="checkbox" ${cfg.ocr_enabled === false ? "" : "checked"} />
+              Enabled
+            </label>
+          </div>
+          <div class="field">
+            <label for="ocrDetectionModeInput">OCR Detection</label>
+            <select id="ocrDetectionModeInput">
+              <option value="auto_recommend">auto_recommend</option>
+              <option value="always_ask">always_ask</option>
+              <option value="disabled">disabled</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ocrDefaultModelInput">OCR Model</label>
+            <select id="ocrDefaultModelInput">
+              <option value="PaddleOCR-VL-1.5">PaddleOCR-VL-1.5</option>
+              <option value="PP-StructureV3">PP-StructureV3</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="ocrChunkPagesInput">OCR Chunk Pages</label>
+            <input id="ocrChunkPagesInput" type="number" min="1" max="100" value="${escapeHTML(cfg.ocr_chunk_pages || 100)}" />
+          </div>
+          <div class="field">
+            <label for="ocrAutoRecommendInput">OCR Recommendation</label>
+            <label class="checkline">
+              <input id="ocrAutoRecommendInput" type="checkbox" ${cfg.ocr_auto_recommend === false ? "" : "checked"} />
+              Auto
+            </label>
+          </div>
+          <div class="field">
+            <label for="pageindexLocalEnabledInput">Local PageIndex</label>
+            <label class="checkline">
+              <input id="pageindexLocalEnabledInput" type="checkbox" ${cfg.pageindex_local_enabled ? "checked" : ""} />
+              Enabled
+            </label>
+          </div>
+          <div class="field">
+            <label for="pageindexLocalModelInput">Local PageIndex Model</label>
+            <input id="pageindexLocalModelInput" type="text" value="${escapeHTML(cfg.pageindex_local_model || "")}" />
+          </div>
+          <div class="field">
+            <label for="pageindexLocalInstallationStateInput">Local PageIndex State</label>
+            <select id="pageindexLocalInstallationStateInput">
+              <option value="not_installed">not_installed</option>
+              <option value="installing">installing</option>
+              <option value="installed">installed</option>
+              <option value="failed">failed</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label for="paddleocrTokenInput">PaddleOCR Token</label>
+            <input id="paddleocrTokenInput" type="password" value="${escapeHTML(cfg.paddleocr_token || "")}" />
+          </div>
         </div>
       </section>
       <section class="section llm-profile-section">
@@ -1517,6 +1742,9 @@ function renderSettings() {
     </div>
   `;
   $("#wireApiInput").value = profile.wire_api || cfg.wire_api || "responses";
+  $("#ocrDetectionModeInput").value = cfg.ocr_detection_mode || "auto_recommend";
+  $("#ocrDefaultModelInput").value = cfg.ocr_default_model || "PaddleOCR-VL-1.5";
+  $("#pageindexLocalInstallationStateInput").value = cfg.pageindex_local_installation_state || "not_installed";
   $("#useKbBtn").addEventListener("click", useKb);
   $("#createKbBtn").addEventListener("click", createKb);
   $("#saveSettingsBtn").addEventListener("click", saveSettings);
@@ -1530,6 +1758,23 @@ function renderSettings() {
   mainView.querySelectorAll("[data-profile-id]").forEach((button) => {
     button.addEventListener("click", (event) => switchProfile(button.dataset.profileId, event));
   });
+}
+
+function settingsPayload() {
+  return {
+    language: $("#languageInput").value.trim(),
+    pageindex_threshold: Number($("#thresholdInput").value || 20),
+    compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
+    ocr_enabled: $("#ocrEnabledInput").checked,
+    ocr_detection_mode: $("#ocrDetectionModeInput").value,
+    ocr_default_model: $("#ocrDefaultModelInput").value,
+    ocr_chunk_pages: Number($("#ocrChunkPagesInput").value || 100),
+    ocr_auto_recommend: $("#ocrAutoRecommendInput").checked,
+    paddleocr_token: $("#paddleocrTokenInput").value,
+    pageindex_local_enabled: $("#pageindexLocalEnabledInput").checked,
+    pageindex_local_model: $("#pageindexLocalModelInput").value.trim(),
+    pageindex_local_installation_state: $("#pageindexLocalInstallationStateInput").value,
+  };
 }
 
 async function generateFixPlan(event) {
@@ -1705,9 +1950,7 @@ async function saveSettings(event) {
       method: "PUT",
       body: JSON.stringify({
         kb_dir: state.kbDir,
-        language: $("#languageInput").value.trim(),
-        pageindex_threshold: Number($("#thresholdInput").value || 20),
-        compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
+        ...settingsPayload(),
       }),
     });
     notify("Settings saved", "success");
@@ -1737,9 +1980,7 @@ async function saveConfig(event, options = {}) {
         profile_name: $("#profileNameInput").value.trim(),
         ...(createProfile ? { create_profile: true } : {}),
         model: $("#modelInput").value.trim(),
-        language: $("#languageInput").value.trim(),
-        pageindex_threshold: Number($("#thresholdInput").value || 20),
-        compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
+        ...settingsPayload(),
         wire_api: $("#wireApiInput").value,
         base_url: $("#baseUrlInput").value.trim(),
         api_key: $("#apiKeyInput").value,
@@ -1788,9 +2029,7 @@ async function testLlm(event) {
       body: JSON.stringify({
         kb_dir: state.kbDir,
         model: $("#modelInput").value.trim(),
-        language: $("#languageInput").value.trim(),
-        pageindex_threshold: Number($("#thresholdInput").value || 20),
-        compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
+        ...settingsPayload(),
         wire_api: $("#wireApiInput").value,
         base_url: $("#baseUrlInput").value.trim(),
         api_key: $("#apiKeyInput").value,

@@ -72,6 +72,42 @@ def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monke
     assert job.progress_total == 1
 
 
+def test_add_document_job_passes_job_object_for_internal_ocr_logs(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    source = tmp_path / "scan.pdf"
+    source.write_bytes(b"%PDF",)
+    registry = JobRegistry()
+    calls: dict[str, object] = {}
+
+    def fake_add_single_file(
+        file_path,
+        target_kb,
+        *,
+        strict=False,
+        progress_callback=None,
+        strategy_override=None,
+        job=None,
+    ):
+        calls["job"] = job
+        job.add_log("OCR page plan: 12 page(s) in 1 chunk(s)")
+
+    monkeypatch.setattr("openkb.cli.add_single_file", fake_add_single_file)
+
+    client = TestClient(create_app(registry=registry))
+    response = client.post(
+        "/api/documents/add",
+        json={"kb_dir": str(kb_dir), "path": str(source), "strategy_override": "ocr-local-long"},
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert calls["job"] is job
+    assert any(entry["message"] == "OCR page plan: 12 page(s) in 1 chunk(s)" for entry in job.logs)
+
+
 def test_add_document_folder_continues_after_one_file_failure(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     source = tmp_path / "incoming"
@@ -652,6 +688,52 @@ def test_config_endpoint_can_create_and_switch_profiles(tmp_path):
     switched = switch_response.json()
     assert switched["active_profile"] == "default"
     assert switched["model"] == "gpt-5.4-mini"
+
+
+def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".env").write_text("LLM_API_KEY=default-secret\nPADDLEOCR_TOKEN=paddle-secret\n", encoding="utf-8")
+    client = TestClient(create_app())
+
+    get_response = client.get("/api/config", params={"kb_dir": str(kb_dir)})
+
+    assert get_response.status_code == 200
+    current = get_response.json()
+    assert current["ocr_enabled"] is True
+    assert current["ocr_default_model"] == "PaddleOCR-VL-1.5"
+    assert current["ocr_chunk_pages"] == 100
+    assert current["paddleocr_token"] == "paddle-secret"
+    assert current["pageindex_local_enabled"] is False
+
+    update_response = client.put(
+        "/api/config",
+        json={
+            "kb_dir": str(kb_dir),
+            "ocr_enabled": False,
+            "ocr_detection_mode": "always_ask",
+            "ocr_default_model": "PP-StructureV3",
+            "ocr_chunk_pages": 60,
+            "ocr_auto_recommend": False,
+            "paddleocr_token": "new-paddle-token",
+            "pageindex_local_enabled": True,
+            "pageindex_local_model": "gpt-5.4",
+            "pageindex_local_installation_state": "installed",
+        },
+    )
+
+    assert update_response.status_code == 200
+    updated = update_response.json()
+    assert updated["ocr_enabled"] is False
+    assert updated["ocr_detection_mode"] == "always_ask"
+    assert updated["ocr_default_model"] == "PP-StructureV3"
+    assert updated["ocr_chunk_pages"] == 60
+    assert updated["ocr_auto_recommend"] is False
+    assert updated["paddleocr_token"] == "new-paddle-token"
+    assert updated["pageindex_local_enabled"] is True
+    assert updated["pageindex_local_model"] == "gpt-5.4"
+    assert updated["pageindex_local_installation_state"] == "installed"
+    env_text = (kb_dir / ".env").read_text(encoding="utf-8")
+    assert "PADDLEOCR_TOKEN=new-paddle-token\n" in env_text
 
 
 def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):

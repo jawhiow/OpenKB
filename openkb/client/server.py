@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import webbrowser
 from contextlib import contextmanager
@@ -55,6 +56,17 @@ def _resolve_kb_dir(raw: str | None = None) -> Path:
 
 def _static_dir() -> Path:
     return Path(__file__).resolve().parent / "static"
+
+
+def _callable_accepts_keyword(fn: Any, name: str) -> bool:
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return name in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
 
 
 _RUNTIME_ENV_KEYS = (
@@ -266,6 +278,8 @@ def create_app(registry: JobRegistry | None = None):
         *,
         preset_files: list[Path] | None = None,
         message_source: str | None = None,
+        strategy_override: str | None = None,
+        force: bool = False,
     ):
         def run(job):
             from openkb.cli import SUPPORTED_EXTENSIONS, add_single_file
@@ -309,11 +323,20 @@ def create_app(registry: JobRegistry | None = None):
                 job.set_progress(index - 1, len(files))
                 job.set_message(f"Adding {index}/{len(files)}: {file_path.name}")
                 try:
+                    add_kwargs: dict[str, Any] = {
+                        "strict": True,
+                        "progress_callback": progress,
+                    }
+                    if strategy_override:
+                        add_kwargs["strategy_override"] = strategy_override
+                    if force:
+                        add_kwargs["force"] = True
+                    if _callable_accepts_keyword(add_single_file, "job"):
+                        add_kwargs["job"] = job
                     add_single_file(
                         file_path,
                         target_kb,
-                        strict=True,
-                        progress_callback=progress,
+                        **add_kwargs,
                     )
                     job.raise_if_stopped()
                 except Exception as exc:
@@ -361,11 +384,19 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
-        job = _submit_add_job(target_kb, source)
+        job = _submit_add_job(
+            target_kb,
+            source,
+            strategy_override=str(payload.get("strategy_override") or "").strip() or None,
+        )
         return {"job": job.to_dict()}
 
     @app.post("/api/documents/upload")
-    async def upload_document(file: list[UploadFile] = File(...), kb_dir: str | None = None) -> dict[str, Any]:
+    async def upload_document(
+        file: list[UploadFile] = File(...),
+        kb_dir: str | None = None,
+        strategy_override: str | None = None,
+    ) -> dict[str, Any]:
         try:
             target_kb = _resolve_kb_dir(kb_dir)
             from openkb.cli import SUPPORTED_EXTENSIONS
@@ -390,6 +421,7 @@ def create_app(registry: JobRegistry | None = None):
             destinations[0],
             preset_files=destinations,
             message_source=f"{len(destinations)} uploaded file(s)",
+            strategy_override=str(strategy_override or "").strip() or None,
         )
         return {"job": job.to_dict()}
 
@@ -572,6 +604,48 @@ def create_app(registry: JobRegistry | None = None):
     @app.get("/api/jobs")
     def jobs() -> dict[str, Any]:
         return {"jobs": [job.to_dict() for job in registry.list_jobs()]}
+
+    @app.get("/api/ocr/cache")
+    def ocr_cache(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            return kb_helpers.list_ocr_cache_entries(_resolve_kb_dir(kb_dir))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.post("/api/ocr/cache/{file_hash}/invalidate")
+    def ocr_cache_invalidate(file_hash: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return kb_helpers.invalidate_ocr_cache_entry(_resolve_kb_dir(payload.get("kb_dir")), file_hash)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.post("/api/ocr/cache/{file_hash}/rerun")
+    def ocr_cache_rerun(file_hash: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            source = kb_helpers.source_path_for_ocr_cache_entry(target_kb, file_hash)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        job = _submit_add_job(
+            target_kb,
+            source,
+            message_source=f"OCR rerun: {source.name}",
+            strategy_override=str(payload.get("strategy_override") or "").strip() or None,
+            force=True,
+        )
+        return {"job": job.to_dict()}
+
+    @app.post("/api/ocr/cache/{file_hash}/retry")
+    def ocr_cache_retry(file_hash: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return ocr_cache_rerun(file_hash, payload)
+
+    @app.get("/api/pageindex-local/status")
+    def pageindex_local_status(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            return kb_helpers.get_pageindex_local_status(_resolve_kb_dir(kb_dir))
+        except Exception as exc:
+            raise translate_error(exc) from exc
 
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str) -> dict[str, Any]:

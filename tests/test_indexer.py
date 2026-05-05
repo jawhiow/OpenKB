@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openkb.indexer import IndexResult, index_long_document
+from openkb.indexer import IndexResult, index_long_document, index_ocr_with_local_pageindex
 
 
 class TestIndexLongDocument:
@@ -205,3 +205,100 @@ class TestIndexLongDocument:
         cloud_client.submit_document.assert_called_once_with(str(pdf_path))
         cloud_client.get_tree.assert_called_once_with(doc_id, node_summary=True)
         cloud_client.get_ocr.assert_called_once_with(doc_id, format="page")
+
+    def test_indexes_ocr_markdown_with_local_pageindex_and_preserves_pages_json(self, kb_dir, sample_tree, tmp_path):
+        pages_path = tmp_path / "pages.json"
+        pageindex_input_path = tmp_path / "pageindex_input.md"
+        output_tree_path = kb_dir / ".openkb" / "pageindex-local" / "sample-tree.json"
+        pages_path.write_text(
+            json.dumps([{"page": 1, "content": "OCR page one", "images": []}], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        pageindex_input_path.write_text("## Page 1\n\nOCR page one", encoding="utf-8")
+
+        def fake_run(input_path, output_path, **kwargs):
+            assert input_path == pageindex_input_path
+            assert output_path == output_tree_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "doc": {
+                            "id": "local-doc-1",
+                            "name": "sample",
+                            "description": "Local PageIndex summary",
+                        },
+                        "tree": sample_tree["structure"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        with patch("openkb.indexer.run_pageindex_local", side_effect=fake_run):
+            result = index_ocr_with_local_pageindex(
+                "sample",
+                pages_path,
+                pageindex_input_path,
+                kb_dir,
+                model="gpt-5.4",
+                output_tree_path=output_tree_path,
+            )
+
+        assert result.doc_id == "local-doc-1"
+        assert result.description == "Local PageIndex summary"
+        assert json.loads((kb_dir / "wiki" / "sources" / "sample.json").read_text(encoding="utf-8"))[0]["content"] == "OCR page one"
+        summary_text = (kb_dir / "wiki" / "summaries" / "sample.md").read_text(encoding="utf-8")
+        assert "doc_type: pageindex" in summary_text
+        assert "Local PageIndex summary" not in summary_text
+
+    def test_index_ocr_with_local_pageindex_logs_runtime_outputs_to_job_details(self, kb_dir, sample_tree, tmp_path):
+        pages_path = tmp_path / "pages.json"
+        pageindex_input_path = tmp_path / "pageindex_input.md"
+        output_tree_path = kb_dir / ".openkb" / "pageindex-local" / "sample-tree.json"
+        pages_path.write_text(
+            json.dumps([{"page": 1, "content": "OCR page one", "images": []}], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        pageindex_input_path.write_text("## Page 1\n\nOCR page one", encoding="utf-8")
+
+        class FakeJob:
+            def __init__(self):
+                self.logs: list[tuple[str, str]] = []
+
+            def add_log(self, message, level="info"):
+                self.logs.append((level, message))
+
+        job = FakeJob()
+
+        def fake_run(input_path, output_path, **kwargs):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "doc": {
+                            "id": "local-doc-1",
+                            "name": "sample",
+                            "description": "Local PageIndex summary",
+                        },
+                        "tree": sample_tree["structure"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        with patch("openkb.indexer.run_pageindex_local", side_effect=fake_run):
+            index_ocr_with_local_pageindex(
+                "sample",
+                pages_path,
+                pageindex_input_path,
+                kb_dir,
+                model="gpt-5.4",
+                output_tree_path=output_tree_path,
+                job=job,
+            )
+
+        messages = [message for _level, message in job.logs]
+        assert any("Running local PageIndex" in message for message in messages)
+        assert any("Local PageIndex tree written" in message for message in messages)
+        assert any("Local PageIndex normalized: doc_id=local-doc-1" in message for message in messages)
+        assert any("Local PageIndex artifacts written" in message for message in messages)

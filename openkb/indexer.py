@@ -23,9 +23,17 @@ except ImportError:
         if_add_doc_description: bool
 
 from openkb.config import load_config
+from openkb.pageindex_local.runner import run_pageindex_local
+from openkb.pageindex_local.translate import normalize_pageindex_local_tree, pageindex_local_doc_id
 from openkb.tree_renderer import render_summary_md
 
 logger = logging.getLogger(__name__)
+
+
+def _job_log(job, message: str, level: str = "info") -> None:
+    add_log = getattr(job, "add_log", None)
+    if callable(add_log):
+        add_log(message, level=level)
 
 
 @dataclass
@@ -224,5 +232,54 @@ def index_long_document(pdf_path: Path, kb_dir: Path) -> IndexResult:
     summaries_dir.mkdir(parents=True, exist_ok=True)
     summary_md = render_summary_md(tree, pdf_path.stem, doc_id)
     (summaries_dir / f"{pdf_path.stem}.md").write_text(summary_md, encoding="utf-8")
+
+    return IndexResult(doc_id=doc_id, description=description, tree=tree)
+
+
+def index_ocr_with_local_pageindex(
+    doc_name: str,
+    pages_path: Path,
+    pageindex_input_path: Path,
+    kb_dir: Path,
+    *,
+    model: str | None = None,
+    output_tree_path: Path | None = None,
+    runtime_root: Path | None = None,
+    job=None,
+) -> IndexResult:
+    """Run local PageIndex over OCR Markdown and write OpenKB long-doc artifacts."""
+    openkb_dir = kb_dir / ".openkb"
+    runtime_root = runtime_root or openkb_dir / "pageindex-local"
+    output_tree_path = output_tree_path or runtime_root / f"{doc_name}-tree.json"
+
+    _job_log(job, f"Running local PageIndex: {doc_name}")
+    run_pageindex_local(
+        pageindex_input_path,
+        output_tree_path,
+        root=runtime_root,
+        model=model,
+    )
+    _job_log(job, f"Local PageIndex tree written: {output_tree_path.name}")
+
+    payload = json_mod.loads(output_tree_path.read_text(encoding="utf-8"))
+    tree = normalize_pageindex_local_tree(payload, fallback_doc_name=doc_name)
+    doc_id = pageindex_local_doc_id(payload, fallback_doc_name=doc_name)
+    description = str(tree.get("doc_description") or "")
+    structure = tree.get("structure")
+    node_count = len(structure) if isinstance(structure, list) else 0
+    _job_log(job, f"Local PageIndex normalized: doc_id={doc_id}, top_nodes={node_count}")
+
+    sources_dir = kb_dir / "wiki" / "sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    (sources_dir / f"{doc_name}.json").write_text(
+        pages_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    summaries_dir = kb_dir / "wiki" / "summaries"
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    summary_md = render_summary_md(tree, doc_name, doc_id)
+    (summaries_dir / f"{doc_name}.md").write_text(summary_md, encoding="utf-8")
+    _job_log(job, f"Local PageIndex artifacts written: summaries/{doc_name}.md")
 
     return IndexResult(doc_id=doc_id, description=description, tree=tree)

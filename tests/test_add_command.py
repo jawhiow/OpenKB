@@ -224,6 +224,161 @@ class TestAddCommand:
         assert any("Converting" in event for event in events)
         assert any("Compiling short document" in event for event in events)
 
+    def test_add_single_file_passes_strategy_override_to_convert_document(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "scan.pdf"
+        doc.write_bytes(b"%PDF")
+        source_path = kb_dir / "wiki" / "sources" / "scan.json"
+        source_path.write_text("[]", encoding="utf-8")
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "scan.pdf",
+            source_path=source_path,
+            is_long_doc=True,
+            local_long_doc=True,
+        )
+
+        with (
+            patch("openkb.cli.convert_document", return_value=mock_result) as mock_convert,
+            patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock) as mock_compile,
+        ):
+            mock_compile.return_value = []
+            add_single_file(doc, kb_dir, strategy_override="ocr-local-long")
+
+        mock_convert.assert_called_once_with(doc, kb_dir, force=False, strategy_override="ocr-local-long", job=None)
+
+    def test_add_single_file_passes_job_to_convert_document(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+        source_path = kb_dir / "wiki" / "sources" / "test.md"
+        source_path.write_text("# Hello converted")
+        job = object()
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "test.md",
+            source_path=source_path,
+            is_long_doc=False,
+        )
+
+        with (
+            patch("openkb.cli.convert_document", return_value=mock_result) as mock_convert,
+            patch("openkb.agent.compiler.compile_short_doc", new_callable=AsyncMock) as mock_compile,
+        ):
+            mock_compile.return_value = []
+            add_single_file(doc, kb_dir, job=job)
+
+        mock_convert.assert_called_once_with(doc, kb_dir, force=False, strategy_override=None, job=job)
+
+    def test_add_single_file_falls_back_to_ocr_local_long_when_pageindex_local_fails(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "scan.pdf"
+        doc.write_bytes(b"%PDF")
+        source_path = kb_dir / "wiki" / "sources" / "scan.json"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text('[{"page": 1, "content": "OCR fallback"}]', encoding="utf-8")
+        pageindex_input_path = tmp_path / "pageindex_input.md"
+        pageindex_input_path.write_text("## Page 1\n\nOCR fallback", encoding="utf-8")
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "scan.pdf",
+            source_path=source_path,
+            is_long_doc=True,
+            local_long_doc=False,
+            selected_strategy="ocr-pageindex-local",
+            pageindex_input_path=pageindex_input_path,
+            file_hash="abc123",
+        )
+
+        with (
+            patch("openkb.cli.convert_document", return_value=mock_result),
+            patch("openkb.indexer.index_ocr_with_local_pageindex", side_effect=RuntimeError("pageindex failed")),
+            patch("openkb.agent.compiler.compile_long_doc", new_callable=AsyncMock) as mock_compile_long,
+            patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock) as mock_compile_local,
+        ):
+            mock_compile_local.return_value = []
+            add_single_file(doc, kb_dir, strategy_override="ocr-pageindex-local")
+
+        mock_compile_long.assert_not_called()
+        mock_compile_local.assert_awaited_once_with(
+            "scan",
+            source_path,
+            kb_dir,
+            "gpt-4o-mini",
+            max_concurrency=2,
+            cleanup_existing=False,
+        )
+
+    def test_add_single_file_ocr_pageindex_local_success_runs_long_compiler_and_registers_pageindex(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+        from openkb.indexer import IndexResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "scan.pdf"
+        doc.write_bytes(b"%PDF")
+        source_path = kb_dir / "wiki" / "sources" / "scan.json"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text('[{"page": 1, "content": "OCR page"}]', encoding="utf-8")
+        pageindex_input_path = tmp_path / "pageindex_input.md"
+        pageindex_input_path.write_text("## Page 1\n\nOCR page", encoding="utf-8")
+        summary_path = kb_dir / "wiki" / "summaries" / "scan.md"
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "scan.pdf",
+            source_path=source_path,
+            is_long_doc=True,
+            local_long_doc=False,
+            selected_strategy="ocr-pageindex-local",
+            pageindex_input_path=pageindex_input_path,
+            file_hash="abc123",
+        )
+        index_result = IndexResult(
+            doc_id="local-doc-1",
+            description="Local PageIndex summary",
+            tree={"structure": []},
+        )
+
+        with (
+            patch("openkb.cli.convert_document", return_value=mock_result),
+            patch("openkb.indexer.index_ocr_with_local_pageindex", return_value=index_result) as mock_index,
+            patch("openkb.agent.compiler.compile_long_doc", new_callable=AsyncMock) as mock_compile_long,
+            patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock) as mock_compile_local,
+        ):
+            mock_compile_long.return_value = []
+            add_single_file(doc, kb_dir, strategy_override="ocr-pageindex-local")
+
+        mock_index.assert_called_once_with(
+            "scan",
+            source_path,
+            pageindex_input_path,
+            kb_dir,
+            model="gpt-4o-mini",
+            job=None,
+        )
+        mock_compile_local.assert_not_called()
+        mock_compile_long.assert_awaited_once_with(
+            "scan",
+            summary_path,
+            "local-doc-1",
+            kb_dir,
+            "gpt-4o-mini",
+            doc_description="Local PageIndex summary",
+            max_concurrency=2,
+            cleanup_existing=False,
+        )
+        hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+        assert hashes["abc123"]["type"] == "long_pdf"
+
     def test_add_force_preserves_generated_pages_when_compilation_fails(self, tmp_path):
         from openkb.cli import add_single_file
         from openkb.converter import ConvertResult
@@ -285,7 +440,7 @@ class TestAddCommand:
             mock_compile.return_value = []
             add_single_file(doc, kb_dir, force=True)
 
-        mock_convert.assert_called_once_with(doc, kb_dir, force=True)
+        mock_convert.assert_called_once_with(doc, kb_dir, force=True, strategy_override=None, job=None)
         mock_compile.assert_awaited_once_with(
             "test",
             source_path,

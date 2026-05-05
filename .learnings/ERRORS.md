@@ -274,3 +274,86 @@ Pass non-ASCII paths through environment variables or command-line arguments, an
 - Related Files: none
 
 ---
+## [ERR-20260505-001] powershell_select_string_multi_path
+
+**Logged**: 2026-05-05T08:25:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+PowerShell `Select-String -Path` failed when multiple file paths were passed as positional arguments instead of a comma-separated array.
+
+### Error
+```text
+Select-String : A positional parameter cannot be found that accepts argument 'tests\test_converter.py'.
+```
+
+### Context
+- Command attempted while scanning several test files for changed call assertions.
+- PowerShell treated the second path as an unexpected positional argument.
+
+### Suggested Fix
+Pass multiple paths as a comma-separated value to `-Path`, for example `Select-String -Path file1,file2 -Pattern ...`.
+
+### Metadata
+- Reproducible: yes
+- Related Files: tests/test_add_command.py, tests/test_converter.py, tests/test_client_server.py, tests/test_client_ocr_api.py
+
+---
+
+## [ERR-20260505-002] powershell_complex_pattern_quoting
+
+**Logged**: 2026-05-05T08:28:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+A complex `Select-String` pattern containing mixed quotes and backslashes failed PowerShell parsing before the search ran.
+
+### Error
+```text
+The string is missing the terminator: ".
+```
+
+### Context
+- Command attempted while searching tests for mock call sites.
+- The regex mixed escaped double quotes, parentheses, and file patterns inside a JSON command string sent to PowerShell.
+
+### Suggested Fix
+Keep PowerShell search patterns simple, use single quoted patterns when possible, or split searches into smaller commands.
+
+### Metadata
+- Reproducible: yes
+- Related Files: tests/test_converter.py, tests/test_add_command.py
+
+---
+
+## [ERR-20260505-003] rg_access_denied
+
+**Logged**: 2026-05-05T09:00:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+`rg.exe` failed with Access denied in this PowerShell environment, blocking the preferred fast repository scan.
+
+### Error
+```text
+Program 'rg.exe' failed to run: Access is denied
+```
+
+### Context
+- Commands attempted: `rg --files` and a repository-wide `rg -n` TODO/search pattern.
+- The repository is otherwise readable, so native PowerShell file enumeration and `Select-String` can be used as a fallback.
+
+### Suggested Fix
+Use PowerShell `Get-ChildItem` and `Select-String` when `rg.exe` is unavailable or blocked. If this recurs, inspect the `rg.exe` path and Windows execution restrictions.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+---

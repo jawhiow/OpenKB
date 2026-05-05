@@ -195,6 +195,10 @@ Settings are initialized by `openkb init`, and stored in `.openkb/config.yaml`:
 model: gpt-5.4                   # LLM model (any LiteLLM-supported provider)
 language: en                     # Wiki output language
 pageindex_threshold: 20          # PDF pages threshold for PageIndex
+ocr_enabled: true                # Enable OCR recommendations for scanned PDFs
+ocr_default_model: PaddleOCR-VL-1.5
+ocr_chunk_pages: 100             # PaddleOCR requests are capped at 100 pages
+pageindex_local_enabled: false   # Use OCR Markdown with a local PageIndex runtime
 wire_api: responses              # gpt-5 models prefer responses
 ```
 
@@ -233,6 +237,27 @@ Set `PAGEINDEX_API_KEY` in your `.env` to enable cloud features:
 ```
 PAGEINDEX_API_KEY=your_pageindex_api_key
 ```
+
+#### OCR for scanned PDFs
+
+OpenKB can detect long scanned PDFs and route them through PaddleOCR before wiki compilation. OCR artifacts are cached inside the KB at `.openkb/ocr/cache/<file_hash>/`, then reused by either the `local-long` compiler or the local PageIndex path. Store the PaddleOCR credential in the KB-local `.env`:
+
+```
+PADDLEOCR_TOKEN=your_paddleocr_token
+```
+
+The browser client exposes these settings in Settings, an import strategy selector in Documents, and an OCR page for cache status, reruns, retries, and invalidation.
+
+#### Local PageIndex Runtime
+
+When `pageindex_local_enabled` is true and a local runtime manifest exists under `.openkb/pageindex-local/installation.json`, OpenKB can run OCR Markdown through local PageIndex and then compile the resulting tree. Repository setup script placeholders are available at:
+
+```bash
+scripts/setup_pageindex_local.sh <install-root>
+scripts/setup_pageindex_local.ps1 <install-root>
+```
+
+If local PageIndex fails after OCR succeeds, OpenKB preserves the OCR cache and falls back to OCR-backed `local-long` compilation.
 
 ### AGENTS.md
 
