@@ -3,6 +3,8 @@ const state = {
   kbDir: null,
   status: null,
   documents: null,
+  sourceSearch: "",
+  selectedSourceHash: null,
   wikiTree: [],
   wikiOpenDirs: {},
   selectedWikiPath: "index.md",
@@ -30,6 +32,7 @@ const viewMeta = $("#viewMeta");
 const viewLabels = {
   overview: "Overview",
   documents: "Documents",
+  sources: "Sources",
   wiki: "Wiki",
   sessions: "Sessions",
   reports: "Quality",
@@ -471,6 +474,7 @@ function render() {
 
   if (state.view === "overview") renderOverview();
   if (state.view === "documents") renderDocuments();
+  if (state.view === "sources") renderSources();
   if (state.view === "wiki") renderWiki();
   if (state.view === "sessions") renderSessions();
   if (state.view === "reports") renderReports();
@@ -538,6 +542,7 @@ function renderOverview() {
     </div>
   `;
   bindViewButtons();
+  bindSourceDocumentActions();
 }
 
 function stat(label, value) {
@@ -573,68 +578,64 @@ function qualitySummary() {
   `;
 }
 
+const sourceRelationGroupLabels = [
+  ["summaries", "Summaries"],
+  ["companies", "Companies"],
+  ["industries", "Industries"],
+  ["themes", "Themes"],
+  ["metrics", "Metrics"],
+  ["risks", "Risks"],
+  ["concepts", "Concepts"],
+];
+
+function sourceDocuments() {
+  return state.documents?.documents || [];
+}
+
+function sourceRelatedCount(doc) {
+  if (doc?.related_count !== undefined && doc?.related_count !== null) {
+    const explicit = Number(doc.related_count);
+    if (Number.isFinite(explicit)) return explicit;
+  }
+  return Object.values(doc?.related_pages || {}).reduce((total, pages) => total + (Array.isArray(pages) ? pages.length : 0), 0);
+}
+
 function documentsTable(limit) {
   const docs = (state.documents?.documents || []).slice(0, limit || undefined);
   if (!docs.length) return `<div class="empty">No documents</div>`;
   return `
     <table>
-      <thead><tr><th>Name</th><th>Type</th><th>Pages</th><th>Related</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Type</th><th>Pages</th><th>Wiki Pages</th><th></th></tr></thead>
       <tbody>
         ${docs
-          .map(
-            (doc) => `
+          .map((doc) => {
+            const relatedCount = sourceRelatedCount(doc);
+            return `
               <tr>
                 <td>${escapeHTML(doc.name)}</td>
                 <td>${escapeHTML(doc.type)}</td>
                 <td>${escapeHTML(doc.pages || "")}</td>
-                <td>${documentRelatedMarkup(doc)}</td>
+                <td>
+                  <button class="text-button" type="button" data-source-focus="${escapeHTML(doc.hash)}">
+                    ${escapeHTML(relatedCount)} page(s)
+                  </button>
+                </td>
                 <td class="source-actions">
-                  <button class="danger" type="button" data-delete-source="${escapeHTML(doc.hash)}">Delete</button>
+                  <button type="button" data-source-focus="${escapeHTML(doc.hash)}">Open</button>
+                  <button
+                    class="danger"
+                    type="button"
+                    data-delete-source="${escapeHTML(doc.hash)}"
+                    data-source-name="${escapeHTML(doc.name)}"
+                    data-related-count="${escapeHTML(relatedCount)}"
+                  >Delete</button>
                 </td>
               </tr>
-            `,
-          )
+            `;
+          })
           .join("")}
       </tbody>
     </table>
-  `;
-}
-
-function documentRelatedMarkup(doc) {
-  const related = doc.related_pages || {};
-  const groups = [
-    ["summaries", "Summaries"],
-    ["companies", "Companies"],
-    ["industries", "Industries"],
-    ["themes", "Themes"],
-    ["metrics", "Metrics"],
-    ["risks", "Risks"],
-    ["concepts", "Concepts"],
-  ]
-    .map(([key, label]) => [label, related[key] || []])
-    .filter(([, pages]) => pages.length);
-  if (!groups.length) return `<span class="muted-text">0 pages</span>`;
-  return `
-    <details class="doc-relations">
-      <summary>${escapeHTML(doc.related_count || 0)} page(s)</summary>
-      <div>
-        ${groups
-          .map(
-            ([label, pages]) => `
-              <section>
-                <strong>${escapeHTML(label)}</strong>
-                ${pages
-                  .map((page) => {
-                    const shared = page.shared ? ` <span class="badge info">shared</span>` : "";
-                    return `<button type="button" data-wiki-open="${escapeHTML(page.path)}">${escapeHTML(page.path)}${shared}</button>`;
-                  })
-                  .join("")}
-              </section>
-            `,
-          )
-          .join("")}
-      </div>
-    </details>
   `;
 }
 
@@ -658,7 +659,7 @@ function renderDocuments() {
   mainView.innerHTML = `
     <div class="content-grid">
       <section class="section">
-        <header><h3>Add</h3></header>
+        <header><h3>Add Source</h3></header>
         <div class="section-body">
           <div class="field full">
             <label for="addPathInput">Path</label>
@@ -678,18 +679,212 @@ function renderDocuments() {
         </div>
       </section>
       <section class="section">
-        <header><h3>Indexed</h3></header>
+        <header>
+          <div>
+            <h3>Indexed</h3>
+            <span class="muted-text">${escapeHTML(sourceDocuments().length)} source file(s)</span>
+          </div>
+          <button type="button" data-view-target="sources">Relations</button>
+        </header>
         <div class="section-body">${documentsTable()}</div>
       </section>
     </div>
   `;
   $("#addPathBtn").addEventListener("click", addPath);
   $("#uploadBtn").addEventListener("click", uploadFile);
-  mainView.querySelectorAll("[data-wiki-open]").forEach((button) => {
+  bindViewButtons();
+  bindSourceDocumentActions();
+}
+
+function bindSourceDocumentActions(root = mainView) {
+  root.querySelectorAll("[data-source-focus]").forEach((button) => {
+    button.addEventListener("click", () => openSourceWorkbench(button.dataset.sourceFocus));
+  });
+  root.querySelectorAll("[data-delete-source]").forEach((button) => {
+    button.addEventListener("click", deleteSourceDocument);
+  });
+}
+
+function filteredSourceDocuments() {
+  const query = state.sourceSearch.trim().toLowerCase();
+  const docs = sourceDocuments();
+  if (!query) return docs;
+  return docs.filter((doc) => {
+    const haystack = [
+      doc.name,
+      doc.stem,
+      doc.type,
+      doc.hash,
+      doc.source_summary,
+      doc.source_path,
+      Object.values(doc.related_pages || {})
+        .flat()
+        .map((page) => page.path)
+        .join(" "),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function syncSelectedSource(docs = sourceDocuments()) {
+  if (!docs.length) {
+    state.selectedSourceHash = null;
+    return null;
+  }
+  const selected = docs.find((doc) => doc.hash === state.selectedSourceHash);
+  if (selected) return selected;
+  state.selectedSourceHash = docs[0].hash;
+  return docs[0];
+}
+
+function selectSourceDocument(hash) {
+  state.selectedSourceHash = hash;
+  renderSources();
+}
+
+function openSourceWorkbench(hash) {
+  state.selectedSourceHash = hash || state.selectedSourceHash;
+  state.view = "sources";
+  render();
+}
+
+function sourceDocumentList(docs) {
+  if (!sourceDocuments().length) return `<div class="empty">No documents</div>`;
+  if (!docs.length) return `<div class="empty">No matching sources</div>`;
+  return docs
+    .map((doc) => {
+      const active = doc.hash === state.selectedSourceHash ? " active" : "";
+      const rawBadge = doc.raw_exists === false ? `<span class="badge warn">raw missing</span>` : `<span class="badge muted">${escapeHTML(doc.type || "unknown")}</span>`;
+      return `
+        <button class="source-list-item${active}" type="button" data-source-select="${escapeHTML(doc.hash)}">
+          <span class="source-list-name">${escapeHTML(doc.name)}</span>
+          <span class="source-list-meta">
+            ${rawBadge}
+            <span>${escapeHTML(sourceRelatedCount(doc))} page(s)</span>
+          </span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function sourceRelationGroups(doc) {
+  const related = doc?.related_pages || {};
+  const groups = sourceRelationGroupLabels
+    .map(([key, label]) => ({
+      key,
+      label,
+      pages: related[key] || [],
+    }))
+    .filter((group) => group.pages.length);
+  if (!groups.length) return `<div class="empty">No related wiki pages</div>`;
+  return groups
+    .map(
+      (group) => `
+        <section class="relation-group">
+          <header>
+            <h3>${escapeHTML(group.label)}</h3>
+            <span class="badge muted">${escapeHTML(group.pages.length)}</span>
+          </header>
+          <div class="relation-list">
+            ${group.pages
+              .map(
+                (page) => `
+                  <button class="relation-row" type="button" data-source-open-page="${escapeHTML(page.path)}">
+                    <span>
+                      <strong>${escapeHTML(page.title || page.page || page.path)}</strong>
+                      <small>${escapeHTML(page.path)}</small>
+                    </span>
+                    ${page.shared ? `<span class="badge info">shared</span>` : `<span class="badge muted">owned</span>`}
+                  </button>
+                `,
+              )
+              .join("")}
+          </div>
+        </section>
+      `,
+    )
+    .join("");
+}
+
+function renderSources() {
+  const filtered = filteredSourceDocuments();
+  const hasSearch = Boolean(state.sourceSearch.trim());
+  const selected = filtered.length ? syncSelectedSource(filtered) : hasSearch ? null : syncSelectedSource(sourceDocuments());
+  const totalRelated = sourceDocuments().reduce((total, doc) => total + sourceRelatedCount(doc), 0);
+  mainView.innerHTML = `
+    <div class="sources-layout">
+      <aside class="source-browser">
+        <div class="source-browser-head">
+          <div>
+            <strong>Sources</strong>
+            <span>${escapeHTML(sourceDocuments().length)} file(s), ${escapeHTML(totalRelated)} page(s)</span>
+          </div>
+          <input data-source-search type="search" placeholder="Search sources or pages" value="${escapeHTML(state.sourceSearch)}" />
+        </div>
+        <div class="source-list">
+          ${sourceDocumentList(filtered)}
+        </div>
+      </aside>
+      <section class="source-detail">
+        ${
+          selected
+            ? `
+              <header class="source-detail-head">
+                <div>
+                  <h3>${escapeHTML(selected.name)}</h3>
+                  <span class="muted-text">${escapeHTML(selected.hash)}</span>
+                </div>
+                <div class="row-actions">
+                  <button type="button" data-source-open-page="${escapeHTML(selected.source_summary || "")}" ${selected.summary_exists === false ? "disabled" : ""}>Summary</button>
+                  <button
+                    class="danger"
+                    type="button"
+                    data-delete-source="${escapeHTML(selected.hash)}"
+                    data-source-name="${escapeHTML(selected.name)}"
+                    data-related-count="${escapeHTML(sourceRelatedCount(selected))}"
+                  >Delete Source</button>
+                </div>
+              </header>
+              <div class="source-summary-grid">
+                <div><span>Type</span><strong>${escapeHTML(selected.type || "unknown")}</strong></div>
+                <div><span>Pages</span><strong>${escapeHTML(selected.pages || "")}</strong></div>
+                <div><span>Wiki Pages</span><strong>${escapeHTML(sourceRelatedCount(selected))}</strong></div>
+                <div><span>Raw</span><strong>${selected.raw_exists === false ? "Missing" : "Present"}</strong></div>
+                <div><span>Summary</span><strong>${selected.summary_exists === false ? "Missing" : escapeHTML(selected.source_summary || "")}</strong></div>
+                <div><span>Full Text</span><strong>${escapeHTML(selected.source_path || "None")}</strong></div>
+              </div>
+              <div class="relation-groups">
+                ${sourceRelationGroups(selected)}
+              </div>
+            `
+            : `<div class="empty">No source selected</div>`
+        }
+      </section>
+    </div>
+  `;
+  mainView.querySelector("[data-source-search]")?.addEventListener("input", (event) => {
+    state.sourceSearch = event.target.value;
+    renderSources();
+    const search = mainView.querySelector("[data-source-search]");
+    search?.focus();
+    search?.setSelectionRange(search.value.length, search.value.length);
+  });
+  mainView.querySelectorAll("[data-source-select]").forEach((button) => {
+    button.addEventListener("click", () => selectSourceDocument(button.dataset.sourceSelect));
+  });
+  mainView.querySelectorAll("[data-source-open-page]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.selectedWikiPath = button.dataset.wikiOpen;
+      if (!button.dataset.sourceOpenPage) return;
+      state.selectedWikiPath = button.dataset.sourceOpenPage;
       switchView("wiki");
     });
+  });
+  mainView.querySelectorAll("[data-source-focus]").forEach((button) => {
+    button.addEventListener("click", () => openSourceWorkbench(button.dataset.sourceFocus));
   });
   mainView.querySelectorAll("[data-delete-source]").forEach((button) => {
     button.addEventListener("click", deleteSourceDocument);
@@ -1018,8 +1213,11 @@ async function deleteSourceDocument(event) {
   const selector = button?.dataset.deleteSource;
   if (!selector) return;
   const row = button.closest("tr");
-  const name = row?.querySelector("td")?.textContent?.trim() || "this source document";
-  if (!window.confirm(`Delete ${name} and clean its generated pages?`)) return;
+  const doc = sourceDocuments().find((item) => item.hash === selector);
+  const name = button.dataset.sourceName || doc?.name || row?.querySelector("td")?.textContent?.trim() || "this source document";
+  const relatedCount = button.dataset.relatedCount || (doc ? sourceRelatedCount(doc) : "");
+  const suffix = relatedCount !== "" ? ` This will also clean ${relatedCount} related wiki page(s).` : "";
+  if (!window.confirm(`Delete ${name} and clean its generated pages?${suffix}`)) return;
   setButtonBusy(button, true, "Deleting...");
   try {
     const result = await api(withKb(`/api/documents/${encodeURIComponent(selector)}`), { method: "DELETE" });

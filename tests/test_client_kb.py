@@ -83,6 +83,11 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
             "type": "short",
             "pages": 12,
             "stem": "paper",
+            "raw_path": "raw/paper.pdf",
+            "raw_exists": True,
+            "source_path": None,
+            "source_summary": "summaries/paper.md",
+            "summary_exists": True,
             "related_count": 2,
             "related_pages": {
                 "summaries": [
@@ -104,6 +109,11 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
             "type": "pageindex",
             "pages": 80,
             "stem": "manual",
+            "raw_path": "raw/manual.pdf",
+            "raw_exists": False,
+            "source_path": None,
+            "source_summary": "summaries/manual.md",
+            "summary_exists": False,
             "related_count": 0,
             "related_pages": {
                 "summaries": [],

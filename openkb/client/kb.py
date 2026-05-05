@@ -143,6 +143,11 @@ def get_document_data(kb_dir: Path) -> dict[str, Any]:
                 "type": _display_type(str(document.get("type", "unknown"))),
                 "pages": document.get("pages", ""),
                 "stem": document["stem"],
+                "raw_path": document.get("raw_path"),
+                "raw_exists": document.get("raw_exists", False),
+                "source_path": document.get("source_path"),
+                "source_summary": document.get("source_summary"),
+                "summary_exists": document.get("summary_exists", False),
                 "related_count": document["related_count"],
                 "related_pages": document["related_pages"],
             }

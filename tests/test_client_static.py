@@ -39,18 +39,41 @@ def test_client_script_summarizes_partial_add_failures():
     assert 'Array.from(input.files).forEach((file) => form.append("file", file))' in script
 
 
-def test_client_documents_show_related_pages_and_delete_source_action():
+def test_client_sources_view_browses_related_pages_and_deletes_source():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
 
-    assert "function documentRelatedMarkup" in script
-    assert "related_count" in script
+    assert 'data-view="sources"' in html
+    assert 'sources: "Sources"' in script
+    assert "function renderSources" in script
+    assert "function sourceDocumentList" in script
+    assert "function sourceRelationGroups" in script
+    assert "function selectSourceDocument" in script
+    assert "function openSourceWorkbench" in script
+    assert "data-source-search" in script
+    assert "data-source-select" in script
+    assert "data-source-open-page" in script
     assert "data-delete-source" in script
     assert "async function deleteSourceDocument" in script
     assert "DELETE" in script
     assert "delete_source" in script
-    assert ".doc-relations" in styles
+    assert ".sources-layout" in styles
+    assert ".source-list-item.active" in styles
+    assert ".relation-row" in styles
+
+
+def test_client_documents_table_links_to_source_workbench_without_inline_relations():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "related_count" in script
+    assert "function sourceRelatedCount" in script
+    assert "data-source-focus" in script
+    assert "data-delete-source" in script
     assert ".source-actions" in styles
+    assert "function documentRelatedMarkup" not in script
+    assert ".doc-relations" not in styles
 
 
 def test_client_api_error_path_reads_response_body_once():

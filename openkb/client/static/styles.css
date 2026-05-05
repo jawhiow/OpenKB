@@ -101,6 +101,20 @@ button.danger {
   color: var(--bad);
 }
 
+button.text-button {
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  padding: 0;
+  font-weight: 650;
+}
+
+button.text-button:hover {
+  box-shadow: none;
+  text-decoration: underline;
+}
+
 input,
 select,
 textarea {
@@ -442,41 +456,204 @@ th {
   white-space: nowrap;
 }
 
-.doc-relations {
-  min-width: 220px;
-}
-
-.doc-relations summary {
-  cursor: pointer;
-  color: var(--accent-strong);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.doc-relations > div {
+.sources-layout {
   display: grid;
-  gap: 8px;
-  margin-top: 8px;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 540px;
 }
 
-.doc-relations section {
+.source-browser,
+.source-detail {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  min-width: 0;
+}
+
+.source-browser {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.source-browser-head {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.source-browser-head div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.source-browser-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-list {
+  display: grid;
+  gap: 6px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.source-list-item {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  min-height: 66px;
+  align-items: center;
+  justify-content: stretch;
+  text-align: left;
+}
+
+.source-list-item.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.source-list-name {
+  min-width: 0;
+  color: var(--text);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.source-list-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-detail {
+  overflow: auto;
+}
+
+.source-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.source-detail-head > div:first-child {
+  min-width: 0;
+}
+
+.source-detail-head h3,
+.source-detail-head .muted-text {
+  overflow-wrap: anywhere;
+}
+
+.source-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.source-summary-grid div {
   display: grid;
   gap: 4px;
+  min-height: 56px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-alt);
+  padding: 8px 10px;
 }
 
-.doc-relations section > strong {
+.source-summary-grid span {
   color: var(--muted);
-  font-size: 11px;
-  text-transform: uppercase;
+  font-size: 12px;
 }
 
-.doc-relations button {
-  justify-content: flex-start;
-  width: 100%;
-  min-height: 28px;
-  padding: 3px 7px;
+.source-summary-grid strong {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 650;
   overflow-wrap: anywhere;
+}
+
+.relation-groups {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.relation-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.relation-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-alt);
+}
+
+.relation-list {
+  display: grid;
+}
+
+.relation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 50px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 8px 10px;
   text-align: left;
+}
+
+.relation-row:last-child {
+  border-bottom: 0;
+}
+
+.relation-row:hover {
+  background: var(--accent-soft);
+  box-shadow: none;
+}
+
+.relation-row span:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.relation-row strong,
+.relation-row small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.relation-row small,
+.relation-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.relation-empty {
+  padding: 12px;
 }
 
 .wiki-layout {
@@ -1209,6 +1386,7 @@ th {
 
   .job-dock-body,
   .workbench-grid,
+  .sources-layout,
   .quality-layout,
   .profile-config-grid {
     grid-template-columns: 1fr;
@@ -1266,6 +1444,8 @@ th {
   .workbench-grid,
   .form-grid,
   .wiki-layout,
+  .sources-layout,
+  .source-summary-grid,
   .profile-config-grid,
   .job-dock-body,
   .quality-layout,
