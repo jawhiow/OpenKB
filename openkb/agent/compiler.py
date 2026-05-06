@@ -115,9 +115,12 @@ Rules:
 - Include only company-specific entities with investment relevance, such as
   ratings, target prices, valuation context, AI exposure, catalysts, risks, or
   supply-chain position.
+- The page subject must be an actual company, listed company, private company,
+  subsidiary, or clearly named investable business entity.
 - Do NOT include products, technologies, countries, markets, concepts, or broad
-  industry themes; those belong in `industries/`, `themes/`, `metrics/`,
-  `risks/`, or `concepts/` as appropriate.
+  industry themes; those belong in `industries/` only when they are real
+  industries, otherwise in `concepts/`.
+- If uncertain whether a candidate is a real company, do not include it.
 - Prefer 3-8 high-signal companies when the report supports it.
 - Use a concise Chinese page filename in "name" when the KB language is
   Chinese. Do not use English slugs.
@@ -136,34 +139,25 @@ created or updated outside `companies/` and `concepts/`.
 Existing industry pages:
 {industry_briefs}
 
-Existing theme pages:
-{theme_briefs}
-
-Existing metric pages:
-{metric_briefs}
-
-Existing risk pages:
-{risk_briefs}
-
-Return a JSON object with four keys:
+Return a JSON object with one key:
 
 1. "industries" - sectors, industry structures, value chains, capacity cycles,
    bottlenecks, and competitive maps. Array of objects:
    {{"name": "中文行业文件名", "title": "Human-Readable Industry", "action": "create"}}
 
-2. "themes" - cross-company or cross-industry investment themes such as AI
-   CAPEX, localization, pricing power, or policy shifts. Same object shape.
-
-3. "metrics" - reusable operating, financial, valuation, and monitoring
-   indicators. Same object shape.
-
-4. "risks" - durable risk factors, bear cases, policy constraints, and
-   disconfirming signals. Same object shape.
-
 Rules:
 - Use "action": "update" for an existing page and "create" otherwise.
 - Use a concise Chinese page filename in "name" when the KB language is
   Chinese. Do not use English slugs.
+- The page subject must be a real industry, sector, market segment, or durable
+  value-chain segment with multiple relevant companies or a persistent
+  supply/demand structure.
+- Do NOT create industry pages for individual companies, products,
+  technologies, tickers, indexes, countries, policy events, risks, metrics,
+  or one-off investment themes.
+- Put reusable themes, risks, metrics, mechanisms, indicators, and monitoring
+  ideas in `concepts/`, not in a dedicated investment-page directory.
+- If uncertain whether a candidate is a real industry, do not include it.
 - Do not duplicate company pages or ordinary reusable concepts.
 - Prefer a small set of high-signal pages. Empty arrays are fine.
 - For an industry report, create at least one `industries/` page when the
@@ -197,8 +191,13 @@ Rules:
 - For investment research reports, create enough durable concepts to avoid
   broken links and preserve reusable investment knowledge. Prefer 5-8
   high-signal concepts over a shallow 2-3 concept cap when the report supports it.
+- Use concepts for reusable themes, risks, metrics, mechanisms, indicators,
+  frameworks, policies, technologies, products, monitoring ideas, and
+  bear-case/disconfirming signals.
 - Do NOT create a concept that overlaps with an existing one — use "update".
 - Do NOT create concepts that are just the document topic itself.
+- Do NOT create concepts for actual companies or real industries; those belong
+  in `companies/` and `industries/` only when they pass the stricter boundary.
 - Use a concise Chinese page filename in "name" when the KB language is
   Chinese. Do not use English slugs.
 - "related" is for lightweight cross-linking only, no content rewrite needed.
@@ -691,41 +690,12 @@ _INVESTMENT_PAGE_TYPES: tuple[dict[str, str], ...] = (
             "track, catalysts, risks, and disconfirming evidence."
         ),
     },
-    {
-        "subdir": "themes",
-        "label": "theme",
-        "brief_key": "theme_briefs",
-        "guidance": (
-            "Cover the investment thesis, scope across companies or industries, "
-            "supporting evidence, catalysts, monitoring indicators, related "
-            "metrics, and risks."
-        ),
-    },
-    {
-        "subdir": "metrics",
-        "label": "metric",
-        "brief_key": "metric_briefs",
-        "guidance": (
-            "Define the metric, explain interpretation, drivers, units, update "
-            "cadence, what changes would confirm or refute the thesis, and "
-            "where the source document uses it."
-        ),
-    },
-    {
-        "subdir": "risks",
-        "label": "risk",
-        "brief_key": "risk_briefs",
-        "guidance": (
-            "Describe the bear-case mechanism, affected companies or industries, "
-            "trigger conditions, monitoring signals, mitigants, and source "
-            "evidence."
-        ),
-    },
 )
 _INVESTMENT_PAGE_SUBDIRS = tuple(page_type["subdir"] for page_type in _INVESTMENT_PAGE_TYPES)
 _INVESTMENT_PAGE_TYPE_BY_SUBDIR = {
     page_type["subdir"]: page_type for page_type in _INVESTMENT_PAGE_TYPES
 }
+_LEGACY_INVESTMENT_PAGE_SUBDIRS = ("themes", "metrics", "risks")
 
 
 def _sanitize_concept_name(name: str) -> str:
@@ -968,7 +938,7 @@ def _empty_investment_page_plan() -> dict[str, list[dict]]:
 
 
 def _parse_investment_page_plan(parsed: list | dict) -> dict[str, list[dict]]:
-    """Extract industries/themes/metrics/risks arrays from an LLM plan."""
+    """Extract dedicated industry page arrays from an LLM plan."""
     plan = _empty_investment_page_plan()
     if not isinstance(parsed, dict):
         return plan
@@ -1563,7 +1533,12 @@ def cleanup_generated_pages_for_source(wiki_dir: Path, doc_name: str) -> list[st
     source_file = f"summaries/{doc_name}.md"
     removed: list[str] = []
 
-    for subdir in sorted({"companies", "concepts", *_INVESTMENT_PAGE_SUBDIRS}):
+    for subdir in sorted({
+        "companies",
+        "concepts",
+        *_INVESTMENT_PAGE_SUBDIRS,
+        *_LEGACY_INVESTMENT_PAGE_SUBDIRS,
+    }):
         pages_dir = wiki_dir / subdir
         if not pages_dir.exists():
             continue
@@ -1716,9 +1691,6 @@ def _update_index(
             "## Documents\n\n"
             "## Companies\n\n"
             "## Industries\n\n"
-            "## Themes\n\n"
-            "## Metrics\n\n"
-            "## Risks\n\n"
             "## Concepts\n\n"
             "## Explorations\n",
             encoding="utf-8",
@@ -1727,10 +1699,7 @@ def _update_index(
     lines = index_path.read_text(encoding="utf-8").split("\n")
     _ensure_index_section(lines, "## Documents", before_heading="## Companies")
     _ensure_index_section(lines, "## Companies", before_heading="## Industries")
-    _ensure_index_section(lines, "## Industries", before_heading="## Themes")
-    _ensure_index_section(lines, "## Themes", before_heading="## Metrics")
-    _ensure_index_section(lines, "## Metrics", before_heading="## Risks")
-    _ensure_index_section(lines, "## Risks", before_heading="## Concepts")
+    _ensure_index_section(lines, "## Industries", before_heading="## Concepts")
     _ensure_index_section(lines, "## Concepts", before_heading="## Explorations")
 
     doc_link = f"[[summaries/{doc_name}]]"
@@ -1759,9 +1728,6 @@ def _update_index(
 
     upsert_page_entries("## Companies", "companies", company_names, company_briefs)
     upsert_page_entries("## Industries", "industries", industry_names, industry_briefs)
-    upsert_page_entries("## Themes", "themes", theme_names, theme_briefs)
-    upsert_page_entries("## Metrics", "metrics", metric_names, metric_briefs)
-    upsert_page_entries("## Risks", "risks", risk_names, risk_briefs)
 
     for name in concept_names:
         concept_link = f"[[concepts/{name}]]"
@@ -2324,12 +2290,6 @@ async def _compile_concepts(
                   company_names=company_names, company_briefs=company_briefs_map,
                   industry_names=investment_page_names["industries"],
                   industry_briefs=investment_page_briefs_map["industries"],
-                  theme_names=investment_page_names["themes"],
-                  theme_briefs=investment_page_briefs_map["themes"],
-                  metric_names=investment_page_names["metrics"],
-                  metric_briefs=investment_page_briefs_map["metrics"],
-                  risk_names=investment_page_names["risks"],
-                  risk_briefs=investment_page_briefs_map["risks"],
                   doc_type=doc_type)
 
 

@@ -30,14 +30,17 @@ for quality issues that structural tools cannot detect.
 
 6. **Company boundary** - Are company-specific pages placed in `companies/`
    while `concepts/` stays focused on reusable mechanisms, risks, metrics, and themes?
+7. **Industry boundary** - Are industry pages in `industries/` real industries,
+   sectors, or durable value-chain segments rather than products, risks, metrics,
+   one-off themes, geographies, or companies?
 
 ## Process
 1. Start with index.md to understand scope.
 2. Read summary pages to understand document content.
 3. Read company pages to check company-specific evidence, valuation context,
    catalysts, and risks.
-4. Read industries/, themes/, metrics/, and risks/ pages to check investment
-   schema boundaries and missing durable pages.
+4. Read industries/ pages to check industry boundaries and missing durable
+   sector or value-chain pages.
 5. Read concept pages to check for contradictions and gaps.
 5. Produce a structured Markdown report listing issues found with references
    to the specific pages where each issue occurs.
@@ -130,24 +133,6 @@ _SEED_PAGE_TEMPLATES: dict[str, dict[str, str]] = {
         "path": "industries/semiconductor-value-chain.md",
         "brief": "Seed industry page for semiconductor value-chain structure and profit-pool tracking.",
     },
-    "themes": {
-        "name": "Seed_themes",
-        "title": "AI CAPEX Cycle",
-        "path": "themes/ai-capex-cycle.md",
-        "brief": "Seed theme page for tracking AI CAPEX as an investment demand cycle.",
-    },
-    "metrics": {
-        "name": "Seed_metrics",
-        "title": "Cloud CAPEX Metrics",
-        "path": "metrics/cloud-capex.md",
-        "brief": "Seed metric page for reusable cloud CAPEX, accelerator demand, and capacity indicators.",
-    },
-    "risks": {
-        "name": "Seed_risks",
-        "title": "Export Controls Risk",
-        "path": "risks/export-controls.md",
-        "brief": "Seed risk page for export controls and geopolitical constraints.",
-    },
 }
 
 
@@ -213,9 +198,6 @@ def _heading_for_page_type(page_type: str) -> str:
     return {
         "companies": "## Companies",
         "industries": "## Industries",
-        "themes": "## Themes",
-        "metrics": "## Metrics",
-        "risks": "## Risks",
         "concepts": "## Concepts",
         "explorations": "## Explorations",
     }.get(page_type, "## Concepts")
@@ -225,9 +207,6 @@ def _draft_generic_page(title: str, page_type: str, reason: str) -> str:
     purpose = {
         "companies": "company-specific investment relevance",
         "industries": "industry structure, value-chain position, and profit-pool migration",
-        "themes": "cross-company investment theme and cycle tracking",
-        "metrics": "reusable metric definitions, update cadence, and interpretation",
-        "risks": "durable risk factor, monitoring indicators, and contra-evidence",
     }.get(page_type, "durable wiki knowledge")
     return (
         "---\n"
@@ -247,7 +226,7 @@ def _draft_generic_page(title: str, page_type: str, reason: str) -> str:
         "## Risks And Contra-Evidence\n"
         "TODO: Add the main ways this view could be wrong, fade, or be mispriced.\n\n"
         "## Related Pages\n"
-        "TODO: Link related summaries, companies, concepts, themes, metrics, or risks.\n"
+        "TODO: Link related summaries, companies, industries, or concepts.\n"
     )
 
 
@@ -475,7 +454,7 @@ def extract_lint_fix_candidates(
                     section=section,
                     reason=searchable,
                 )
-            if re.search(r"industries/themes/metrics/risks|搭建.*目录", searchable, re.IGNORECASE):
+            if re.search(r"industries|行业目录|搭建.*目录", searchable, re.IGNORECASE):
                 for page_type, template in _SEED_PAGE_TEMPLATES.items():
                     _add_candidate(
                         raw_candidates,
@@ -754,12 +733,6 @@ def _ensure_index_concept_entry(wiki_root: Path, name: str, title: str) -> None:
             "",
             "## Industries",
             "",
-            "## Themes",
-            "",
-            "## Metrics",
-            "",
-            "## Risks",
-            "",
             "## Concepts",
             "",
             "## Explorations",
@@ -859,7 +832,7 @@ def apply_coverage_gap_concept_candidates(
     return created
 
 
-_AUTO_FIX_DIRS = {"concepts", "companies", "industries", "themes", "metrics", "risks", "explorations"}
+_AUTO_FIX_DIRS = {"concepts", "companies", "industries", "explorations"}
 
 
 def _resolve_fix_create_path(wiki_root: Path, item: dict[str, str]) -> tuple[Path, str] | None:

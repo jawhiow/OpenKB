@@ -131,9 +131,6 @@ def get_status_data(kb_dir: Path) -> dict[str, Any]:
         "summaries",
         "companies",
         "industries",
-        "themes",
-        "metrics",
-        "risks",
         "concepts",
         "reports",
     ):
@@ -189,9 +186,6 @@ def get_document_data(kb_dir: Path) -> dict[str, Any]:
         "summaries": _list_stems(wiki_dir / "summaries"),
         "companies": _list_stems(wiki_dir / "companies"),
         "industries": _list_stems(wiki_dir / "industries"),
-        "themes": _list_stems(wiki_dir / "themes"),
-        "metrics": _list_stems(wiki_dir / "metrics"),
-        "risks": _list_stems(wiki_dir / "risks"),
         "concepts": _list_stems(wiki_dir / "concepts"),
         "reports": _list_names(wiki_dir / "reports"),
     }
@@ -1405,9 +1399,6 @@ def init_kb(
     (kb_dir / "wiki" / "summaries").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "companies").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "industries").mkdir(parents=True, exist_ok=True)
-    (kb_dir / "wiki" / "themes").mkdir(parents=True, exist_ok=True)
-    (kb_dir / "wiki" / "metrics").mkdir(parents=True, exist_ok=True)
-    (kb_dir / "wiki" / "risks").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "concepts").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "explorations").mkdir(parents=True, exist_ok=True)
     (kb_dir / "wiki" / "reports").mkdir(parents=True, exist_ok=True)
@@ -1418,9 +1409,6 @@ def init_kb(
         "## Documents\n\n"
         "## Companies\n\n"
         "## Industries\n\n"
-        "## Themes\n\n"
-        "## Metrics\n\n"
-        "## Risks\n\n"
         "## Concepts\n\n"
         "## Explorations\n",
         encoding="utf-8",

@@ -123,7 +123,7 @@ class TestListCommand:
         assert "tsmc" in result.output
         assert "smic" in result.output
 
-    def test_list_shows_expanded_investment_schema_pages(self, tmp_path):
+    def test_list_shows_active_investment_schema_pages_only(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)
         hashes = {"abc": {"name": "paper.pdf", "type": "pdf"}}
         (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes))
@@ -138,12 +138,12 @@ class TestListCommand:
 
         assert "Industries (1):" in result.output
         assert "semiconductors" in result.output
-        assert "Themes (1):" in result.output
-        assert "ai-capex" in result.output
-        assert "Metrics (1):" in result.output
-        assert "gross-margin" in result.output
-        assert "Risks (1):" in result.output
-        assert "export-controls" in result.output
+        assert "Themes (1):" not in result.output
+        assert "ai-capex" not in result.output
+        assert "Metrics (1):" not in result.output
+        assert "gross-margin" not in result.output
+        assert "Risks (1):" not in result.output
+        assert "export-controls" not in result.output
 
     def test_source_command_shows_pages_related_to_one_document(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)
@@ -253,9 +253,9 @@ class TestStatusCommand:
         assert "concepts" in result.output
         assert "companies" in result.output
         assert "industries" in result.output
-        assert "themes" in result.output
-        assert "metrics" in result.output
-        assert "risks" in result.output
+        assert "themes" not in result.output
+        assert "metrics" not in result.output
+        assert "risks" not in result.output
         assert "reports" in result.output
 
     def test_status_shows_total_indexed(self, tmp_path):
@@ -320,7 +320,7 @@ class TestStatusCommand:
         assert result.exit_code == 0
         assert (kb_dir / "wiki" / "companies").is_dir()
         assert (kb_dir / "wiki" / "industries").is_dir()
-        assert (kb_dir / "wiki" / "themes").is_dir()
-        assert (kb_dir / "wiki" / "metrics").is_dir()
-        assert (kb_dir / "wiki" / "risks").is_dir()
+        assert not (kb_dir / "wiki" / "themes").exists()
+        assert not (kb_dir / "wiki" / "metrics").exists()
+        assert not (kb_dir / "wiki" / "risks").exists()
         assert (kb_dir / "wiki" / "AGENTS.md").read_text(encoding="utf-8") == AGENTS_MD

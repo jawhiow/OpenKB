@@ -21,9 +21,6 @@ def _make_kb(tmp_path: Path) -> Path:
         "summaries",
         "companies",
         "industries",
-        "themes",
-        "metrics",
-        "risks",
         "concepts",
     ):
         (kb_dir / "wiki" / subdir).mkdir(parents=True)

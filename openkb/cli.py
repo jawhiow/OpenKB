@@ -209,9 +209,6 @@ _WIKI_SCHEMA_DIRS = (
     "summaries",
     "companies",
     "industries",
-    "themes",
-    "metrics",
-    "risks",
     "concepts",
     "explorations",
     "reports",
@@ -248,12 +245,14 @@ def _ensure_wiki_schema(kb_dir: Path) -> None:
     required_markers = (
         "companies/",
         "industries/",
-        "themes/",
-        "metrics/",
-        "risks/",
         "Company Page",
+        "must be an actual company",
+        "must be a real industry",
     )
-    if not all(marker in agents_text for marker in required_markers):
+    obsolete_markers = ("themes/", "metrics/", "risks/")
+    if not all(marker in agents_text for marker in required_markers) or any(
+        marker in agents_text for marker in obsolete_markers
+    ):
         agents_path.write_text(AGENTS_MD, encoding="utf-8")
 
 
@@ -852,9 +851,6 @@ def init():
     Path("wiki/summaries").mkdir(parents=True, exist_ok=True)
     Path("wiki/companies").mkdir(parents=True, exist_ok=True)
     Path("wiki/industries").mkdir(parents=True, exist_ok=True)
-    Path("wiki/themes").mkdir(parents=True, exist_ok=True)
-    Path("wiki/metrics").mkdir(parents=True, exist_ok=True)
-    Path("wiki/risks").mkdir(parents=True, exist_ok=True)
     Path("wiki/concepts").mkdir(parents=True, exist_ok=True)
 
     # Write wiki files
@@ -864,9 +860,6 @@ def init():
         "## Documents\n\n"
         "## Companies\n\n"
         "## Industries\n\n"
-        "## Themes\n\n"
-        "## Metrics\n\n"
-        "## Risks\n\n"
         "## Concepts\n\n"
         "## Explorations\n",
         encoding="utf-8",
@@ -1359,19 +1352,13 @@ def print_list(kb_dir: Path) -> None:
             for c in companies:
                 click.echo(f"  - {c}")
 
-    for subdir, title in (
-        ("industries", "Industries"),
-        ("themes", "Themes"),
-        ("metrics", "Metrics"),
-        ("risks", "Risks"),
-    ):
-        page_dir = kb_dir / "wiki" / subdir
-        if page_dir.exists():
-            pages = sorted(p.stem for p in page_dir.glob("*.md"))
-            if pages:
-                click.echo(f"\n{title} ({len(pages)}):")
-                for page in pages:
-                    click.echo(f"  - {page}")
+    industries_dir = kb_dir / "wiki" / "industries"
+    if industries_dir.exists():
+        industries = sorted(p.stem for p in industries_dir.glob("*.md"))
+        if industries:
+            click.echo(f"\nIndustries ({len(industries)}):")
+            for industry in industries:
+                click.echo(f"  - {industry}")
 
     # Display concepts
     concepts_dir = kb_dir / "wiki" / "concepts"
@@ -1409,9 +1396,6 @@ def _iter_related_page_groups(document: dict) -> list[tuple[str, list[dict]]]:
         ("summaries", "Summaries"),
         ("companies", "Companies"),
         ("industries", "Industries"),
-        ("themes", "Themes"),
-        ("metrics", "Metrics"),
-        ("risks", "Risks"),
         ("concepts", "Concepts"),
     )
     related = document.get("related_pages") or {}
@@ -1547,9 +1531,6 @@ def print_status(kb_dir: Path) -> None:
         "summaries",
         "companies",
         "industries",
-        "themes",
-        "metrics",
-        "risks",
         "concepts",
         "reports",
     ]

@@ -234,8 +234,8 @@ def check_index_sync(wiki: Path) -> list[str]:
 
     Returns issues for:
     - Links in index.md pointing to non-existent pages
-    - Pages in summaries/, companies/, industries/, themes/, metrics/, risks/,
-      or concepts/ not mentioned in index.md
+    - Pages in summaries/, companies/, industries/, or concepts/ not mentioned
+      in index.md
 
     Args:
         wiki: Path to the wiki root directory.
@@ -263,7 +263,7 @@ def check_index_sync(wiki: Path) -> list[str]:
     index_stems = {Path(lnk.strip()).stem for lnk in index_links}
     index_text_lower = index_text.lower()
 
-    for subdir in ("summaries", "companies", "industries", "themes", "metrics", "risks", "concepts"):
+    for subdir in ("summaries", "companies", "industries", "concepts"):
         subdir_path = wiki / subdir
         if not subdir_path.exists():
             continue

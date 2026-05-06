@@ -223,14 +223,14 @@ class TestCheckIndexSync:
 
         assert any("companies/tsmc.md not mentioned in index.md" in issue for issue in result)
 
-    def test_expanded_investment_schema_page_not_in_index(self, tmp_path):
+    def test_legacy_investment_schema_page_is_not_active_index_sync_surface(self, tmp_path):
         wiki = _make_wiki(tmp_path)
         (wiki / "themes").mkdir()
         (wiki / "themes" / "ai-capex.md").write_text("# AI CAPEX")
 
         result = check_index_sync(wiki)
 
-        assert any("themes/ai-capex.md not mentioned in index.md" in issue for issue in result)
+        assert not any("themes/ai-capex.md not mentioned in index.md" in issue for issue in result)
 
     def test_missing_index_md(self, tmp_path):
         wiki = tmp_path / "wiki"

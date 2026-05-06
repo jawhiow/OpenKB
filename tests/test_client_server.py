@@ -734,7 +734,7 @@ def test_lint_fix_plan_job_extracts_candidates_without_writing_pages(tmp_path):
 
 def test_lint_fix_plan_job_matches_prioritized_report_items_and_includes_previews(tmp_path):
     kb_dir = _make_kb(tmp_path)
-    for folder in ("companies", "industries", "themes", "metrics", "risks", "explorations"):
+    for folder in ("companies", "industries", "explorations"):
         (kb_dir / "wiki" / folder).mkdir()
     report_path = kb_dir / "wiki" / "reports" / "lint_20260503_143448.md"
     report_path.write_text(
@@ -848,7 +848,7 @@ def test_lint_apply_fixes_job_creates_only_explicitly_approved_draft_pages(tmp_p
 
 def test_lint_apply_fixes_job_creates_approved_company_and_schema_drafts(tmp_path):
     kb_dir = _make_kb(tmp_path)
-    for folder in ("companies", "industries", "themes", "metrics", "risks"):
+    for folder in ("companies", "industries"):
         (kb_dir / "wiki" / folder).mkdir()
     registry = JobRegistry()
     client = TestClient(create_app(registry=registry))

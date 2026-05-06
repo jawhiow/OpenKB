@@ -831,7 +831,7 @@ function renderOverview() {
         <header>
           <div>
             <h3>Investment Map</h3>
-            <span class="muted-text">Companies, themes, metrics, risks</span>
+            <span class="muted-text">Companies, industries, concepts</span>
           </div>
           <button type="button" data-view-target="wiki">Open</button>
         </header>
@@ -875,9 +875,6 @@ function investmentMap(dirs) {
   const rows = [
     ["Companies", dirs.companies ?? 0],
     ["Industries", dirs.industries ?? 0],
-    ["Themes", dirs.themes ?? 0],
-    ["Metrics", dirs.metrics ?? 0],
-    ["Risks", dirs.risks ?? 0],
     ["Concepts", dirs.concepts ?? 0],
   ];
   return `
@@ -904,9 +901,6 @@ const sourceRelationGroupLabels = [
   ["summaries", "Summaries"],
   ["companies", "Companies"],
   ["industries", "Industries"],
-  ["themes", "Themes"],
-  ["metrics", "Metrics"],
-  ["risks", "Risks"],
   ["concepts", "Concepts"],
 ];
 

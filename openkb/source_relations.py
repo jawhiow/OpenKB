@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 
-GENERATED_PAGE_DIRS = ("companies", "industries", "themes", "metrics", "risks", "concepts")
+GENERATED_PAGE_DIRS = ("companies", "industries", "concepts")
+LEGACY_GENERATED_PAGE_DIRS = ("themes", "metrics", "risks")
+ALL_MANAGED_PAGE_DIRS = (*GENERATED_PAGE_DIRS, *LEGACY_GENERATED_PAGE_DIRS)
 RELATED_PAGE_GROUPS = ("summaries", *GENERATED_PAGE_DIRS)
 
 _SOURCE_LIST_RE = re.compile(r"^sources:\s*\[(.*?)\]\s*$", re.MULTILINE)
@@ -321,7 +323,7 @@ def delete_source_document(kb_dir: Path, selector: str) -> dict[str, Any]:
         summary_path.unlink()
         removed_pages.append(source_summary)
 
-    for subdir in GENERATED_PAGE_DIRS:
+    for subdir in ALL_MANAGED_PAGE_DIRS:
         pages_dir = wiki_dir / subdir
         if not pages_dir.exists():
             continue

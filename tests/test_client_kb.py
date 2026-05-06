@@ -98,9 +98,6 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
                 ],
                 "companies": [],
                 "industries": [],
-                "themes": [],
-                "metrics": [],
-                "risks": [],
                 "concepts": [
                     {"path": "concepts/retrieval.md", "page": "concepts/retrieval", "title": "retrieval", "shared": False}
                 ],
@@ -122,9 +119,6 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
                 "summaries": [],
                 "companies": [],
                 "industries": [],
-                "themes": [],
-                "metrics": [],
-                "risks": [],
                 "concepts": [],
             },
         },

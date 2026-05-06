@@ -27,9 +27,9 @@ def test_init_creates_structure(tmp_path):
         assert (cwd / "wiki" / "concepts").is_dir()
         assert (cwd / "wiki" / "companies").is_dir()
         assert (cwd / "wiki" / "industries").is_dir()
-        assert (cwd / "wiki" / "themes").is_dir()
-        assert (cwd / "wiki" / "metrics").is_dir()
-        assert (cwd / "wiki" / "risks").is_dir()
+        assert not (cwd / "wiki" / "themes").exists()
+        assert not (cwd / "wiki" / "metrics").exists()
+        assert not (cwd / "wiki" / "risks").exists()
         assert (cwd / ".openkb").is_dir()
 
         # Files
@@ -53,9 +53,6 @@ def test_init_creates_structure(tmp_path):
             "## Documents\n\n"
             "## Companies\n\n"
             "## Industries\n\n"
-            "## Themes\n\n"
-            "## Metrics\n\n"
-            "## Risks\n\n"
             "## Concepts\n\n"
             "## Explorations\n"
         )
@@ -74,9 +71,11 @@ def test_init_schema_content(tmp_path):
         assert "companies/" in agents_content
         assert "Company Page" in agents_content
         assert "industries/" in agents_content
-        assert "themes/" in agents_content
-        assert "metrics/" in agents_content
-        assert "risks/" in agents_content
+        assert "themes/" not in agents_content
+        assert "metrics/" not in agents_content
+        assert "risks/" not in agents_content
+        assert "must be an actual company" in agents_content
+        assert "must be a real industry" in agents_content
 
 
 def test_init_already_exists(tmp_path):

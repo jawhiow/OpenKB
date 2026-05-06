@@ -47,12 +47,13 @@ class TestBuildQueryAgent:
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
         assert "Read company pages (companies/)" in agent.instructions
 
-    def test_instructions_read_expanded_investment_schema_pages(self, tmp_path):
+    def test_instructions_read_active_investment_schema_pages(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
         assert "industries/" in agent.instructions
-        assert "themes/" in agent.instructions
-        assert "metrics/" in agent.instructions
-        assert "risks/" in agent.instructions
+        assert "themes/" not in agent.instructions
+        assert "metrics/" not in agent.instructions
+        assert "risks/" not in agent.instructions
+        assert "including reusable themes, metrics, risks" in agent.instructions
 
     def test_schema_in_instructions(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
