@@ -1508,6 +1508,57 @@ function inlineMarkdown(text) {
     .replace(/\[\[([^\]]+)\]\]/g, "<code>[[$1]]</code>");
 }
 
+function splitMarkdownTableRow(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.includes("|")) return null;
+
+  let body = trimmed;
+  if (body.startsWith("|")) body = body.slice(1);
+  if (body.endsWith("|")) body = body.slice(0, -1);
+
+  const cells = [];
+  let current = "";
+  let escaped = false;
+  for (const char of body) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function isMarkdownTableDivider(line, columnCount) {
+  const cells = splitMarkdownTableRow(line);
+  if (!cells || cells.length !== columnCount) return false;
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function isMarkdownTableRow(line, columnCount) {
+  const cells = splitMarkdownTableRow(line);
+  return Boolean(cells && cells.length === columnCount);
+}
+
+function renderMarkdownTable(headerCells, bodyRows) {
+  const header = headerCells.map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join("");
+  const rows = bodyRows
+    .map((row) => `<tr>${row.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join("")}</tr>`)
+    .join("");
+  return `<table><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 function renderMarkdown(markdown) {
   const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
   const html = [];
@@ -1520,33 +1571,51 @@ function renderMarkdown(markdown) {
     listType = null;
   };
 
-  lines.forEach((line) => {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
     const trimmed = line.trim();
     if (trimmed.startsWith("```")) {
       closeList();
       html.push(inCode ? "</code></pre>" : "<pre><code>");
       inCode = !inCode;
-      return;
+      continue;
     }
     if (inCode) {
       html.push(`${escapeHTML(line)}\n`);
-      return;
+      continue;
     }
     if (!trimmed) {
       closeList();
-      return;
+      continue;
+    }
+    const tableHeader = splitMarkdownTableRow(line);
+    if (
+      tableHeader
+      && i + 1 < lines.length
+      && isMarkdownTableDivider(lines[i + 1], tableHeader.length)
+    ) {
+      closeList();
+      const bodyRows = [];
+      i += 2;
+      while (i < lines.length && isMarkdownTableRow(lines[i], tableHeader.length)) {
+        bodyRows.push(splitMarkdownTableRow(lines[i]));
+        i += 1;
+      }
+      i -= 1;
+      html.push(renderMarkdownTable(tableHeader, bodyRows));
+      continue;
     }
     const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
     if (heading) {
       closeList();
       const level = heading[1].length;
       html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
-      return;
+      continue;
     }
     if (/^[-*_]{3,}$/.test(trimmed)) {
       closeList();
       html.push("<hr />");
-      return;
+      continue;
     }
     const unordered = /^[-*]\s+(.+)$/.exec(trimmed);
     if (unordered) {
@@ -1556,7 +1625,7 @@ function renderMarkdown(markdown) {
         html.push("<ul>");
       }
       html.push(`<li>${inlineMarkdown(unordered[1])}</li>`);
-      return;
+      continue;
     }
     const ordered = /^\d+\.\s+(.+)$/.exec(trimmed);
     if (ordered) {
@@ -1566,16 +1635,16 @@ function renderMarkdown(markdown) {
         html.push("<ol>");
       }
       html.push(`<li>${inlineMarkdown(ordered[1])}</li>`);
-      return;
+      continue;
     }
     if (trimmed.startsWith(">")) {
       closeList();
       html.push(`<blockquote>${inlineMarkdown(trimmed.replace(/^>\s?/, ""))}</blockquote>`);
-      return;
+      continue;
     }
     closeList();
     html.push(`<p>${inlineMarkdown(trimmed)}</p>`);
-  });
+  }
   closeList();
   if (inCode) html.push("</code></pre>");
   return html.join("");

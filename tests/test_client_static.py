@@ -219,6 +219,20 @@ def test_client_wiki_uses_lazy_file_loading_and_markdown_mode_tabs():
     assert "loadWikiFile();" not in script
 
 
+def test_client_wiki_markdown_preview_supports_tables():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "function splitMarkdownTableRow" in script
+    assert "function isMarkdownTableDivider" in script
+    assert "function renderMarkdownTable" in script
+    assert "<thead><tr>" in script
+    assert "<tbody>" in script
+    assert ".wiki-preview-pane table" in styles
+    assert ".wiki-preview-pane th," in styles
+    assert ".wiki-preview-pane td" in styles
+
+
 def test_client_styles_define_workbench_table_and_utility_primitives():
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
 

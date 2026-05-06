@@ -1293,8 +1293,30 @@ th {
 .wiki-preview-pane ul,
 .wiki-preview-pane ol,
 .wiki-preview-pane blockquote,
-.wiki-preview-pane pre {
+.wiki-preview-pane pre,
+.wiki-preview-pane table {
   margin: 0 0 12px;
+}
+
+.wiki-preview-pane table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.wiki-preview-pane th,
+.wiki-preview-pane td {
+  border: 1px solid var(--line);
+  padding: 7px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.wiki-preview-pane th {
+  background: #f5f8f7;
+  color: var(--text);
+  font-weight: 700;
 }
 
 .wiki-preview-pane ul,
