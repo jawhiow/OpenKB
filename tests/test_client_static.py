@@ -42,6 +42,16 @@ def test_client_script_renders_job_progress_logs_and_busy_buttons():
     assert "`/api/jobs/${jobId}/retry`" in script
 
 
+def test_client_job_details_preserves_log_scroll_during_refresh():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "function jobLogScrollSnapshot" in script
+    assert "function restoreJobLogScroll" in script
+    assert "const logScroll = jobLogScrollSnapshot();" in script
+    assert "restoreJobLogScroll(logScroll);" in script
+    assert "log.scrollTop = snapshot.top;" in script
+
+
 def test_client_ask_persists_and_reopens_chat_sessions():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 

@@ -26,6 +26,60 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260506-005] node_playwright_module_missing
+
+**Logged**: 2026-05-06T09:06:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: frontend
+
+### Summary
+Ad hoc Node browser verification failed because the repository does not have a local `playwright` npm module installed.
+
+### Error
+```text
+Error: Cannot find module 'playwright'
+```
+
+### Context
+- Operation attempted: `node -` script requiring `playwright` to verify Jobs log scroll behavior against static HTML.
+- The Python test suite and static tests still run normally.
+
+### Suggested Fix
+Use the configured Playwright MCP when available, or run verification through `npx --package playwright` / an existing bundled browser dependency instead of assuming a local npm dependency.
+
+### Metadata
+- Reproducible: yes
+- Related Files: openkb/client/static/app.js
+
+---
+## [ERR-20260506-004] playwright_mcp_browser_profile_in_use
+
+**Logged**: 2026-05-06T09:05:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: frontend
+
+### Summary
+Playwright MCP refused a browser code verification because the shared browser profile was already in use.
+
+### Error
+```text
+Browser is already in use for C:\Users\yt_wa\AppData\Local\ms-playwright\mcp-chrome-b6f5f4d, use --isolated to run multiple instances of the same browser
+```
+
+### Context
+- Operation attempted: DOM-level verification that the Jobs log panel preserves scroll position after `renderJobsPanel()`.
+- The MCP tool schema exposed no `--isolated` option for this call.
+
+### Suggested Fix
+When the Playwright MCP browser profile is locked, use an independent Playwright process with a temporary user data directory, or close/restart the MCP browser before retrying.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: openkb/client/static/app.js
+
+---
 ## [ERR-20260506-003] rg_access_denied_in_codex_desktop
 
 **Logged**: 2026-05-06T08:34:00+08:00

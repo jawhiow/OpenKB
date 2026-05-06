@@ -515,6 +515,28 @@ function jobFilterButton(filter, label) {
   return `<button class="${active.trim()}" type="button" data-action="job-filter" data-job-filter="${escapeHTML(filter)}">${escapeHTML(label)} ${escapeHTML(count)}</button>`;
 }
 
+function jobLogScrollSnapshot() {
+  const log = $("#jobLogList");
+  if (!log || !state.selectedJobId) return null;
+  const bottomGap = log.scrollHeight - log.clientHeight - log.scrollTop;
+  return {
+    jobId: state.selectedJobId,
+    top: log.scrollTop,
+    stickToBottom: bottomGap <= 4,
+  };
+}
+
+function restoreJobLogScroll(snapshot) {
+  if (!snapshot || snapshot.jobId !== state.selectedJobId) return;
+  const log = $("#jobLogList");
+  if (!log) return;
+  if (snapshot.stickToBottom) {
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
+  log.scrollTop = snapshot.top;
+}
+
 function renderJobsPanel() {
   const list = $("#jobsList");
   if (!list) return;
@@ -568,6 +590,7 @@ function renderJobsPanel() {
 function renderJobDetails() {
   const details = $("#jobDetails");
   if (!details) return;
+  const logScroll = jobLogScrollSnapshot();
   if (!state.jobs.length) {
     details.className = "job-details compact";
     details.innerHTML = `
@@ -619,6 +642,7 @@ function renderJobDetails() {
       }
     </div>
   `;
+  restoreJobLogScroll(logScroll);
 }
 
 function renderUtilityPanel() {
