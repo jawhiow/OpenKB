@@ -68,6 +68,20 @@ def test_client_ask_persists_and_reopens_chat_sessions():
     assert "Continue in Assistant" in script
 
 
+def test_client_ask_streams_answers_and_renders_references():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "async function streamQuery" in script
+    assert '"/api/query/stream"' in script
+    assert "response.body.getReader()" in script
+    assert "function handleQueryStreamEvent" in script
+    assert 'case "delta"' in script
+    assert 'case "done"' in script
+    assert "function renderQueryReferences" in script
+    assert "state.activeQueryReferences" in script
+    assert "Referenced files" in script
+
+
 def test_client_script_has_bounded_rendering_and_selective_refresh():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
@@ -262,6 +276,31 @@ def test_client_settings_support_llm_profile_switching():
     assert "active_profile" in script
     assert ".profile-list" in styles
     assert ".profile-button.active" in styles
+
+
+def test_client_settings_renders_model_pool_cards_and_probe_actions():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "modelPool: null" in script
+    assert 'settingsTab: "model-pool"' in script
+    assert "function loadModelPool" in script
+    assert "function renderModelPool" in script
+    assert "function renderModelPoolCard" in script
+    assert "function probeModelPoolProfile" in script
+    assert "function probeAllModelPool" in script
+    assert '"/api/model-pool"' in script
+    assert '`/api/model-pool/profiles/${encodeURIComponent(profileId)}/probe`' in script
+    assert 'data-action="settings-tab"' in script
+    assert 'data-settings-tab="model-pool"' in script
+    assert 'data-model-pool-search' in script
+    assert 'data-model-health-filter' in script
+    assert 'class="model-pool-grid"' in script
+    assert ".settings-tabs" in styles
+    assert ".model-pool-toolbar" in styles
+    assert ".model-pool-grid" in styles
+    assert ".model-pool-card" in styles
+    assert ".model-health-dot" in styles
 
 
 def test_client_settings_exposes_general_save_button():

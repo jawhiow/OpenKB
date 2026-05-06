@@ -53,6 +53,9 @@ _GENERAL_CONFIG_KEYS = {
     "pageindex_local_installation_state",
 }
 _PROFILE_CONFIG_KEYS = {"model", "wire_api", "base_url"}
+_PROFILE_LIST_KEYS = {"tags", "features", "probe_models"}
+_PROFILE_BOOL_KEYS = {"enabled"}
+_PROFILE_INT_KEYS = {"priority"}
 _DEFAULT_PROFILE_ID = "default"
 _CONFIG_EXPORT_FORMAT = "openkb.settings-config.v1"
 _PADDLEOCR_TOKEN_ENV = "PADDLEOCR_TOKEN"
@@ -461,15 +464,45 @@ def _profile_env_key(profile_id: str) -> str:
     return f"OPENKB_LLM_PROFILE_{env_id}_API_KEY"
 
 
-def _normalize_profile(raw: dict[str, Any], fallback_id: str, config: dict[str, Any]) -> dict[str, str]:
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
+def _normalize_profile(raw: dict[str, Any], fallback_id: str, config: dict[str, Any]) -> dict[str, Any]:
     profile_id = str(raw.get("id") or fallback_id or _DEFAULT_PROFILE_ID).strip() or _DEFAULT_PROFILE_ID
+    model = str(raw.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip()
+    probe_models = _string_list(raw.get("probe_models")) or [model]
+    raw_models = raw.get("models")
+    models: list[dict[str, Any]] = []
+    if isinstance(raw_models, list):
+        for item in raw_models:
+            if isinstance(item, dict):
+                name = str(item.get("name") or item.get("model") or "").strip()
+                weight = max(int(item.get("weight") or 100), 1)
+            else:
+                name = str(item or "").strip()
+                weight = 100
+            if name:
+                models.append({"name": name, "weight": weight})
+    if not models:
+        models = [{"name": item, "weight": 100} for item in probe_models]
     return {
         "id": profile_id,
         "name": str(raw.get("name") or ("Default" if profile_id == _DEFAULT_PROFILE_ID else profile_id)).strip(),
-        "model": str(raw.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip(),
+        "model": model,
         "wire_api": str(raw.get("wire_api") or config.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
         "base_url": str(raw.get("base_url") or config.get("base_url") or DEFAULT_CONFIG.get("base_url", "")).strip().rstrip("/"),
         "api_key_env": str(raw.get("api_key_env") or _profile_env_key(profile_id)).strip(),
+        "enabled": bool(raw.get("enabled", True)),
+        "tags": _string_list(raw.get("tags")),
+        "features": _string_list(raw.get("features")),
+        "probe_models": probe_models,
+        "models": models,
+        "priority": int(raw.get("priority") or 50),
     }
 
 
@@ -586,6 +619,12 @@ def _persist_profiles(config: dict[str, Any], profiles: list[dict[str, str]], ac
             "wire_api": profile["wire_api"],
             "base_url": profile["base_url"],
             "api_key_env": profile["api_key_env"],
+            "enabled": bool(profile.get("enabled", True)),
+            "tags": list(profile.get("tags") or []),
+            "features": list(profile.get("features") or []),
+            "probe_models": list(profile.get("probe_models") or [profile["model"]]),
+            "models": list(profile.get("models") or [{"name": profile["model"], "weight": 100}]),
+            "priority": int(profile.get("priority") or 50),
         }
         for profile in profiles
     ]
@@ -650,6 +689,144 @@ def get_config_data(kb_dir: Path) -> dict[str, Any]:
         "active_profile": active_id,
         "profiles": _public_profiles(kb_dir, profiles, active_id),
     }
+
+
+def _model_pool_status_path(kb_dir: Path) -> Path:
+    return kb_dir / ".openkb" / "model-pool" / "status.json"
+
+
+def _load_model_pool_status(kb_dir: Path) -> dict[str, Any]:
+    path = _model_pool_status_path(kb_dir)
+    if not path.exists():
+        return {"profiles": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except json.JSONDecodeError:
+        return {"profiles": {}}
+    if not isinstance(data, dict):
+        return {"profiles": {}}
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict):
+        data["profiles"] = {}
+    return data
+
+
+def _save_model_pool_status(kb_dir: Path, status: dict[str, Any]) -> None:
+    path = _model_pool_status_path(kb_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _profile_model_pool_payload(
+    kb_dir: Path,
+    profile: dict[str, Any],
+    active_id: str,
+    status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile_status = dict(status or {})
+    health = str(profile_status.get("health") or ("unknown" if profile.get("enabled", True) else "disabled"))
+    return {
+        "id": profile["id"],
+        "name": profile["name"],
+        "model": profile["model"],
+        "wire_api": profile["wire_api"],
+        "base_url": profile["base_url"],
+        "enabled": bool(profile.get("enabled", True)),
+        "tags": list(profile.get("tags") or []),
+        "features": list(profile.get("features") or []),
+        "probe_models": list(profile.get("probe_models") or [profile["model"]]),
+        "priority": int(profile.get("priority") or 50),
+        "api_key": _profile_api_key(kb_dir, profile, active_id),
+        "api_key_configured": _profile_has_api_key(kb_dir, profile, active_id),
+        "is_active": profile["id"] == active_id,
+        "health": health,
+        "last_checked_at": str(profile_status.get("last_checked_at") or ""),
+        "latency_ms": profile_status.get("latency_ms"),
+        "consecutive_failures": int(profile_status.get("consecutive_failures") or 0),
+        "available_models": list(profile_status.get("available_models") or []),
+        "failed_models": dict(profile_status.get("failed_models") or {}),
+        "last_error": str(profile_status.get("last_error") or ""),
+    }
+
+
+def _model_pool_summary(profiles: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "total": len(profiles),
+        "healthy": 0,
+        "degraded": 0,
+        "offline": 0,
+        "disabled": 0,
+        "unknown": 0,
+    }
+    for profile in profiles:
+        health = str(profile.get("health") or "unknown")
+        if health in summary:
+            summary[health] += 1
+        else:
+            summary["unknown"] += 1
+    return summary
+
+
+def get_model_pool_data(kb_dir: Path) -> dict[str, Any]:
+    from openkb.model_pool import configured_routes
+
+    kb_dir = require_kb_dir(kb_dir)
+    config = load_config(kb_dir / ".openkb" / "config.yaml")
+    profiles, active_id = _normalize_profiles(config)
+    raw_status = _load_model_pool_status(kb_dir).get("profiles", {})
+    cards = [
+        _profile_model_pool_payload(kb_dir, profile, active_id, raw_status.get(profile["id"]) if isinstance(raw_status, dict) else None)
+        for profile in profiles
+    ]
+    pool_config = config.get("model_pool") if isinstance(config.get("model_pool"), dict) else {}
+    routes_by_profile: dict[str, list[dict[str, Any]]] = {}
+    for route in configured_routes(kb_dir):
+        routes_by_profile.setdefault(route.profile_id, []).append(
+            {
+                "id": route.route_id,
+                "profile_id": route.profile_id,
+                "model": route.model,
+                "weight": route.weight,
+                "health": route.health,
+                "latency_ms": route.latency_ms,
+                "base_url": route.base_url,
+                "wire_api": route.wire_api,
+            }
+        )
+    for card in cards:
+        card["routes"] = routes_by_profile.get(card["id"], [])
+    return {
+        "enabled": bool(pool_config.get("enabled", False)),
+        "strategy": str(pool_config.get("strategy") or "priority_then_latency"),
+        "probe_interval_seconds": int(pool_config.get("probe_interval_seconds") or 600),
+        "failure_threshold": int(pool_config.get("failure_threshold") or 3),
+        "timeout_seconds": int(pool_config.get("timeout_seconds") or 12),
+        "active_profile": active_id,
+        "summary": _model_pool_summary(cards),
+        "profiles": cards,
+    }
+
+
+def get_model_pool_profile(kb_dir: Path, profile_id: str) -> dict[str, Any]:
+    kb_dir = require_kb_dir(kb_dir)
+    config = load_config(kb_dir / ".openkb" / "config.yaml")
+    profiles, active_id = _normalize_profiles(config)
+    profile = _find_profile(profiles, str(profile_id).strip())
+    if profile is None:
+        raise ClientError(f"Unknown LLM profile: {profile_id}")
+    raw_status = _load_model_pool_status(kb_dir).get("profiles", {})
+    return _profile_model_pool_payload(kb_dir, profile, active_id, raw_status.get(profile["id"]) if isinstance(raw_status, dict) else None)
+
+
+def save_model_pool_profile_status(kb_dir: Path, profile_id: str, status_update: dict[str, Any]) -> dict[str, Any]:
+    kb_dir = require_kb_dir(kb_dir)
+    status = _load_model_pool_status(kb_dir)
+    profiles = status.setdefault("profiles", {})
+    current = dict(profiles.get(profile_id) or {})
+    current.update(status_update)
+    profiles[profile_id] = current
+    _save_model_pool_status(kb_dir, status)
+    return get_model_pool_profile(kb_dir, profile_id)
 
 
 def list_ocr_cache_entries(kb_dir: Path) -> dict[str, Any]:
@@ -944,6 +1121,15 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
             else:
                 value = str(value or "").strip()
             target_profile[key] = value
+        elif key in _PROFILE_LIST_KEYS:
+            values = _string_list(value)
+            if key == "probe_models" and not values:
+                values = [str(target_profile.get("model") or DEFAULT_CONFIG["model"])]
+            target_profile[key] = values
+        elif key in _PROFILE_BOOL_KEYS:
+            target_profile[key] = bool(value)
+        elif key in _PROFILE_INT_KEYS:
+            target_profile[key] = max(int(value or 0), 0)
         elif key in _GENERAL_CONFIG_KEYS:
             if key in {"pageindex_threshold", "compile_max_concurrency", "ocr_chunk_pages"}:
                 value = max(int(value), 1)

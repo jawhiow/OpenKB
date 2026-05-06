@@ -5,8 +5,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from agents.tool import ToolContext
 
-from openkb.agent.query import build_query_agent, run_query
+from openkb.agent.query import QueryReferenceTracker, build_query_agent, run_query
 from openkb.schema import SCHEMA_MD
 
 
@@ -67,6 +68,44 @@ class TestBuildQueryAgent:
         monkeypatch.setenv("OPENKB_WIRE_API", "responses")
         agent = build_query_agent(str(tmp_path), "my-model")
         assert agent.model == "my-model"
+
+    @pytest.mark.asyncio
+    async def test_reference_tracker_records_tool_reads(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        (wiki / "sources").mkdir(parents=True)
+        (wiki / "sources" / "images" / "paper").mkdir(parents=True)
+        (wiki / "AGENTS.md").write_text("Schema", encoding="utf-8")
+        (wiki / "index.md").write_text("# Index", encoding="utf-8")
+        (wiki / "sources" / "paper.json").write_text(
+            '[{"page": 2, "content": "Page two"}]',
+            encoding="utf-8",
+        )
+        (wiki / "sources" / "images" / "paper" / "p2.png").write_bytes(b"png")
+        tracker = QueryReferenceTracker()
+        agent = build_query_agent(str(wiki), "gpt-4o-mini", reference_tracker=tracker)
+        tools = {tool.name: tool for tool in agent.tools}
+        ctx = ToolContext(None, tool_name="test", tool_call_id="call_1", tool_arguments="{}")
+
+        await tools["read_file"].on_invoke_tool(ctx, '{"path":"index.md"}')
+        await tools["get_page_content"].on_invoke_tool(
+            ctx,
+            '{"doc_name":"paper","pages":"2"}',
+        )
+        await tools["get_image"].on_invoke_tool(
+            ctx,
+            '{"image_path":"sources/images/paper/p2.png"}',
+        )
+
+        assert tracker.references() == [
+            {"type": "wiki_file", "path": "index.md"},
+            {
+                "type": "source_pages",
+                "path": "sources/paper.json",
+                "doc_name": "paper",
+                "pages": "2",
+            },
+            {"type": "image", "path": "sources/images/paper/p2.png"},
+        ]
 
 
 class TestRunQuery:

@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
+from agents import RawResponsesStreamEvent
+from openai.types.responses import ResponseTextDeltaEvent
 
 from openkb.client.jobs import JobRegistry
 from openkb.client.server import create_app
@@ -64,6 +66,7 @@ def test_query_job_creates_persisted_chat_session_for_web_ask(tmp_path):
     assert job.result["answer"] == "first answer"
     assert job.result["session"]["id"]
     assert job.result["session_id"] == job.result["session"]["id"]
+    assert "references" in job.result
     session_path = kb_dir / ".openkb" / "chats" / f"{job.result['session_id']}.json"
     saved = json.loads(session_path.read_text(encoding="utf-8"))
     assert saved["title"] == "first question"
@@ -132,6 +135,66 @@ def test_query_job_resumes_existing_web_chat_session(tmp_path):
         {"role": "assistant", "content": "first answer"},
         {"role": "user", "content": "follow up"},
     ]
+
+
+def test_query_stream_returns_delta_done_session_and_references(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    client = TestClient(create_app())
+
+    class FakeStreamResult:
+        final_output = "Hello world"
+
+        async def stream_events(self):
+            yield RawResponsesStreamEvent(
+                data=ResponseTextDeltaEvent(
+                    content_index=0,
+                    delta="Hello",
+                    item_id="item_1",
+                    logprobs=[],
+                    output_index=0,
+                    sequence_number=1,
+                    type="response.output_text.delta",
+                )
+            )
+            yield RawResponsesStreamEvent(
+                data=ResponseTextDeltaEvent(
+                    content_index=0,
+                    delta=" world",
+                    item_id="item_1",
+                    logprobs=[],
+                    output_index=0,
+                    sequence_number=2,
+                    type="response.output_text.delta",
+                )
+            )
+
+        def to_input_list(self):
+            return [
+                {"role": "user", "content": "stream me"},
+                {"role": "assistant", "content": "Hello world"},
+            ]
+
+    with (
+        patch("openkb.cli._setup_llm_key"),
+        patch("openkb.agent.query.Runner.run_streamed", return_value=FakeStreamResult()),
+        patch("openkb.agent.query.QueryReferenceTracker.references") as refs,
+    ):
+        refs.return_value = [{"type": "wiki_file", "path": "index.md"}]
+        response = client.post(
+            "/api/query/stream",
+            json={"kb_dir": str(kb_dir), "question": "stream me"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    body = response.text
+    assert 'event: delta\ndata: {"text":"Hello"}' in body
+    assert 'event: delta\ndata: {"text":" world"}' in body
+    done_payload = json.loads(body.split("event: done\ndata: ", 1)[1].split("\n\n", 1)[0])
+    assert done_payload["answer"] == "Hello world"
+    assert done_payload["references"] == [{"type": "wiki_file", "path": "index.md"}]
+    assert done_payload["session"]["turn_count"] == 1
+    assert done_payload["session_id"] == done_payload["session"]["id"]
 
 
 def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monkeypatch):
@@ -788,6 +851,283 @@ def test_config_endpoint_can_create_and_switch_profiles(tmp_path):
     switched = switch_response.json()
     assert switched["active_profile"] == "default"
     assert switched["model"] == "gpt-5.4-mini"
+
+
+def test_model_pool_endpoint_merges_profiles_with_health_status(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: gpt-5.4-mini\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "llm_profiles:\n"
+        "  - id: gateway\n"
+        "    name: Gateway\n"
+        "    model: gpt-4o-mini\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://gateway.example.com/v1\n"
+        "    tags: [GPT, Fast]\n"
+        "    features: [chat]\n"
+        "    enabled: true\n"
+        "    probe_models: [gpt-4o-mini, gpt-5.4-mini]\n"
+        "active_llm_profile: gateway\n",
+        encoding="utf-8",
+    )
+    status_dir = kb_dir / ".openkb" / "model-pool"
+    status_dir.mkdir(parents=True)
+    (status_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "profiles": {
+                    "gateway": {
+                        "health": "degraded",
+                        "last_checked_at": "2026-05-06T11:42:08Z",
+                        "latency_ms": 812,
+                        "consecutive_failures": 1,
+                        "available_models": ["gpt-4o-mini"],
+                        "failed_models": {"gpt-5.4-mini": "model_not_found"},
+                        "last_error": "gpt-5.4-mini: model_not_found",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/model-pool", params={"kb_dir": str(kb_dir)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is False
+    assert body["active_profile"] == "gateway"
+    assert body["summary"]["total"] == 1
+    assert body["summary"]["degraded"] == 1
+    card = body["profiles"][0]
+    assert card["id"] == "gateway"
+    assert card["name"] == "Gateway"
+    assert card["base_url"] == "https://gateway.example.com/v1"
+    assert card["tags"] == ["GPT", "Fast"]
+    assert card["features"] == ["chat"]
+    assert card["probe_models"] == ["gpt-4o-mini", "gpt-5.4-mini"]
+    assert card["health"] == "degraded"
+    assert card["available_models"] == ["gpt-4o-mini"]
+    assert card["failed_models"] == {"gpt-5.4-mini": "model_not_found"}
+
+
+def test_model_pool_profile_probe_persists_status_without_deleting_config(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: gpt-5.4-mini\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "llm_profiles:\n"
+        "  - id: gateway\n"
+        "    name: Gateway\n"
+        "    model: gpt-4o-mini\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://gateway.example.com/v1\n"
+        "    enabled: true\n"
+        "    probe_models: [gpt-4o-mini, missing-model]\n"
+        "active_llm_profile: gateway\n",
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_test_llm(payload):
+        calls.append(payload)
+        if payload["model"] == "missing-model":
+            raise RuntimeError("model_not_found")
+        return {"ok": True, "latency_ms": 25}
+
+    monkeypatch.setattr("openkb.client.server._test_llm_config", fake_test_llm)
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/model-pool/profiles/gateway/probe",
+        json={"kb_dir": str(kb_dir)},
+    )
+
+    assert response.status_code == 200
+    job = registry.wait(response.json()["job"]["id"], timeout=2)
+    assert job is not None
+    assert job.status == "succeeded"
+    assert calls[0]["model"] == "gpt-4o-mini"
+    assert calls[0]["base_url"] == "https://gateway.example.com/v1"
+    assert calls[1]["model"] == "missing-model"
+    result = job.result["profile"]
+    assert result["health"] == "degraded"
+    assert result["available_models"] == ["gpt-4o-mini"]
+    assert result["failed_models"] == {"missing-model": "model_not_found"}
+    status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
+    assert status["profiles"]["gateway"]["health"] == "degraded"
+    config = (kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8")
+    assert "id: gateway" in config
+    assert "missing-model" in config
+
+
+def test_model_pool_probe_returns_direct_result_without_job(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: gpt-5.4-mini\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "llm_profiles:\n"
+        "  - id: gateway\n"
+        "    name: Gateway\n"
+        "    model: gpt-4o-mini\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://gateway.example.com/v1\n"
+        "    enabled: true\n"
+        "    models:\n"
+        "      - name: gpt-4o-mini\n"
+        "        weight: 100\n"
+        "      - name: missing-model\n"
+        "        weight: 50\n"
+        "active_llm_profile: gateway\n",
+        encoding="utf-8",
+    )
+
+    def fake_test_llm(payload):
+        if payload["model"] == "missing-model":
+            raise RuntimeError("model_not_found")
+        return {"ok": True, "latency_ms": 25}
+
+    monkeypatch.setattr("openkb.client.server._test_llm_config", fake_test_llm)
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+
+    response = client.post(
+        "/api/model-pool/profiles/gateway/probe",
+        json={"kb_dir": str(kb_dir)},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "job" not in body
+    assert registry.list_jobs() == []
+    assert body["profile"]["health"] == "degraded"
+    routes = {route["model"]: route for route in body["profile"]["routes"]}
+    assert routes["gpt-4o-mini"]["health"] == "healthy"
+    assert routes["gpt-4o-mini"]["weight"] == 100
+    assert routes["missing-model"]["health"] == "offline"
+    assert routes["missing-model"]["last_error"] == "model_not_found"
+
+
+def test_model_pool_routes_are_model_level_and_weighted_round_robin(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: gpt-5.4-mini\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "model_pool:\n"
+        "  enabled: true\n"
+        "  strategy: weighted_round_robin\n"
+        "llm_profiles:\n"
+        "  - id: gateway\n"
+        "    name: Gateway\n"
+        "    model: fallback-model\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://gateway.example.com/v1\n"
+        "    enabled: true\n"
+        "    models:\n"
+        "      - name: fast-model\n"
+        "        weight: 2\n"
+        "      - name: slow-model\n"
+        "        weight: 1\n"
+        "active_llm_profile: gateway\n",
+        encoding="utf-8",
+    )
+    from openkb.model_pool import record_route_success, select_model_route
+
+    record_route_success(kb_dir, "gateway", "fast-model", latency_ms=10)
+    record_route_success(kb_dir, "gateway", "slow-model", latency_ms=20)
+
+    first = select_model_route(kb_dir)
+    second = select_model_route(kb_dir)
+    third = select_model_route(kb_dir)
+    fourth = select_model_route(kb_dir)
+
+    assert [first.model, second.model, third.model, fourth.model] == [
+        "fast-model",
+        "fast-model",
+        "slow-model",
+        "fast-model",
+    ]
+
+
+def test_query_job_uses_model_pool_and_retries_after_runtime_failure(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: fallback-model\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "model_pool:\n"
+        "  enabled: true\n"
+        "  strategy: weighted_round_robin\n"
+        "llm_profiles:\n"
+        "  - id: primary\n"
+        "    name: Primary\n"
+        "    model: bad-model\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://bad.example.com/v1\n"
+        "    enabled: true\n"
+        "    models:\n"
+        "      - name: bad-model\n"
+        "        weight: 100\n"
+        "  - id: backup\n"
+        "    name: Backup\n"
+        "    model: good-model\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://good.example.com/v1\n"
+        "    enabled: true\n"
+        "    models:\n"
+        "      - name: good-model\n"
+        "        weight: 100\n"
+        "active_llm_profile: primary\n",
+        encoding="utf-8",
+    )
+    from openkb.model_pool import record_route_success
+
+    record_route_success(kb_dir, "primary", "bad-model", latency_ms=10)
+    record_route_success(kb_dir, "backup", "good-model", latency_ms=20)
+
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+    calls: list[str] = []
+
+    async def fake_run(agent, message, **kwargs):
+        calls.append(agent.model)
+        if "bad-model" in agent.model:
+            raise RuntimeError("upstream 500")
+        result = MagicMock()
+        result.final_output = "backup answer"
+        result.to_input_list.return_value = [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "backup answer"},
+        ]
+        return result
+
+    with (
+        patch("openkb.cli._setup_llm_key"),
+        patch("openkb.agent.query.Runner.run", side_effect=fake_run),
+        patch("openkb.client.server._test_llm_config", side_effect=RuntimeError("upstream 500")) as probe,
+    ):
+        response = client.post(
+            "/api/query",
+            json={"kb_dir": str(kb_dir), "question": "question"},
+        )
+        assert response.status_code == 200
+        job = registry.wait(response.json()["job"]["id"], timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.result["answer"] == "backup answer"
+    assert calls == ["litellm/bad-model", "litellm/good-model"]
+    assert probe.call_args.args[0]["model"] == "bad-model"
+    status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
+    assert status["routes"]["primary:bad-model"]["health"] == "offline"
+    assert status["routes"]["backup:good-model"]["health"] == "healthy"
 
 
 def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):

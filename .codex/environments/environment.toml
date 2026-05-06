@@ -9,3 +9,8 @@ script = ""
 name = "运行"
 icon = "run"
 command = "powershell -ExecutionPolicy Bypass -File .\\scripts\\openkb-client.ps1 restart"
+
+[[actions]]
+name = "停止"
+icon = "tool"
+command = "powershell -ExecutionPolicy Bypass -File .\\scripts\\openkb-client.ps1 stop"

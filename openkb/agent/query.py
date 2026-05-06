@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from agents import Agent, Runner, function_tool
 
@@ -52,7 +53,31 @@ If you cannot find relevant information, say so clearly.
 """
 
 
-def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent:
+class QueryReferenceTracker:
+    """Collect concrete wiki resources read during one query turn."""
+
+    def __init__(self) -> None:
+        self._seen: set[tuple[tuple[str, Any], ...]] = set()
+        self._references: list[dict[str, Any]] = []
+
+    def add(self, reference: dict[str, Any]) -> None:
+        key = tuple(sorted(reference.items()))
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self._references.append(reference)
+
+    def references(self) -> list[dict[str, Any]]:
+        return list(self._references)
+
+
+def build_query_agent(
+    wiki_root: str,
+    model: str,
+    language: str = "en",
+    *,
+    reference_tracker: QueryReferenceTracker | None = None,
+) -> Agent:
     """Build and return the Q&A agent."""
     schema_md = get_agents_md(Path(wiki_root))
     instructions = _QUERY_INSTRUCTIONS_TEMPLATE.format(schema_md=schema_md)
@@ -64,6 +89,8 @@ def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent
         Args:
             path: File path relative to wiki root (e.g. 'summaries/paper.md').
         """
+        if reference_tracker is not None:
+            reference_tracker.add({"type": "wiki_file", "path": path})
         return read_wiki_file(path, wiki_root)
 
     @function_tool
@@ -75,6 +102,15 @@ def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent
             doc_name: Document name (e.g. 'attention-is-all-you-need').
             pages: Page specification (e.g. '3-5,7,10-12').
         """
+        if reference_tracker is not None:
+            reference_tracker.add(
+                {
+                    "type": "source_pages",
+                    "path": f"sources/{doc_name}.json",
+                    "doc_name": doc_name,
+                    "pages": pages,
+                }
+            )
         return get_wiki_page_content(doc_name, pages, wiki_root)
 
     @function_tool
@@ -87,6 +123,8 @@ def build_query_agent(wiki_root: str, model: str, language: str = "en") -> Agent
         Args:
             image_path: Image path relative to wiki root (e.g. 'sources/images/doc/p1_img1.png').
         """
+        if reference_tracker is not None:
+            reference_tracker.add({"type": "image", "path": image_path})
         result = read_wiki_image(image_path, wiki_root)
         if result["type"] == "image":
             return ToolOutputImage(image_url=result["image_url"])
@@ -235,7 +273,7 @@ async def run_query_session(
     kb_dir: Path,
     model: str,
     session: object,
-) -> str:
+) -> dict[str, Any]:
     """Run one non-streaming Q&A turn and persist it to a chat session."""
     from agents import Runner
     from openkb.config import load_config
@@ -244,11 +282,67 @@ async def run_query_session(
     config = load_config(openkb_dir / "config.yaml")
     language: str = getattr(session, "language", "") or config.get("language", "en")
     wiki_root = str(kb_dir / "wiki")
-    agent = build_query_agent(wiki_root, model, language=language)
+    reference_tracker = QueryReferenceTracker()
+    agent = build_query_agent(
+        wiki_root,
+        model,
+        language=language,
+        reference_tracker=reference_tracker,
+    )
     new_input = getattr(session, "history", []) + [
         {"role": "user", "content": question}
     ]
     result = await Runner.run(agent, new_input, max_turns=MAX_TURNS)
     answer = result.final_output or ""
     session.record_turn(question, answer, result.to_input_list())
-    return answer
+    return {
+        "answer": answer,
+        "session": session,
+        "references": reference_tracker.references(),
+    }
+
+
+async def run_query_session_stream(
+    question: str,
+    kb_dir: Path,
+    model: str,
+    session: object,
+    on_delta: Any,
+) -> dict[str, Any]:
+    """Run one streaming Q&A turn, persist it, and return answer metadata."""
+    from agents import RawResponsesStreamEvent, Runner
+    from openai.types.responses import ResponseTextDeltaEvent
+    from openkb.config import load_config
+
+    openkb_dir = kb_dir / ".openkb"
+    config = load_config(openkb_dir / "config.yaml")
+    language: str = getattr(session, "language", "") or config.get("language", "en")
+    wiki_root = str(kb_dir / "wiki")
+    reference_tracker = QueryReferenceTracker()
+    agent = build_query_agent(
+        wiki_root,
+        model,
+        language=language,
+        reference_tracker=reference_tracker,
+    )
+    new_input = getattr(session, "history", []) + [
+        {"role": "user", "content": question}
+    ]
+    result = Runner.run_streamed(agent, new_input, max_turns=MAX_TURNS)
+    collected: list[str] = []
+    async for event in result.stream_events():
+        if isinstance(event, RawResponsesStreamEvent) and isinstance(
+            event.data,
+            ResponseTextDeltaEvent,
+        ):
+            text = event.data.delta
+            if text:
+                collected.append(text)
+                await on_delta(text)
+    answer = "".join(collected) if collected else result.final_output or ""
+    session.record_turn(question, answer, result.to_input_list())
+    return {
+        "answer": answer,
+        "session": session,
+        "references": reference_tracker.references(),
+    }

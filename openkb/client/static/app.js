@@ -4,7 +4,10 @@ const state = {
   status: null,
   documents: null,
   ocrCache: null,
+  modelPool: null,
   pageindexLocalStatus: null,
+  modelPoolSearch: "",
+  modelPoolHealthFilter: "all",
   sourceSearch: "",
   selectedSourceHash: null,
   wikiTree: [],
@@ -29,6 +32,7 @@ const state = {
   queryJobId: null,
   activeChatSessionId: null,
   activeChatSession: null,
+  activeQueryReferences: [],
   jobStatuses: {},
   loadingAll: false,
   ui: {
@@ -36,6 +40,7 @@ const state = {
     utilityCollapsed: false,
     jobFilter: "all",
     wikiMode: "preview",
+    settingsTab: "model-pool",
     pagination: {},
   },
 };
@@ -44,6 +49,7 @@ const $ = (selector) => document.querySelector(selector);
 const mainView = $("#mainView");
 const viewTitle = $("#viewTitle h2");
 const viewMeta = $("#viewMeta");
+let lastModelPoolAutoProbeAt = 0;
 
 const viewLabels = {
   overview: "Overview",
@@ -62,6 +68,7 @@ const jobLabels = {
   lint: "Lint",
   lint_fix_plan: "Fix Plan",
   lint_fix_apply: "Apply Fixes",
+  model_pool_probe: "Model Probe",
   query: "Query",
 };
 
@@ -88,7 +95,9 @@ function formatTime(value) {
 
 function activeProfile(config = state.config) {
   const profiles = config?.profiles || [];
-  return profiles.find((profile) => profile.id === config?.active_profile) || profiles.find((profile) => profile.is_active) || profiles[0] || null;
+  const profile = profiles.find((item) => item.id === state.selectedProfileId) || profiles.find((item) => item.id === config?.active_profile) || profiles.find((item) => item.is_active) || profiles[0] || null;
+  const poolProfile = state.modelPool?.profiles?.find((item) => item.id === profile?.id);
+  return profile && poolProfile ? { ...profile, ...poolProfile, api_key: profile.api_key, api_key_configured: profile.api_key_configured } : profile;
 }
 
 function jobProgress(job) {
@@ -203,7 +212,7 @@ function setError(message) {
 
 async function loadKnowledgeData() {
   if (!state.kbDir) return;
-  const [status, documents, tree, chats, config, ocrCache, pageindexLocalStatus] = await Promise.all([
+  const [status, documents, tree, chats, config, ocrCache, pageindexLocalStatus, modelPool] = await Promise.all([
     api(withKb("/api/status")),
     api(withKb("/api/documents")),
     api(withKb("/api/wiki/tree")),
@@ -211,6 +220,7 @@ async function loadKnowledgeData() {
     api(withKb("/api/config")),
     api(withKb("/api/ocr/cache")),
     api(withKb("/api/pageindex-local/status")),
+    api(withKb("/api/model-pool")),
   ]);
   state.status = status;
   state.documents = documents;
@@ -219,7 +229,28 @@ async function loadKnowledgeData() {
   state.config = config;
   state.ocrCache = ocrCache;
   state.pageindexLocalStatus = pageindexLocalStatus;
+  state.modelPool = modelPool;
   state.selectedProfileId = config?.active_profile || null;
+}
+
+async function loadModelPool() {
+  if (!state.kbDir) return;
+  state.modelPool = await api(withKb("/api/model-pool"));
+}
+
+async function autoProbeModelPool() {
+  if (!state.kbDir || !state.modelPool?.profiles?.length) return;
+  const interval = Math.max(Number(state.modelPool.probe_interval_seconds || 600), 60) * 1000;
+  if (Date.now() - lastModelPoolAutoProbeAt < interval) return;
+  lastModelPoolAutoProbeAt = Date.now();
+  try {
+    await api("/api/model-pool/probe", {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir }),
+    });
+  } catch (_) {
+    // Automatic probes stay quiet; explicit probes surface errors via notifications.
+  }
 }
 
 async function loadOcrData() {
@@ -259,6 +290,7 @@ async function loadAll(event) {
       state.status = null;
       state.documents = null;
       state.ocrCache = null;
+      state.modelPool = null;
       state.pageindexLocalStatus = null;
       state.wikiTree = [];
       state.chats = [];
@@ -310,7 +342,7 @@ function handleJobTransitions(previousStatuses) {
       if (job.type === "lint_fix_apply") {
         state.lastFixApply = job.result || null;
       }
-      shouldRefresh = shouldRefresh || ["add", "delete_source", "lint", "query", "lint_fix_apply"].includes(job.type);
+      shouldRefresh = shouldRefresh || ["add", "delete_source", "lint", "query", "lint_fix_apply", "model_pool_probe"].includes(job.type);
     } else if (job.status === "failed") {
       notify(job.error || `${jobLabels[job.type] || job.type} failed`, "error");
     } else if (job.status === "stopped") {
@@ -402,10 +434,33 @@ function renderChatTranscript(session = state.activeChatSession) {
   return lines.join("\n").trim();
 }
 
+function referenceLabel(reference) {
+  if (!reference) return "";
+  if (reference.type === "source_pages") {
+    return `${reference.path} pages ${reference.pages}`;
+  }
+  return reference.path || "";
+}
+
+function renderQueryReferences(references = state.activeQueryReferences) {
+  const items = Array.isArray(references) ? references : [];
+  if (!items.length) return "";
+  return [
+    "",
+    "Referenced files",
+    ...items.map((reference) => `- ${referenceLabel(reference)}`),
+  ].join("\n");
+}
+
+function renderAssistantAnswer(text = "", references = state.activeQueryReferences) {
+  const parts = [text || renderChatTranscript(), renderQueryReferences(references)].filter(Boolean);
+  $("#answerBox").textContent = parts.join("\n");
+}
+
 function setActiveChatSession(session) {
   state.activeChatSession = session || null;
   state.activeChatSessionId = session?.id || null;
-  if ($("#answerBox")) $("#answerBox").textContent = renderChatTranscript();
+  if ($("#answerBox")) renderAssistantAnswer();
 }
 
 async function openChatSession(sessionId) {
@@ -429,7 +484,8 @@ function handleQueryJob() {
   if (job.status === "succeeded") {
     state.activeChatSessionId = job.result?.session_id || state.activeChatSessionId;
     state.activeChatSession = job.result?.session || state.activeChatSession;
-    $("#answerBox").textContent = renderChatTranscript() || job.result?.answer || "";
+    state.activeQueryReferences = job.result?.references || [];
+    renderAssistantAnswer(renderChatTranscript() || job.result?.answer || "");
     state.queryJobId = null;
     loadKnowledgeData().then(() => {
       if (state.view === "sessions") renderSessions();
@@ -653,7 +709,7 @@ function renderUtilityPanel() {
   $("#assistantPanel")?.classList.toggle("active", activeTab === "assistant");
   renderJobsPanel();
   if (activeTab === "assistant" && state.activeChatSession) {
-    $("#answerBox").textContent = renderChatTranscript();
+    renderAssistantAnswer();
   }
 }
 
@@ -2025,6 +2081,33 @@ function handleAppClick(event) {
   if (action === "fixes-page") {
     setPage("fixes", target.dataset.page);
     renderReports();
+    return;
+  }
+  if (action === "settings-tab") {
+    state.ui.settingsTab = target.dataset.settingsTab || "model-pool";
+    renderSettings();
+    return;
+  }
+  if (action === "model-pool-page") {
+    setPage("model-pool", target.dataset.page);
+    renderSettings();
+    return;
+  }
+  if (action === "model-probe") {
+    probeModelPoolProfile(target.dataset.profileId, event);
+    return;
+  }
+  if (action === "model-edit") {
+    state.selectedProfileId = target.dataset.profileId;
+    renderSettings();
+    return;
+  }
+  if (action === "model-toggle") {
+    toggleModelPoolProfile(target.dataset.profileId, target.dataset.enabled !== "true", event);
+    return;
+  }
+  if (action === "model-active") {
+    switchProfile(target.dataset.profileId, event);
   }
 }
 
@@ -2044,6 +2127,21 @@ function handleAppInput(event) {
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
     }
+  }
+  if (target?.hasAttribute("data-model-pool-search")) {
+    state.modelPoolSearch = target.value;
+    resetPage("model-pool");
+    renderSettings();
+    const input = document.querySelector("[data-model-pool-search]");
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+  if (target?.hasAttribute("data-model-health-filter")) {
+    state.modelPoolHealthFilter = target.value || "all";
+    resetPage("model-pool");
+    renderSettings();
   }
 }
 
@@ -2099,6 +2197,204 @@ function toggleApiKeyVisibility() {
   }
 }
 
+function settingsTabs() {
+  const defaultTab = "model-pool"; // data-settings-tab="model-pool"
+  const tabs = [
+    [defaultTab, "Model Pool"],
+    ["general", "General"],
+  ];
+  return `
+    <div class="settings-tabs" role="tablist" aria-label="Settings pages">
+      ${tabs
+        .map(([id, label]) => {
+          const active = (state.ui.settingsTab || "model-pool") === id ? " active" : "";
+          return `<button class="${active.trim()}" type="button" data-action="settings-tab" data-settings-tab="${escapeHTML(id)}">${escapeHTML(label)}</button>`;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function modelPoolProfiles() {
+  const profiles = state.modelPool?.profiles || [];
+  const query = state.modelPoolSearch.trim().toLowerCase();
+  const health = state.modelPoolHealthFilter || "all";
+  return profiles.filter((profile) => {
+    const haystack = [
+      profile.name,
+      profile.id,
+      profile.model,
+      profile.base_url,
+      ...(profile.tags || []),
+      ...(profile.features || []),
+      ...(profile.probe_models || []),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return (!query || haystack.includes(query)) && (health === "all" || profile.health === health);
+  });
+}
+
+function modelHealthBadge(profile) {
+  const health = profile.health || "unknown";
+  const cls = health === "healthy" ? "good" : health === "offline" ? "bad" : health === "degraded" ? "warn" : "muted";
+  return `<span class="badge ${cls}"><span class="model-health-dot ${escapeHTML(health)}"></span>${escapeHTML(health)}</span>`;
+}
+
+function modelPoolStat(label, value) {
+  return `<div><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`;
+}
+
+function renderModelPoolCard(profile) {
+  const endpoint = profile.base_url || "(default provider)";
+  const models = profile.probe_models || [profile.model];
+  const active = profile.is_active ? " active" : "";
+  const disabled = profile.enabled === false;
+  return `
+    <article class="model-pool-card${active}" data-profile-card="${escapeHTML(profile.id)}">
+      <header>
+        <div class="model-avatar">${escapeHTML((profile.name || profile.id || "M").slice(0, 2))}</div>
+        <div class="model-card-title">
+          <strong>${escapeHTML(profile.name || profile.id)}</strong>
+          <span>${escapeHTML(profile.wire_api || "chat_completions")}</span>
+        </div>
+        ${modelHealthBadge(profile)}
+      </header>
+      <div class="model-tags">
+        ${(profile.tags || []).map((tag) => `<span>${escapeHTML(tag)}</span>`).join("")}
+        ${(profile.features || []).map((feature) => `<span>${escapeHTML(feature)}</span>`).join("")}
+        ${profile.api_key_configured ? `<span>key set</span>` : `<span>no key</span>`}
+      </div>
+      <p class="model-description">${escapeHTML(profile.last_error || (profile.is_active ? "Active profile" : "Available for pool probing"))}</p>
+      <div class="model-endpoint">
+        <span class="model-health-dot ${escapeHTML(profile.health || "unknown")}"></span>
+        <code>${escapeHTML(endpoint)}</code>
+      </div>
+      <div class="model-list">
+        ${models
+          .map((model) => {
+            const ok = (profile.available_models || []).includes(model);
+            const error = profile.failed_models?.[model];
+            return `
+              <div>
+                <span>${escapeHTML(model)}</span>
+                ${ok ? `<strong class="good-text">${escapeHTML(profile.latency_ms || "")}ms</strong>` : error ? `<strong class="bad-text">${escapeHTML(error)}</strong>` : `<strong class="muted-text">pending</strong>`}
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+      <footer>
+        <span>Checked ${escapeHTML(formatTime(profile.last_checked_at) || "never")}</span>
+        <div class="row-actions">
+          <button type="button" data-action="model-probe" data-profile-id="${escapeHTML(profile.id)}">Probe</button>
+          <button type="button" data-action="model-edit" data-profile-id="${escapeHTML(profile.id)}">Edit</button>
+          <button type="button" data-action="model-toggle" data-profile-id="${escapeHTML(profile.id)}" data-enabled="${disabled ? "false" : "true"}">${disabled ? "Enable" : "Disable"}</button>
+          ${profile.is_active ? `<span class="badge good">Active</span>` : `<button type="button" data-action="model-active" data-profile-id="${escapeHTML(profile.id)}">Set Active</button>`}
+        </div>
+      </footer>
+    </article>
+  `;
+}
+
+function renderModelPool() {
+  const pool = state.modelPool || { summary: {}, profiles: [] };
+  const page = paginatedItems(modelPoolProfiles(), "model-pool", 24);
+  return `
+    <section class="section model-pool-section">
+      <header>
+        <div>
+          <h3>Model Pool</h3>
+          <span class="muted-text">${escapeHTML(pool.summary?.healthy || 0)} healthy / ${escapeHTML(pool.summary?.total || 0)} profile(s)</span>
+        </div>
+        <div class="row-actions">
+          <button id="probeAllModelPoolBtn" type="button">Probe All</button>
+          <button id="addModelProfileBtn" class="primary" type="button">Add Profile</button>
+        </div>
+      </header>
+      <div class="model-pool-toolbar">
+        <input type="search" placeholder="Search sites or API base URL..." value="${escapeHTML(state.modelPoolSearch)}" data-model-pool-search />
+        <select data-model-health-filter>
+          <option value="all">All Health</option>
+          <option value="healthy">Healthy</option>
+          <option value="degraded">Degraded</option>
+          <option value="offline">Offline</option>
+          <option value="disabled">Disabled</option>
+          <option value="unknown">Unknown</option>
+        </select>
+        <div class="model-pool-summary">
+          ${modelPoolStat("Healthy", pool.summary?.healthy || 0)}
+          ${modelPoolStat("Degraded", pool.summary?.degraded || 0)}
+          ${modelPoolStat("Offline", pool.summary?.offline || 0)}
+        </div>
+      </div>
+      <div class="model-pool-grid">
+        ${page.items.length ? page.items.map(renderModelPoolCard).join("") : `<div class="empty">No matching model profiles</div>`}
+      </div>
+      ${renderPager(page.meta, "model-pool")}
+    </section>
+    ${renderModelProfileEditor(state.config || {}, activeProfile(state.config) || {})}
+  `;
+}
+
+function renderModelProfileEditor(cfg, profile) {
+  return `
+    <section class="section llm-profile-section">
+      <header>
+        <div>
+          <h3>Profile Configuration</h3>
+          <span class="muted-text">${escapeHTML(profile.name || profile.id || "New profile")} via ${escapeHTML(profile.wire_api || cfg.wire_api || "responses")}</span>
+        </div>
+        ${cfg.api_key_configured ? `<span class="badge good">Active key set</span>` : `<span class="badge warn">No active key</span>`}
+      </header>
+      <div class="section-body profile-config-grid">
+        ${renderProfileList(cfg)}
+        <div class="form-grid profile-editor">
+          <div class="field">
+            <label for="profileNameInput">Profile Name</label>
+            <input id="profileNameInput" type="text" value="${escapeHTML(profile.name || "Default")}" />
+          </div>
+          <div class="field">
+            <label for="modelInput">Model</label>
+            <input id="modelInput" type="text" value="${escapeHTML(profile.model || cfg.model || "gpt-5.4-mini")}" />
+          </div>
+          <div class="field">
+            <label for="wireApiInput">Wire API</label>
+            <select id="wireApiInput">
+              <option value="responses">responses</option>
+              <option value="chat_completions">chat_completions</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="baseUrlInput">Base URL</label>
+            <input id="baseUrlInput" type="url" value="${escapeHTML(profile.base_url || "")}" placeholder="https://api.example.com/v1" />
+          </div>
+          <div class="field">
+            <label for="profileTagsInput">Tags</label>
+            <input id="profileTagsInput" type="text" value="${escapeHTML((profile.tags || []).join(", "))}" placeholder="GPT, Gemini, Fast" />
+          </div>
+          <div class="field">
+            <label for="profileProbeModelsInput">Probe Models</label>
+            <input id="profileProbeModelsInput" type="text" value="${escapeHTML((profile.probe_models || [profile.model || cfg.model]).filter(Boolean).join(", "))}" />
+          </div>
+          <div class="field full">
+            <label for="apiKeyInput">API Key</label>
+            <div class="key-input-row">
+              <input id="apiKeyInput" type="password" value="${escapeHTML(profile.api_key || "")}" placeholder="Paste API key" />
+              <button id="toggleApiKeyBtn" type="button" aria-label="Show API key">Show</button>
+            </div>
+          </div>
+          <div class="row-actions full">
+            <button id="testLlmBtn" type="button">Probe this Profile</button>
+            <button id="saveNewProfileBtn" type="button">Save as New</button>
+            <button id="saveProfileBtn" class="primary" type="button">Save Profile</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderSettings() {
   const cfg = state.config || {};
   const runtime = state.pageindexLocalStatus || {};
@@ -2110,6 +2406,12 @@ function renderSettings() {
     base_url: cfg.base_url || "",
   };
   mainView.innerHTML = `
+    <div class="settings-page">
+      ${settingsTabs()}
+      ${
+        (state.ui.settingsTab || "model-pool") === "model-pool"
+          ? renderModelPool()
+          : `
     <div class="settings-grid">
       <section class="section">
         <header>
@@ -2267,43 +2569,71 @@ function renderSettings() {
         </div>
       </section>
     </div>
+      `
+      }
+    </div>
   `;
-  $("#wireApiInput").value = profile.wire_api || cfg.wire_api || "responses";
-  $("#ocrDetectionModeInput").value = cfg.ocr_detection_mode || "auto_recommend";
-  $("#ocrDefaultModelInput").value = cfg.ocr_default_model || "PaddleOCR-VL-1.5";
-  $("#pageindexLocalInstallationStateInput").value = cfg.pageindex_local_installation_state || "not_installed";
-  $("#useKbBtn").addEventListener("click", useKb);
-  $("#createKbBtn").addEventListener("click", createKb);
-  $("#saveSettingsBtn").addEventListener("click", saveSettings);
-  $("#testLlmBtn").addEventListener("click", testLlm);
-  $("#toggleApiKeyBtn").addEventListener("click", toggleApiKeyVisibility);
-  $("#exportProfilesBtn").addEventListener("click", exportLlmConfig);
-  $("#importProfilesBtn").addEventListener("click", () => $("#importProfilesInput").click());
-  $("#importProfilesInput").addEventListener("change", importLlmConfig);
-  $("#saveProfileBtn").addEventListener("click", saveConfig);
-  $("#saveNewProfileBtn").addEventListener("click", saveNewProfile);
+  if ($("#wireApiInput")) $("#wireApiInput").value = profile.wire_api || cfg.wire_api || "responses";
+  if ($("#ocrDetectionModeInput")) $("#ocrDetectionModeInput").value = cfg.ocr_detection_mode || "auto_recommend";
+  if ($("#ocrDefaultModelInput")) $("#ocrDefaultModelInput").value = cfg.ocr_default_model || "PaddleOCR-VL-1.5";
+  if ($("#pageindexLocalInstallationStateInput")) $("#pageindexLocalInstallationStateInput").value = cfg.pageindex_local_installation_state || "not_installed";
+  $("#useKbBtn")?.addEventListener("click", useKb);
+  $("#createKbBtn")?.addEventListener("click", createKb);
+  // $("#saveSettingsBtn").addEventListener("click", saveSettings);
+  $("#saveSettingsBtn")?.addEventListener("click", saveSettings);
+  $("#testLlmBtn")?.addEventListener("click", testLlm);
+  $("#toggleApiKeyBtn")?.addEventListener("click", toggleApiKeyVisibility);
+  $("#exportProfilesBtn")?.addEventListener("click", exportLlmConfig);
+  $("#importProfilesBtn")?.addEventListener("click", () => $("#importProfilesInput").click());
+  $("#importProfilesInput")?.addEventListener("change", importLlmConfig);
+  $("#saveProfileBtn")?.addEventListener("click", saveConfig);
+  $("#saveNewProfileBtn")?.addEventListener("click", saveNewProfile);
+  $("#probeAllModelPoolBtn")?.addEventListener("click", probeAllModelPool);
+  $("#addModelProfileBtn")?.addEventListener("click", () => {
+    state.selectedProfileId = null;
+    state.ui.settingsTab = "model-pool";
+    renderSettings();
+    $("#profileNameInput")?.focus();
+  });
+  const healthFilter = document.querySelector("[data-model-health-filter]");
+  if (healthFilter) healthFilter.value = state.modelPoolHealthFilter || "all";
   mainView.querySelectorAll("[data-profile-id]").forEach((button) => {
     button.addEventListener("click", (event) => switchProfile(button.dataset.profileId, event));
   });
 }
 
 function settingsPayload() {
+  const cfg = state.config || {};
   return {
-    language: $("#languageInput").value.trim(),
-    pageindex_threshold: Number($("#thresholdInput").value || 20),
-    compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
-    ocr_enabled: $("#ocrEnabledInput").checked,
-    ocr_detection_mode: $("#ocrDetectionModeInput").value,
-    ocr_default_model: $("#ocrDefaultModelInput").value,
-    ocr_chunk_pages: Number($("#ocrChunkPagesInput").value || 100),
-    ocr_auto_recommend: $("#ocrAutoRecommendInput").checked,
-    paddleocr_token: $("#paddleocrTokenInput").value,
-    pageindex_local_enabled: $("#pageindexLocalEnabledInput").checked,
-    pageindex_local_model: $("#pageindexLocalModelInput").value.trim(),
-    pageindex_local_installation_state: $("#pageindexLocalInstallationStateInput").value,
-    pageindex_local_repo_dir: $("#pageindexLocalRepoDirInput").value.trim(),
-    pageindex_local_python_path: $("#pageindexLocalPythonPathInput").value.trim(),
-    pageindex_local_script_path: $("#pageindexLocalScriptPathInput").value.trim(),
+    // language: $("#languageInput").value.trim()
+    language: $("#languageInput") ? $("#languageInput").value.trim() : cfg.language || "en",
+    pageindex_threshold: Number($("#thresholdInput")?.value || cfg.pageindex_threshold || 20),
+    // compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2)
+    compile_max_concurrency: Number($("#compileConcurrencyInput")?.value || cfg.compile_max_concurrency || 2),
+    // ocr_enabled: $("#ocrEnabledInput").checked
+    ocr_enabled: $("#ocrEnabledInput") ? $("#ocrEnabledInput").checked : cfg.ocr_enabled !== false,
+    // ocr_detection_mode: $("#ocrDetectionModeInput").value
+    ocr_detection_mode: $("#ocrDetectionModeInput")?.value || cfg.ocr_detection_mode || "auto_recommend",
+    // ocr_default_model: $("#ocrDefaultModelInput").value
+    ocr_default_model: $("#ocrDefaultModelInput")?.value || cfg.ocr_default_model || "PaddleOCR-VL-1.5",
+    // ocr_chunk_pages: Number($("#ocrChunkPagesInput").value || 100)
+    ocr_chunk_pages: Number($("#ocrChunkPagesInput")?.value || cfg.ocr_chunk_pages || 100),
+    // ocr_auto_recommend: $("#ocrAutoRecommendInput").checked
+    ocr_auto_recommend: $("#ocrAutoRecommendInput") ? $("#ocrAutoRecommendInput").checked : cfg.ocr_auto_recommend !== false,
+    // paddleocr_token: $("#paddleocrTokenInput").value
+    paddleocr_token: $("#paddleocrTokenInput")?.value || cfg.paddleocr_token || "",
+    // pageindex_local_enabled: $("#pageindexLocalEnabledInput").checked
+    pageindex_local_enabled: $("#pageindexLocalEnabledInput") ? $("#pageindexLocalEnabledInput").checked : Boolean(cfg.pageindex_local_enabled),
+    // pageindex_local_model: $("#pageindexLocalModelInput").value.trim()
+    pageindex_local_model: $("#pageindexLocalModelInput")?.value.trim() || cfg.pageindex_local_model || "",
+    // pageindex_local_installation_state: $("#pageindexLocalInstallationStateInput").value
+    pageindex_local_installation_state: $("#pageindexLocalInstallationStateInput")?.value || cfg.pageindex_local_installation_state || "not_installed",
+    // pageindex_local_repo_dir: $("#pageindexLocalRepoDirInput").value.trim()
+    pageindex_local_repo_dir: $("#pageindexLocalRepoDirInput")?.value.trim() || cfg.pageindex_local_repo_dir || "",
+    // pageindex_local_python_path: $("#pageindexLocalPythonPathInput").value.trim()
+    pageindex_local_python_path: $("#pageindexLocalPythonPathInput")?.value.trim() || cfg.pageindex_local_python_path || "",
+    // pageindex_local_script_path: $("#pageindexLocalScriptPathInput").value.trim()
+    pageindex_local_script_path: $("#pageindexLocalScriptPathInput")?.value.trim() || cfg.pageindex_local_script_path || "",
   };
 }
 
@@ -2506,13 +2836,15 @@ async function saveConfig(event, options = {}) {
       method: "PUT",
       body: JSON.stringify({
         kb_dir: state.kbDir,
-        profile_id: state.config?.active_profile,
+        profile_id: state.selectedProfileId || state.config?.active_profile,
         profile_name: $("#profileNameInput").value.trim(),
         ...(createProfile ? { create_profile: true } : {}),
         model: $("#modelInput").value.trim(),
         ...settingsPayload(),
         wire_api: $("#wireApiInput").value,
         base_url: $("#baseUrlInput").value.trim(),
+        tags: $("#profileTagsInput")?.value || "",
+        probe_models: $("#profileProbeModelsInput")?.value || $("#modelInput").value.trim(),
         api_key: $("#apiKeyInput").value,
       }),
     });
@@ -2573,6 +2905,60 @@ async function testLlm(event) {
   }
 }
 
+async function probeModelPoolProfile(profileId, event) {
+  if (!profileId || !state.kbDir) return;
+  const button = event?.currentTarget?.closest("button") || event?.target?.closest("button");
+  setButtonBusy(button, true, "Probing...");
+  try {
+    const result = await api(`/api/model-pool/profiles/${encodeURIComponent(profileId)}/probe`, {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir }),
+    });
+    trackJob(result.job, "Model profile probe queued");
+  } catch (error) {
+    notify(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function probeAllModelPool(event) {
+  const button = event?.currentTarget;
+  if (!state.kbDir) return;
+  setButtonBusy(button, true, "Probing...");
+  try {
+    const result = await api("/api/model-pool/probe", {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir }),
+    });
+    trackJob(result.job, "Model pool probe queued");
+  } catch (error) {
+    notify(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function toggleModelPoolProfile(profileId, enable, event) {
+  if (!profileId || !state.kbDir) return;
+  const button = event?.currentTarget?.closest("button") || event?.target?.closest("button");
+  setButtonBusy(button, true, enable ? "Enabling..." : "Disabling...");
+  try {
+    const result = await api(`/api/model-pool/profiles/${encodeURIComponent(profileId)}/${enable ? "enable" : "disable"}`, {
+      method: "POST",
+      body: JSON.stringify({ kb_dir: state.kbDir }),
+    });
+    state.config = result.config || state.config;
+    state.modelPool = result.model_pool || state.modelPool;
+    notify(enable ? "Profile enabled" : "Profile disabled", "success");
+    renderSettings();
+  } catch (error) {
+    notify(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
 function bindViewButtons() {
   mainView.querySelectorAll("[data-view-target]").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.viewTarget));
@@ -2586,6 +2972,77 @@ function switchView(view) {
   render();
 }
 
+function parseSseChunk(buffer, onEvent) {
+  let rest = buffer;
+  while (rest.includes("\n\n")) {
+    const index = rest.indexOf("\n\n");
+    const raw = rest.slice(0, index);
+    rest = rest.slice(index + 2);
+    const lines = raw.split("\n");
+    const event = (lines.find((line) => line.startsWith("event: ")) || "event: message").slice(7);
+    const data = lines
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => line.slice(6))
+      .join("\n");
+    if (data) onEvent(event, JSON.parse(data));
+  }
+  return rest;
+}
+
+function handleQueryStreamEvent(event, payload, liveText) {
+  switch (event) {
+    case "session":
+      state.activeChatSessionId = payload.session_id || state.activeChatSessionId;
+      return liveText;
+    case "delta": {
+      const next = liveText + (payload.text || "");
+      renderAssistantAnswer(next, state.activeQueryReferences);
+      return next;
+    }
+    case "done":
+      state.activeChatSessionId = payload.session_id || state.activeChatSessionId;
+      state.activeChatSession = payload.session || state.activeChatSession;
+      state.activeQueryReferences = payload.references || [];
+      renderAssistantAnswer(renderChatTranscript() || payload.answer || "", state.activeQueryReferences);
+      loadKnowledgeData().then(() => {
+        if (state.view === "sessions") renderSessions();
+      }).catch(() => {});
+      return payload.answer || liveText;
+    case "error":
+      throw new Error(payload.message || "Query failed");
+    default:
+      return liveText;
+  }
+}
+
+async function streamQuery(payload, onEvent) {
+  const response = await fetch("/api/query/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(response.statusText || "Query failed");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let liveText = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replaceAll("\r\n", "\n");
+    buffer = parseSseChunk(buffer, (event, data) => {
+      liveText = onEvent(event, data, liveText);
+    });
+  }
+  buffer += decoder.decode();
+  parseSseChunk(buffer, (event, data) => {
+    liveText = onEvent(event, data, liveText);
+  });
+  return liveText;
+}
+
 async function askQuestion(event) {
   const button = event?.currentTarget || $("#askBtn");
   const question = $("#questionInput").value.trim();
@@ -2593,21 +3050,21 @@ async function askQuestion(event) {
     notify(state.kbDir ? "Enter a question first." : "Select a knowledge base first.", "warning");
     return;
   }
-  $("#answerBox").textContent = "Queueing query...";
-  setButtonBusy(button, true, "Queueing...");
+  state.activeQueryReferences = [];
+  $("#answerBox").textContent = "";
+  setButtonBusy(button, true, "Asking...");
   try {
-    const result = await api("/api/query", {
-      method: "POST",
-      body: JSON.stringify({
+    state.ui.utilityTab = "assistant";
+    renderUtilityPanel();
+    await streamQuery(
+      {
         kb_dir: state.kbDir,
         question,
         session_id: state.activeChatSessionId,
         save: $("#saveQueryInput").checked,
-      }),
-    });
-    state.queryJobId = result.job.id;
-    trackJob(result.job, "Query queued");
-    renderQueryProgress(result.job);
+      },
+      handleQueryStreamEvent,
+    );
   } catch (error) {
     $("#answerBox").textContent = error.message;
     notify(error.message, "error");
@@ -2636,4 +3093,5 @@ $("#clearAnswerBtn").addEventListener("click", () => {
 });
 
 setInterval(loadJobs, 1200);
+setInterval(autoProbeModelPool, 60000);
 loadAll();

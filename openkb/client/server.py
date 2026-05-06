@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
+import time
 import webbrowser
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -24,7 +27,7 @@ def _import_web_dependencies():
     try:
         import uvicorn
         from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-        from fastapi.responses import FileResponse, Response
+        from fastapi.responses import FileResponse, Response, StreamingResponse
         from fastapi.staticfiles import StaticFiles
     except ModuleNotFoundError as exc:
         raise ClientDependencyError(
@@ -33,6 +36,7 @@ def _import_web_dependencies():
     # `create_app()` defines routes under postponed evaluation of annotations,
     # so FastAPI resolves names like `UploadFile` from module globals.
     globals()["UploadFile"] = UploadFile
+    globals()["StreamingResponse"] = StreamingResponse
     return FastAPI, File, FileResponse, HTTPException, Query, Response, StaticFiles, UploadFile, uvicorn
 
 
@@ -52,6 +56,11 @@ def _resolve_kb_dir(raw: str | None = None) -> Path:
     if default is None:
         raise kb_helpers.ClientError("No default knowledge base configured.")
     return kb_helpers.require_kb_dir(default)
+
+
+def _sse_event(name: str, payload: dict[str, Any]) -> str:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {name}\ndata: {data}\n\n"
 
 
 def _static_dir() -> Path:
@@ -197,6 +206,71 @@ def _test_llm_config(payload: dict[str, Any]) -> dict[str, Any]:
         **request_info,
         "response_text": result.text,
     }
+
+
+def _probe_model_pool_profile(target_kb: Path, profile_id: str) -> dict[str, Any]:
+    from openkb.model_pool import configured_routes, record_route_failure, record_route_success
+
+    profile = kb_helpers.get_model_pool_profile(target_kb, profile_id)
+    if not profile.get("enabled", True):
+        return kb_helpers.save_model_pool_profile_status(
+            target_kb,
+            profile_id,
+            {
+                "health": "disabled",
+                "last_checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "latency_ms": None,
+                "available_models": [],
+                "failed_models": {},
+                "last_error": "",
+            },
+        )
+
+    routes = [route for route in configured_routes(target_kb) if route.profile_id == profile_id]
+    available_models: list[str] = []
+    failed_models: dict[str, str] = {}
+    latencies: list[int] = []
+    for route in routes:
+        started = time.perf_counter()
+        try:
+            _test_llm_config(
+                {
+                    "kb_dir": str(target_kb),
+                    "model": route.model,
+                    "wire_api": route.wire_api,
+                    "base_url": route.base_url,
+                    "api_key": profile.get("api_key"),
+                }
+            )
+            latency = int((time.perf_counter() - started) * 1000)
+            available_models.append(route.model)
+            latencies.append(latency)
+            record_route_success(target_kb, route.profile_id, route.model, latency_ms=latency)
+        except Exception as exc:
+            failed_models[route.model] = str(exc).splitlines()[0]
+            record_route_failure(target_kb, route.profile_id, route.model, exc)
+
+    if available_models and failed_models:
+        health = "degraded"
+    elif available_models:
+        health = "healthy"
+    else:
+        health = "offline"
+    consecutive_failures = 0 if available_models else int(profile.get("consecutive_failures") or 0) + 1
+    last_error = "; ".join(f"{model}: {error}" for model, error in failed_models.items())
+    return kb_helpers.save_model_pool_profile_status(
+        target_kb,
+        profile_id,
+        {
+            "health": health,
+            "last_checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "latency_ms": min(latencies) if latencies else None,
+            "consecutive_failures": consecutive_failures,
+            "available_models": available_models,
+            "failed_models": failed_models,
+            "last_error": last_error,
+        },
+    )
 
 
 def create_app(registry: JobRegistry | None = None):
@@ -498,7 +572,7 @@ def create_app(registry: JobRegistry | None = None):
                 else ChatSession.new(target_kb, model, language)
             )
             _job.add_log("Running query")
-            answer = asyncio.run(
+            query_result = asyncio.run(
                 run_query_session(
                     question,
                     target_kb,
@@ -506,6 +580,7 @@ def create_app(registry: JobRegistry | None = None):
                     session,
                 )
             )
+            answer = query_result["answer"]
             _job.raise_if_stopped()
             if payload.get("save") and answer:
                 import re
@@ -523,10 +598,96 @@ def create_app(registry: JobRegistry | None = None):
                 "answer": answer,
                 "session_id": session.id,
                 "session": session.to_dict(),
+                "references": query_result["references"],
             }
 
         job = registry.submit("query", run, message=question)
         return {"job": job.to_dict()}
+
+    @app.post("/api/query/stream")
+    def query_stream(payload: dict[str, Any]):
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            question = str(payload["question"]).strip()
+            if not question:
+                raise ValueError("Question is required.")
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        async def events() -> AsyncIterator[str]:
+            try:
+                from openkb.agent.chat_session import ChatSession, load_session
+                from openkb.agent.query import run_query_session_stream
+                from openkb.cli import _setup_llm_key
+
+                config = load_config(target_kb / ".openkb" / "config.yaml")
+                _setup_llm_key(target_kb)
+                model = str(config.get("model", DEFAULT_CONFIG["model"]))
+                language = str(config.get("language", DEFAULT_CONFIG.get("language", "en")))
+                session_id = str(payload.get("session_id") or "").strip()
+                session = (
+                    load_session(target_kb, session_id)
+                    if session_id
+                    else ChatSession.new(target_kb, model, language)
+                )
+                yield _sse_event("session", {"session_id": session.id})
+
+                queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+                async def emit_delta(text: str) -> None:
+                    await queue.put(_sse_event("delta", {"text": text}))
+
+                async def run_query_task() -> None:
+                    try:
+                        result = await run_query_session_stream(
+                            question,
+                            target_kb,
+                            model,
+                            session,
+                            emit_delta,
+                        )
+                        answer = result["answer"]
+                        if payload.get("save") and answer:
+                            import re
+
+                            slug = re.sub(r"[^a-z0-9]+", "-", question.lower()).strip("-")[:60] or "query"
+                            explore_dir = target_kb / "wiki" / "explorations"
+                            explore_dir.mkdir(parents=True, exist_ok=True)
+                            explore_path = explore_dir / f"{slug}.md"
+                            explore_path.write_text(
+                                f"---\nquery: \"{question}\"\n---\n\n{answer}\n",
+                                encoding="utf-8",
+                            )
+                        await queue.put(
+                            _sse_event(
+                                "done",
+                                {
+                                    "answer": answer,
+                                    "session_id": session.id,
+                                    "session": session.to_dict(),
+                                    "references": result["references"],
+                                },
+                            )
+                        )
+                    except Exception as exc:
+                        await queue.put(_sse_event("error", {"message": str(exc)}))
+                    finally:
+                        await queue.put(None)
+
+                task = asyncio.create_task(run_query_task())
+                try:
+                    while True:
+                        item = await queue.get()
+                        if item is None:
+                            break
+                        yield item
+                finally:
+                    if not task.done():
+                        task.cancel()
+            except Exception as exc:
+                yield _sse_event("error", {"message": str(exc)})
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.get("/api/chats")
     def chats(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
@@ -617,6 +778,84 @@ def create_app(registry: JobRegistry | None = None):
     @app.get("/api/jobs")
     def jobs() -> dict[str, Any]:
         return {"jobs": [job.to_dict() for job in registry.list_jobs()]}
+
+    @app.get("/api/model-pool")
+    def model_pool(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            return kb_helpers.get_model_pool_data(_resolve_kb_dir(kb_dir))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.post("/api/model-pool/probe")
+    def model_pool_probe(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            pool = kb_helpers.get_model_pool_data(target_kb)
+            results = []
+            for profile in pool["profiles"]:
+                job.raise_if_stopped()
+                job.add_log(f"Probing model profile: {profile['name']}")
+                results.append(_probe_model_pool_profile(target_kb, profile["id"]))
+            return {
+                "profiles": results,
+                "model_pool": kb_helpers.get_model_pool_data(target_kb),
+            }
+
+        job = registry.submit("model_pool_probe", run, message="Probing model pool")
+        return {"job": job.to_dict()}
+
+    @app.post("/api/model-pool/profiles/{profile_id}/probe")
+    def model_pool_profile_probe(profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            kb_helpers.get_model_pool_profile(target_kb, profile_id)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            job.raise_if_stopped()
+            job.add_log(f"Probing model profile: {profile_id}")
+            profile = _probe_model_pool_profile(target_kb, profile_id)
+            return {
+                "profile": profile,
+                "model_pool": kb_helpers.get_model_pool_data(target_kb),
+            }
+
+        job = registry.submit("model_pool_probe", run, message=f"Probing model profile: {profile_id}")
+        return {"job": job.to_dict()}
+
+    @app.post("/api/model-pool/profiles/{profile_id}/enable")
+    def model_pool_profile_enable(profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            updates = dict(payload)
+            updates["profile_id"] = profile_id
+            updates["enabled"] = True
+            config = kb_helpers.update_config_data(target_kb, updates)
+            return {"config": config, "model_pool": kb_helpers.get_model_pool_data(target_kb)}
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.post("/api/model-pool/profiles/{profile_id}/disable")
+    def model_pool_profile_disable(profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            updates = dict(payload)
+            updates["profile_id"] = profile_id
+            updates["enabled"] = False
+            config = kb_helpers.update_config_data(target_kb, updates)
+            profile = kb_helpers.save_model_pool_profile_status(
+                target_kb,
+                profile_id,
+                {"health": "disabled", "available_models": [], "failed_models": {}, "last_error": ""},
+            )
+            return {"config": config, "profile": profile, "model_pool": kb_helpers.get_model_pool_data(target_kb)}
+        except Exception as exc:
+            raise translate_error(exc) from exc
 
     @app.get("/api/ocr/cache")
     def ocr_cache(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
