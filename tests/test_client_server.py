@@ -1012,6 +1012,65 @@ def test_model_pool_probe_returns_direct_result_without_job(tmp_path, monkeypatc
     assert routes["missing-model"]["last_error"] == "model_not_found"
 
 
+def test_model_pool_profile_crud_supports_multiple_models(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    client = TestClient(create_app())
+
+    created = client.post(
+        "/api/model-pool/profiles",
+        json={
+            "kb_dir": str(kb_dir),
+            "name": "Gateway",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v1",
+            "api_key": "gateway-secret",
+            "models": [
+                {"name": "fast-model", "weight": 2},
+                {"name": "slow-model", "weight": 1},
+            ],
+        },
+    )
+
+    assert created.status_code == 200
+    pool = created.json()["model_pool"]
+    gateway = next(profile for profile in pool["profiles"] if profile["name"] == "Gateway")
+    assert [route["model"] for route in gateway["routes"]] == ["fast-model", "slow-model"]
+    assert [route["weight"] for route in gateway["routes"]] == [2, 1]
+    assert gateway["api_key_configured"] is True
+
+    updated = client.put(
+        f"/api/model-pool/profiles/{gateway['id']}",
+        json={
+            "kb_dir": str(kb_dir),
+            "name": "Gateway Updated",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v2",
+            "models": [
+                {"name": "fast-model", "weight": 3},
+                {"name": "backup-model", "weight": 1},
+            ],
+        },
+    )
+
+    assert updated.status_code == 200
+    gateway = next(profile for profile in updated.json()["model_pool"]["profiles"] if profile["id"] == gateway["id"])
+    assert gateway["name"] == "Gateway Updated"
+    assert gateway["base_url"] == "https://gateway.example.com/v2"
+    assert [route["model"] for route in gateway["routes"]] == ["fast-model", "backup-model"]
+    assert [route["weight"] for route in gateway["routes"]] == [3, 1]
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/model-pool/profiles/{gateway['id']}",
+        json={"kb_dir": str(kb_dir)},
+    )
+
+    assert deleted.status_code == 200
+    assert gateway["id"] not in [profile["id"] for profile in deleted.json()["model_pool"]["profiles"]]
+    config = (kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8")
+    assert "Gateway Updated" not in config
+
+
 def test_model_pool_routes_are_model_level_and_weighted_round_robin(tmp_path):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".openkb" / "config.yaml").write_text(

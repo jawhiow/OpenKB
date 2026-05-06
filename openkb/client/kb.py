@@ -472,14 +472,10 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
-def _normalize_profile(raw: dict[str, Any], fallback_id: str, config: dict[str, Any]) -> dict[str, Any]:
-    profile_id = str(raw.get("id") or fallback_id or _DEFAULT_PROFILE_ID).strip() or _DEFAULT_PROFILE_ID
-    model = str(raw.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip()
-    probe_models = _string_list(raw.get("probe_models")) or [model]
-    raw_models = raw.get("models")
-    models: list[dict[str, Any]] = []
-    if isinstance(raw_models, list):
-        for item in raw_models:
+def _model_rows(value: Any, fallback_model: str = "") -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if isinstance(value, list):
+        for item in value:
             if isinstance(item, dict):
                 name = str(item.get("name") or item.get("model") or "").strip()
                 weight = max(int(item.get("weight") or 100), 1)
@@ -487,7 +483,20 @@ def _normalize_profile(raw: dict[str, Any], fallback_id: str, config: dict[str, 
                 name = str(item or "").strip()
                 weight = 100
             if name:
-                models.append({"name": name, "weight": weight})
+                rows.append({"name": name, "weight": weight})
+    elif isinstance(value, str):
+        for item in _string_list(value):
+            rows.append({"name": item, "weight": 100})
+    if not rows and fallback_model:
+        rows.append({"name": fallback_model, "weight": 100})
+    return rows
+
+
+def _normalize_profile(raw: dict[str, Any], fallback_id: str, config: dict[str, Any]) -> dict[str, Any]:
+    profile_id = str(raw.get("id") or fallback_id or _DEFAULT_PROFILE_ID).strip() or _DEFAULT_PROFILE_ID
+    model = str(raw.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip()
+    probe_models = _string_list(raw.get("probe_models")) or [model]
+    models = _model_rows(raw.get("models"), model)
     if not models:
         models = [{"name": item, "weight": 100} for item in probe_models]
     return {
@@ -609,7 +618,11 @@ def _public_profiles(kb_dir: Path, profiles: list[dict[str, str]], active_id: st
 
 
 def _persist_profiles(config: dict[str, Any], profiles: list[dict[str, str]], active_id: str) -> None:
-    active_profile = _find_profile(profiles, active_id) or profiles[0]
+    if profiles:
+        active_profile = _find_profile(profiles, active_id) or profiles[0]
+    else:
+        active_profile = _normalize_profile(config, _DEFAULT_PROFILE_ID, config)
+        profiles = [active_profile]
     config["active_llm_profile"] = active_profile["id"]
     config["llm_profiles"] = [
         {
@@ -631,6 +644,106 @@ def _persist_profiles(config: dict[str, Any], profiles: list[dict[str, str]], ac
     config["model"] = active_profile["model"]
     config["wire_api"] = active_profile["wire_api"]
     config["base_url"] = active_profile["base_url"]
+
+
+def _profile_updates_from_payload(profile: dict[str, Any], updates: dict[str, Any]) -> None:
+    if updates.get("name") is not None or updates.get("profile_name") is not None:
+        name = str(updates.get("name") if updates.get("name") is not None else updates.get("profile_name") or "").strip()
+        if name:
+            profile["name"] = name
+    for key in ("model", "wire_api", "base_url"):
+        if key not in updates:
+            continue
+        value = updates[key]
+        if key == "base_url":
+            value = str(value or "").strip().rstrip("/")
+        elif key == "wire_api":
+            value = str(value or "").strip().lower()
+        else:
+            value = str(value or "").strip()
+        profile[key] = value
+    for key in ("tags", "features", "probe_models"):
+        if key in updates:
+            profile[key] = _string_list(updates[key])
+    if "enabled" in updates:
+        profile["enabled"] = bool(updates["enabled"])
+    if "priority" in updates:
+        profile["priority"] = max(int(updates.get("priority") or 0), 0)
+    if "models" in updates:
+        models = _model_rows(updates.get("models"), str(profile.get("model") or ""))
+        if models:
+            profile["models"] = models
+            profile["probe_models"] = [item["name"] for item in models]
+            profile["model"] = models[0]["name"]
+
+
+def save_model_pool_profile(kb_dir: Path, payload: dict[str, Any], profile_id: str | None = None) -> dict[str, Any]:
+    kb_dir = require_kb_dir(kb_dir)
+    config_path = kb_dir / ".openkb" / "config.yaml"
+    config = load_config(config_path)
+    profiles, active_id = _normalize_profiles(config)
+    existing = {profile["id"]: profile for profile in profiles}
+
+    if profile_id:
+        target = existing.get(str(profile_id).strip())
+        if target is None:
+            raise ClientError(f"Unknown LLM profile: {profile_id}")
+    else:
+        profile_name = str(payload.get("name") or payload.get("profile_name") or payload.get("model") or "New Profile").strip()
+        new_id = _unique_profile_id(str(payload.get("id") or payload.get("profile_id") or profile_name), set(existing))
+        target = _normalize_profile(
+            {
+                "id": new_id,
+                "name": profile_name or new_id,
+                "model": str(payload.get("model") or DEFAULT_CONFIG["model"]).strip(),
+                "wire_api": str(payload.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
+                "base_url": str(payload.get("base_url") or "").strip().rstrip("/"),
+                "api_key_env": _profile_env_key(new_id),
+                "models": payload.get("models"),
+                "enabled": payload.get("enabled", True),
+            },
+            new_id,
+            config,
+        )
+        profiles.append(target)
+
+    _profile_updates_from_payload(target, payload)
+    if not target.get("models"):
+        target["models"] = _model_rows(None, str(target.get("model") or DEFAULT_CONFIG["model"]))
+    if not target.get("probe_models"):
+        target["probe_models"] = [item["name"] for item in target["models"]]
+
+    api_key = str(payload.get("api_key") or "").strip()
+    if api_key:
+        _write_profile_api_key(kb_dir, target, api_key)
+
+    _persist_profiles(config, profiles, active_id)
+    save_config(config_path, config)
+    return {"config": get_config_data(kb_dir), "model_pool": get_model_pool_data(kb_dir)}
+
+
+def delete_model_pool_profile(kb_dir: Path, profile_id: str) -> dict[str, Any]:
+    kb_dir = require_kb_dir(kb_dir)
+    profile_id = str(profile_id).strip()
+    config_path = kb_dir / ".openkb" / "config.yaml"
+    config = load_config(config_path)
+    profiles, active_id = _normalize_profiles(config)
+    remaining = [profile for profile in profiles if profile["id"] != profile_id]
+    if len(remaining) == len(profiles):
+        raise ClientError(f"Unknown LLM profile: {profile_id}")
+    next_active = active_id if active_id != profile_id and any(profile["id"] == active_id for profile in remaining) else (remaining[0]["id"] if remaining else _DEFAULT_PROFILE_ID)
+    _persist_profiles(config, remaining, next_active)
+    save_config(config_path, config)
+
+    status = _load_model_pool_status(kb_dir)
+    if isinstance(status.get("profiles"), dict):
+        status["profiles"].pop(profile_id, None)
+    if isinstance(status.get("routes"), dict):
+        for route_key in list(status["routes"]):
+            if str(route_key).startswith(f"{profile_id}:"):
+                status["routes"].pop(route_key, None)
+    _save_model_pool_status(kb_dir, status)
+    return {"config": get_config_data(kb_dir), "model_pool": get_model_pool_data(kb_dir)}
 
 
 def _ensure_profile_key_from_legacy(kb_dir: Path, profile: dict[str, str]) -> None:

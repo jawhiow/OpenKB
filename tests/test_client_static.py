@@ -151,12 +151,13 @@ def test_client_api_error_path_reads_response_body_once():
     assert "const body = await response.json();" not in script
 
 
-def test_client_settings_include_test_llm_button_and_handler():
+def test_client_settings_uses_model_pool_probe_instead_of_test_llm_button():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
-    assert 'id="testLlmBtn"' in script
-    assert 'addEventListener("click", testLlm);' in script
-    assert 'async function testLlm(event)' in script
+    assert 'id="testLlmBtn"' not in script
+    assert 'addEventListener("click", testLlm);' not in script
+    assert 'data-action="model-probe"' in script
+    assert 'id="probeAllModelPoolBtn"' in script
     assert '"/api/config/test-llm"' in script
 
 
@@ -250,32 +251,49 @@ def test_client_jobs_panel_uses_compact_details_without_fixed_empty_space():
     assert "min-height: 150px" not in styles
 
 
-def test_client_settings_support_llm_profile_switching():
+def test_client_settings_uses_model_pool_profile_dialogs():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
 
-    assert "renderProfileList" in script
-    assert 'id="compileConcurrencyInput"' in script
-    assert 'id="profileNameInput"' in script
-    assert 'id="saveProfileBtn"' in script
-    assert 'id="saveNewProfileBtn"' in script
-    assert 'id="exportProfilesBtn"' in script
-    assert 'id="importProfilesInput"' in script
+    assert "renderModelProfileDialog" in script
+    assert "openModelProfileDialog" in script
+    assert "saveModelPoolProfile" in script
+    assert "deleteModelPoolProfile" in script
+    assert 'onclick="event.stopPropagation()"' not in script
+    assert 'id="modelProfileNameInput"' in script
+    assert 'id="modelProfileModelsInput"' in script
     assert 'id="toggleApiKeyBtn"' in script
-    assert 'value="${escapeHTML(profile.api_key || "")}"' in script
+    assert '"/api/model-pool/profiles"' in script
+    assert '`/api/model-pool/profiles/${encodeURIComponent(profileId)}`' in script
+    assert "models: parseModelRows" in script
+    assert "data-action=\"model-delete\"" in script
+    assert "data-action=\"model-profile-close\"" in script
     assert "function toggleApiKeyVisibility" in script
     assert 'apiKeyInput.type === "password" ? "text" : "password"' in script
-    assert 'async function exportLlmConfig(event)' in script
-    assert 'async function importLlmConfig(event)' in script
-    assert '"/api/config/export"' in script
-    assert '"/api/config/import"' in script
-    assert '"openkb-settings-config.json"' in script
-    assert "compile_max_concurrency" in script
-    assert "switchProfile" in script
-    assert "create_profile: true" in script
-    assert "active_profile" in script
-    assert ".profile-list" in styles
-    assert ".profile-button.active" in styles
+    assert "function renderProfileList" not in script
+    assert 'data-action="model-active"' not in script
+    assert "Set Active" not in script
+    assert "Active profile" not in script
+    assert "renderModelProfileEditor" not in script
+    assert ".model-profile-dialog" in styles
+    assert ".model-dialog-backdrop" in styles
+
+
+def test_client_settings_restores_general_without_llm_profile_editor():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert '["general", "General"]' in script
+    assert "function renderGeneralSettings" in script
+    assert 'id="saveSettingsBtn"' in script
+    assert 'id="languageInput"' in script
+    assert 'id="compileConcurrencyInput"' in script
+    assert 'id="ocrEnabledInput"' in script
+    assert 'id="pageindexLocalRepoDirInput"' in script
+    assert 'id="paddleocrTokenInput"' in script
+    assert 'id="profileNameInput"' not in script
+    assert 'id="saveProfileBtn"' not in script
+    assert 'id="saveNewProfileBtn"' not in script
+    assert "LLM Profiles" not in script
 
 
 def test_client_settings_renders_model_pool_cards_and_probe_actions():
@@ -293,8 +311,7 @@ def test_client_settings_renders_model_pool_cards_and_probe_actions():
     assert '`/api/model-pool/profiles/${encodeURIComponent(profileId)}/probe`' in script
     assert "trackJob(result.job, \"Model pool probe queued\")" not in script
     assert "state.modelPool = result.model_pool || state.modelPool" in script
-    assert 'data-action="settings-tab"' in script
-    assert 'data-settings-tab="model-pool"' in script
+    assert '["general", "General"]' in script
     assert 'data-model-pool-search' in script
     assert 'data-model-health-filter' in script
     assert 'class="model-pool-grid"' in script
@@ -304,46 +321,6 @@ def test_client_settings_renders_model_pool_cards_and_probe_actions():
     assert ".model-pool-card" in styles
     assert "profile.routes" in script
     assert ".model-health-dot" in styles
-
-
-def test_client_settings_exposes_general_save_button():
-    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-
-    assert 'id="saveSettingsBtn"' in script
-    assert '$("#saveSettingsBtn").addEventListener("click", saveSettings);' in script
-    assert "async function saveSettings(event)" in script
-    assert "language: $(\"#languageInput\").value.trim()" in script
-    assert "compile_max_concurrency: Number($(\"#compileConcurrencyInput\").value || 2)" in script
-
-
-def test_client_settings_include_ocr_and_pageindex_local_controls():
-    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-
-    assert 'id="ocrEnabledInput"' in script
-    assert 'id="ocrDetectionModeInput"' in script
-    assert 'id="ocrDefaultModelInput"' in script
-    assert 'id="ocrChunkPagesInput"' in script
-    assert 'id="ocrAutoRecommendInput"' in script
-    assert 'id="paddleocrTokenInput"' in script
-    assert 'id="pageindexLocalEnabledInput"' in script
-    assert 'id="pageindexLocalModelInput"' in script
-    assert 'id="pageindexLocalInstallationStateInput"' in script
-    assert 'id="pageindexLocalRepoDirInput"' in script
-    assert 'id="pageindexLocalPythonPathInput"' in script
-    assert 'id="pageindexLocalScriptPathInput"' in script
-    assert 'value="${escapeHTML(cfg.paddleocr_token || "")}"' in script
-    assert 'ocr_enabled: $("#ocrEnabledInput").checked' in script
-    assert 'ocr_detection_mode: $("#ocrDetectionModeInput").value' in script
-    assert 'ocr_default_model: $("#ocrDefaultModelInput").value' in script
-    assert 'ocr_chunk_pages: Number($("#ocrChunkPagesInput").value || 100)' in script
-    assert 'ocr_auto_recommend: $("#ocrAutoRecommendInput").checked' in script
-    assert 'paddleocr_token: $("#paddleocrTokenInput").value' in script
-    assert 'pageindex_local_enabled: $("#pageindexLocalEnabledInput").checked' in script
-    assert 'pageindex_local_model: $("#pageindexLocalModelInput").value.trim()' in script
-    assert 'pageindex_local_installation_state: $("#pageindexLocalInstallationStateInput").value' in script
-    assert 'pageindex_local_repo_dir: $("#pageindexLocalRepoDirInput").value.trim()' in script
-    assert 'pageindex_local_python_path: $("#pageindexLocalPythonPathInput").value.trim()' in script
-    assert 'pageindex_local_script_path: $("#pageindexLocalScriptPathInput").value.trim()' in script
 
 
 def test_client_renders_ocr_page_and_import_strategy_controls():

@@ -1,4 +1,4 @@
-const state = {
+﻿const state = {
   view: "overview",
   kbDir: null,
   status: null,
@@ -8,6 +8,7 @@ const state = {
   pageindexLocalStatus: null,
   modelPoolSearch: "",
   modelPoolHealthFilter: "all",
+  modelProfileDialog: null,
   sourceSearch: "",
   selectedSourceHash: null,
   wikiTree: [],
@@ -28,7 +29,6 @@ const state = {
   jobs: [],
   selectedJobId: null,
   config: null,
-  selectedProfileId: null,
   queryJobId: null,
   activeChatSessionId: null,
   activeChatSession: null,
@@ -93,11 +93,8 @@ function formatTime(value) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function activeProfile(config = state.config) {
-  const profiles = config?.profiles || [];
-  const profile = profiles.find((item) => item.id === state.selectedProfileId) || profiles.find((item) => item.id === config?.active_profile) || profiles.find((item) => item.is_active) || profiles[0] || null;
-  const poolProfile = state.modelPool?.profiles?.find((item) => item.id === profile?.id);
-  return profile && poolProfile ? { ...profile, ...poolProfile, api_key: profile.api_key, api_key_configured: profile.api_key_configured } : profile;
+function poolProfileById(profileId) {
+  return state.modelPool?.profiles?.find((profile) => profile.id === profileId) || state.config?.profiles?.find((profile) => profile.id === profileId) || null;
 }
 
 function jobProgress(job) {
@@ -230,7 +227,6 @@ async function loadKnowledgeData() {
   state.ocrCache = ocrCache;
   state.pageindexLocalStatus = pageindexLocalStatus;
   state.modelPool = modelPool;
-  state.selectedProfileId = config?.active_profile || null;
 }
 
 async function loadModelPool() {
@@ -748,7 +744,11 @@ function renderMainView() {
 function renderOverview() {
   const dirs = state.status?.directories || {};
   const cfg = state.config || {};
-  const profile = activeProfile(cfg);
+  const pool = state.modelPool || {};
+  const healthyRoutes = (pool.profiles || []).reduce(
+    (count, profile) => count + (profile.routes || []).filter((route) => route.health === "healthy").length,
+    0,
+  );
   mainView.innerHTML = `
     <div class="stats-grid">
       ${stat("Indexed", state.status?.total_indexed ?? 0)}
@@ -793,14 +793,14 @@ function renderOverview() {
         <header>
           <div>
             <h3>Runtime</h3>
-            <span class="muted-text">${escapeHTML(profile?.name || "Default")} · ${escapeHTML(cfg.wire_api || "responses")}</span>
+            <span class="muted-text">${escapeHTML(healthyRoutes)} healthy route(s) in model pool</span>
           </div>
-          ${cfg.api_key_configured ? `<span class="badge good">Key set</span>` : `<span class="badge warn">No key</span>`}
+          <span class="badge ${pool.enabled ? "good" : "muted"}">${pool.enabled ? "Pool enabled" : "Pool disabled"}</span>
         </header>
         <div class="section-body runtime-list">
-          <div><span>Model</span><strong>${escapeHTML(cfg.model || "")}</strong></div>
+          <div><span>Profiles</span><strong>${escapeHTML(pool.summary?.total || 0)}</strong></div>
           <div><span>Language</span><strong>${escapeHTML(cfg.language || "")}</strong></div>
-          <div><span>Base URL</span><strong>${escapeHTML(cfg.base_url || "Default")}</strong></div>
+          <div><span>Strategy</span><strong>${escapeHTML(pool.strategy || "weighted_round_robin")}</strong></div>
         </div>
       </section>
     </div>
@@ -1438,7 +1438,7 @@ function renderWikiFileList(files) {
       return `
         <button type="button" data-action="wiki-select" data-wiki-path="${escapeHTML(file.path)}" class="file-row${active}">
           <span>${escapeHTML(file.name)}</span>
-          <small>${escapeHTML(file.modified || "")}${file.size ? ` · ${escapeHTML(file.size)} bytes` : ""}</small>
+          <small>${escapeHTML(file.modified || "")}${file.size ? ` 路 ${escapeHTML(file.size)} bytes` : ""}</small>
         </button>
       `;
     })
@@ -2098,16 +2098,29 @@ function handleAppClick(event) {
     return;
   }
   if (action === "model-edit") {
-    state.selectedProfileId = target.dataset.profileId;
-    renderSettings();
+    openModelProfileDialog(target.dataset.profileId);
+    return;
+  }
+  if (action === "model-add") {
+    openModelProfileDialog(null);
+    return;
+  }
+  if (action === "model-delete") {
+    deleteModelPoolProfile(target.dataset.profileId, event);
+    return;
+  }
+  if (action === "model-profile-close") {
+    if (target.classList?.contains("model-dialog-backdrop") && event.target !== target) return;
+    closeModelProfileDialog();
+    return;
+  }
+  if (action === "model-profile-save") {
+    saveModelPoolProfile(event);
     return;
   }
   if (action === "model-toggle") {
     toggleModelPoolProfile(target.dataset.profileId, target.dataset.enabled !== "true", event);
     return;
-  }
-  if (action === "model-active") {
-    switchProfile(target.dataset.profileId, event);
   }
 }
 
@@ -2161,30 +2174,6 @@ async function runLint(event) {
   }
 }
 
-function renderProfileList(cfg) {
-  const profiles = cfg.profiles || [];
-  if (!profiles.length) return `<div class="empty">No LLM profiles</div>`;
-  return `
-    <div class="profile-list">
-      ${profiles
-        .map((profile) => {
-          const active = profile.id === cfg.active_profile ? " active" : "";
-          const keyBadge = profile.api_key_configured ? `<span class="badge good">Key set</span>` : `<span class="badge warn">No key</span>`;
-          return `
-            <button type="button" class="profile-button${active}" data-profile-id="${escapeHTML(profile.id)}">
-              <span>
-                <strong>${escapeHTML(profile.name || profile.id)}</strong>
-                <small>${escapeHTML(profile.model || "")}</small>
-              </span>
-              ${keyBadge}
-            </button>
-          `;
-        })
-        .join("")}
-    </div>
-  `;
-}
-
 function toggleApiKeyVisibility() {
   const apiKeyInput = $("#apiKeyInput");
   const button = $("#toggleApiKeyBtn");
@@ -2198,9 +2187,8 @@ function toggleApiKeyVisibility() {
 }
 
 function settingsTabs() {
-  const defaultTab = "model-pool"; // data-settings-tab="model-pool"
   const tabs = [
-    [defaultTab, "Model Pool"],
+    ["model-pool", "Model Pool"],
     ["general", "General"],
   ];
   return `
@@ -2241,6 +2229,29 @@ function modelHealthBadge(profile) {
   return `<span class="badge ${cls}"><span class="model-health-dot ${escapeHTML(health)}"></span>${escapeHTML(health)}</span>`;
 }
 
+function modelRowsText(profile) {
+  const rows = profile?.routes?.length ? profile.routes : profile?.models || [];
+  return rows
+    .map((route) => `${route.model || route.name || ""}, ${route.weight || 100}`)
+    .filter((line) => line.trim())
+    .join("\n");
+}
+
+function parseModelRows(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [namePart, weightPart] = line.split(/[,\s]+/, 2);
+      return {
+        name: (namePart || "").trim(),
+        weight: Math.max(Number(weightPart || 100), 1),
+      };
+    })
+    .filter((item) => item.name);
+}
+
 function modelPoolStat(label, value) {
   return `<div><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`;
 }
@@ -2256,10 +2267,9 @@ function renderModelPoolCard(profile) {
         latency_ms: profile.latency_ms,
         last_error: profile.failed_models?.[model] || "",
       }));
-  const active = profile.is_active ? " active" : "";
   const disabled = profile.enabled === false;
   return `
-    <article class="model-pool-card${active}" data-profile-card="${escapeHTML(profile.id)}">
+    <article class="model-pool-card" data-profile-card="${escapeHTML(profile.id)}">
       <header>
         <div class="model-avatar">${escapeHTML((profile.name || profile.id || "M").slice(0, 2))}</div>
         <div class="model-card-title">
@@ -2273,7 +2283,7 @@ function renderModelPoolCard(profile) {
         ${(profile.features || []).map((feature) => `<span>${escapeHTML(feature)}</span>`).join("")}
         ${profile.api_key_configured ? `<span>key set</span>` : `<span>no key</span>`}
       </div>
-      <p class="model-description">${escapeHTML(profile.last_error || (profile.is_active ? "Active profile" : "Available for pool probing"))}</p>
+      <p class="model-description">${escapeHTML(profile.last_error || "Available for pool load balancing")}</p>
       <div class="model-endpoint">
         <span class="model-health-dot ${escapeHTML(profile.health || "unknown")}"></span>
         <code>${escapeHTML(endpoint)}</code>
@@ -2297,11 +2307,67 @@ function renderModelPoolCard(profile) {
         <div class="row-actions">
           <button type="button" data-action="model-probe" data-profile-id="${escapeHTML(profile.id)}">Probe</button>
           <button type="button" data-action="model-edit" data-profile-id="${escapeHTML(profile.id)}">Edit</button>
+          <button class="danger" type="button" data-action="model-delete" data-profile-id="${escapeHTML(profile.id)}">Delete</button>
           <button type="button" data-action="model-toggle" data-profile-id="${escapeHTML(profile.id)}" data-enabled="${disabled ? "false" : "true"}">${disabled ? "Enable" : "Disable"}</button>
-          ${profile.is_active ? `<span class="badge good">Active</span>` : `<button type="button" data-action="model-active" data-profile-id="${escapeHTML(profile.id)}">Set Active</button>`}
         </div>
       </footer>
     </article>
+  `;
+}
+
+function renderModelProfileDialog() {
+  const dialog = state.modelProfileDialog;
+  if (!dialog) return "";
+  const profile = dialog.profileId ? poolProfileById(dialog.profileId) : {};
+  const title = dialog.profileId ? "Edit Model Endpoint" : "Add Model Endpoint";
+  return `
+    <div class="model-dialog-backdrop" data-action="model-profile-close">
+      <section class="model-profile-dialog" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}">
+        <header>
+          <div>
+            <h3>${escapeHTML(title)}</h3>
+            <span class="muted-text">One endpoint can expose multiple weighted models</span>
+          </div>
+          <button type="button" data-action="model-profile-close" aria-label="Close">x</button>
+        </header>
+        <div class="model-profile-form">
+          <div class="field">
+            <label for="modelProfileNameInput">Name</label>
+            <input id="modelProfileNameInput" type="text" value="${escapeHTML(profile?.name || "")}" placeholder="Gateway" />
+          </div>
+          <div class="field">
+            <label for="modelProfileWireApiInput">Wire API</label>
+            <select id="modelProfileWireApiInput">
+              <option value="responses">responses</option>
+              <option value="chat_completions">chat_completions</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label for="modelProfileBaseUrlInput">Base URL</label>
+            <input id="modelProfileBaseUrlInput" type="url" value="${escapeHTML(profile?.base_url || "")}" placeholder="https://api.example.com/v1" />
+          </div>
+          <div class="field full">
+            <label for="modelProfileModelsInput">Models</label>
+            <textarea id="modelProfileModelsInput" spellcheck="false" placeholder="gpt-4o-mini, 100&#10;gpt-5.4-mini, 50">${escapeHTML(modelRowsText(profile))}</textarea>
+          </div>
+          <div class="field full">
+            <label for="apiKeyInput">API Key</label>
+            <div class="key-input-row">
+              <input id="apiKeyInput" type="password" value="${escapeHTML(profile?.api_key || "")}" placeholder="Paste API key" />
+              <button id="toggleApiKeyBtn" type="button" aria-label="Show API key">Show</button>
+            </div>
+          </div>
+          <label class="checkline full">
+            <input id="modelProfileEnabledInput" type="checkbox" ${profile?.enabled === false ? "" : "checked"} />
+            Enabled
+          </label>
+        </div>
+        <footer>
+          <button type="button" data-action="model-profile-close">Cancel</button>
+          <button class="primary" type="button" data-action="model-profile-save" data-profile-id="${escapeHTML(dialog.profileId || "")}">Save</button>
+        </footer>
+      </section>
+    </div>
   `;
 }
 
@@ -2317,7 +2383,7 @@ function renderModelPool() {
         </div>
         <div class="row-actions">
           <button id="probeAllModelPoolBtn" type="button">Probe All</button>
-          <button id="addModelProfileBtn" class="primary" type="button">Add Profile</button>
+          <button id="addModelProfileBtn" class="primary" type="button" data-action="model-add">Add Endpoint</button>
         </div>
       </header>
       <div class="model-pool-toolbar">
@@ -2341,85 +2407,14 @@ function renderModelPool() {
       </div>
       ${renderPager(page.meta, "model-pool")}
     </section>
-    ${renderModelProfileEditor(state.config || {}, activeProfile(state.config) || {})}
+    ${renderModelProfileDialog()}
   `;
 }
 
-function renderModelProfileEditor(cfg, profile) {
-  return `
-    <section class="section llm-profile-section">
-      <header>
-        <div>
-          <h3>Profile Configuration</h3>
-          <span class="muted-text">${escapeHTML(profile.name || profile.id || "New profile")} via ${escapeHTML(profile.wire_api || cfg.wire_api || "responses")}</span>
-        </div>
-        ${cfg.api_key_configured ? `<span class="badge good">Active key set</span>` : `<span class="badge warn">No active key</span>`}
-      </header>
-      <div class="section-body profile-config-grid">
-        ${renderProfileList(cfg)}
-        <div class="form-grid profile-editor">
-          <div class="field">
-            <label for="profileNameInput">Profile Name</label>
-            <input id="profileNameInput" type="text" value="${escapeHTML(profile.name || "Default")}" />
-          </div>
-          <div class="field">
-            <label for="modelInput">Model</label>
-            <input id="modelInput" type="text" value="${escapeHTML(profile.model || cfg.model || "gpt-5.4-mini")}" />
-          </div>
-          <div class="field">
-            <label for="wireApiInput">Wire API</label>
-            <select id="wireApiInput">
-              <option value="responses">responses</option>
-              <option value="chat_completions">chat_completions</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="baseUrlInput">Base URL</label>
-            <input id="baseUrlInput" type="url" value="${escapeHTML(profile.base_url || "")}" placeholder="https://api.example.com/v1" />
-          </div>
-          <div class="field">
-            <label for="profileTagsInput">Tags</label>
-            <input id="profileTagsInput" type="text" value="${escapeHTML((profile.tags || []).join(", "))}" placeholder="GPT, Gemini, Fast" />
-          </div>
-          <div class="field">
-            <label for="profileProbeModelsInput">Probe Models</label>
-            <input id="profileProbeModelsInput" type="text" value="${escapeHTML((profile.probe_models || [profile.model || cfg.model]).filter(Boolean).join(", "))}" />
-          </div>
-          <div class="field full">
-            <label for="apiKeyInput">API Key</label>
-            <div class="key-input-row">
-              <input id="apiKeyInput" type="password" value="${escapeHTML(profile.api_key || "")}" placeholder="Paste API key" />
-              <button id="toggleApiKeyBtn" type="button" aria-label="Show API key">Show</button>
-            </div>
-          </div>
-          <div class="row-actions full">
-            <button id="testLlmBtn" type="button">Probe this Profile</button>
-            <button id="saveNewProfileBtn" type="button">Save as New</button>
-            <button id="saveProfileBtn" class="primary" type="button">Save Profile</button>
-          </div>
-        </div>
-      </div>
-    </section>
-  `;
-}
-
-function renderSettings() {
+function renderGeneralSettings() {
   const cfg = state.config || {};
   const runtime = state.pageindexLocalStatus || {};
-  const profile = activeProfile(cfg) || {
-    id: "default",
-    name: "Default",
-    model: cfg.model || "gpt-5.4-mini",
-    wire_api: cfg.wire_api || "responses",
-    base_url: cfg.base_url || "",
-  };
-  mainView.innerHTML = `
-    <div class="settings-page">
-      ${settingsTabs()}
-      ${
-        (state.ui.settingsTab || "model-pool") === "model-pool"
-          ? renderModelPool()
-          : `
+  return `
     <div class="settings-grid">
       <section class="section">
         <header>
@@ -2531,85 +2526,33 @@ function renderSettings() {
           </div>
         </div>
       </section>
-      <section class="section llm-profile-section">
-        <header>
-          <div>
-            <h3>LLM Profiles</h3>
-            <span class="muted-text">${escapeHTML(profile.name || profile.id)} · ${escapeHTML(profile.wire_api || cfg.wire_api || "responses")}</span>
-          </div>
-          ${cfg.api_key_configured ? `<span class="badge good">Active key set</span>` : `<span class="badge warn">No active key</span>`}
-        </header>
-        <div class="section-body profile-config-grid">
-          ${renderProfileList(cfg)}
-          <div class="form-grid profile-editor">
-            <div class="field">
-              <label for="profileNameInput">Profile Name</label>
-              <input id="profileNameInput" type="text" value="${escapeHTML(profile.name || "Default")}" />
-            </div>
-            <div class="field">
-              <label for="modelInput">Model</label>
-              <input id="modelInput" type="text" value="${escapeHTML(profile.model || cfg.model || "gpt-5.4-mini")}" />
-            </div>
-            <div class="field">
-              <label for="wireApiInput">Wire API</label>
-              <select id="wireApiInput">
-                <option value="responses">responses</option>
-                <option value="chat_completions">chat_completions</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="baseUrlInput">Base URL</label>
-              <input id="baseUrlInput" type="url" value="${escapeHTML(profile.base_url || "")}" placeholder="https://api.example.com/v1" />
-            </div>
-            <div class="field full">
-              <label for="apiKeyInput">API Key</label>
-              <div class="key-input-row">
-                <input id="apiKeyInput" type="password" value="${escapeHTML(profile.api_key || "")}" placeholder="Paste API key" />
-                <button id="toggleApiKeyBtn" type="button" aria-label="Show API key">Show</button>
-              </div>
-            </div>
-            <div class="row-actions full">
-              <button id="testLlmBtn" type="button">Test LLM</button>
-              <button id="saveNewProfileBtn" type="button">Save as New</button>
-              <button id="saveProfileBtn" class="primary" type="button">Save Profile</button>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-      `
-      }
     </div>
   `;
-  if ($("#wireApiInput")) $("#wireApiInput").value = profile.wire_api || cfg.wire_api || "responses";
-  if ($("#ocrDetectionModeInput")) $("#ocrDetectionModeInput").value = cfg.ocr_detection_mode || "auto_recommend";
-  if ($("#ocrDefaultModelInput")) $("#ocrDefaultModelInput").value = cfg.ocr_default_model || "PaddleOCR-VL-1.5";
-  if ($("#pageindexLocalInstallationStateInput")) $("#pageindexLocalInstallationStateInput").value = cfg.pageindex_local_installation_state || "not_installed";
+}
+
+function renderSettings() {
+  mainView.innerHTML = `
+    <div class="settings-page">
+      ${settingsTabs()}
+      ${(state.ui.settingsTab || "model-pool") === "general" ? renderGeneralSettings() : renderModelPool()}
+    </div>
+  `;
+  const dialogProfile = state.modelProfileDialog?.profileId ? poolProfileById(state.modelProfileDialog.profileId) : null;
+  if ($("#modelProfileWireApiInput")) $("#modelProfileWireApiInput").value = dialogProfile?.wire_api || "chat_completions";
+  if ($("#ocrDetectionModeInput")) $("#ocrDetectionModeInput").value = state.config?.ocr_detection_mode || "auto_recommend";
+  if ($("#ocrDefaultModelInput")) $("#ocrDefaultModelInput").value = state.config?.ocr_default_model || "PaddleOCR-VL-1.5";
+  if ($("#pageindexLocalInstallationStateInput")) $("#pageindexLocalInstallationStateInput").value = state.config?.pageindex_local_installation_state || "not_installed";
   $("#useKbBtn")?.addEventListener("click", useKb);
   $("#createKbBtn")?.addEventListener("click", createKb);
-  // $("#saveSettingsBtn").addEventListener("click", saveSettings);
   $("#saveSettingsBtn")?.addEventListener("click", saveSettings);
-  $("#testLlmBtn")?.addEventListener("click", testLlm);
   $("#toggleApiKeyBtn")?.addEventListener("click", toggleApiKeyVisibility);
   $("#exportProfilesBtn")?.addEventListener("click", exportLlmConfig);
   $("#importProfilesBtn")?.addEventListener("click", () => $("#importProfilesInput").click());
   $("#importProfilesInput")?.addEventListener("change", importLlmConfig);
-  $("#saveProfileBtn")?.addEventListener("click", saveConfig);
-  $("#saveNewProfileBtn")?.addEventListener("click", saveNewProfile);
   $("#probeAllModelPoolBtn")?.addEventListener("click", probeAllModelPool);
-  $("#addModelProfileBtn")?.addEventListener("click", () => {
-    state.selectedProfileId = null;
-    state.ui.settingsTab = "model-pool";
-    renderSettings();
-    $("#profileNameInput")?.focus();
-  });
   const healthFilter = document.querySelector("[data-model-health-filter]");
   if (healthFilter) healthFilter.value = state.modelPoolHealthFilter || "all";
-  mainView.querySelectorAll("[data-profile-id]").forEach((button) => {
-    button.addEventListener("click", (event) => switchProfile(button.dataset.profileId, event));
-  });
 }
-
 function settingsPayload() {
   const cfg = state.config || {};
   return {
@@ -2692,7 +2635,7 @@ async function applyApprovedFixes(event) {
 
 async function useKb(event) {
   const button = event?.currentTarget;
-  const path = $("#kbPathInput").value.trim();
+  const path = $("#kbPathInput")?.value.trim() || state.kbDir || "";
   if (!path) {
     notify("Enter a knowledge base path first.", "warning");
     return;
@@ -2711,7 +2654,7 @@ async function useKb(event) {
 
 async function createKb(event) {
   const button = event?.currentTarget;
-  const path = $("#kbPathInput").value.trim();
+  const path = $("#kbPathInput")?.value.trim() || "";
   if (!path) {
     notify("Enter a knowledge base path first.", "warning");
     return;
@@ -2722,13 +2665,13 @@ async function createKb(event) {
       method: "POST",
       body: JSON.stringify({
         path,
-        model: $("#modelInput").value.trim(),
-        language: $("#languageInput").value.trim(),
-        pageindex_threshold: Number($("#thresholdInput").value || 20),
-        compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2),
-        wire_api: $("#wireApiInput").value,
-        base_url: $("#baseUrlInput").value.trim(),
-        api_key: $("#apiKeyInput").value,
+        model: $("#modelInput")?.value.trim() || state.config?.model || "gpt-5.4-mini",
+        language: $("#languageInput")?.value.trim() || state.config?.language || "en",
+        pageindex_threshold: Number($("#thresholdInput")?.value || 20),
+        compile_max_concurrency: Number($("#compileConcurrencyInput")?.value || 2),
+        wire_api: $("#wireApiInput")?.value || "chat_completions",
+        base_url: $("#baseUrlInput")?.value.trim() || "",
+        api_key: $("#apiKeyInput")?.value || "",
       }),
     });
     notify("Knowledge base created", "success");
@@ -2784,28 +2727,6 @@ async function importLlmConfig(event) {
   }
 }
 
-async function switchProfile(profileId, event) {
-  if (!profileId || profileId === state.config?.active_profile) return;
-  const button = event?.currentTarget;
-  setButtonBusy(button, true, "Switching...");
-  try {
-    await api("/api/config", {
-      method: "PUT",
-      body: JSON.stringify({
-        kb_dir: state.kbDir,
-        active_profile: profileId,
-      }),
-    });
-    notify("LLM profile switched", "success");
-    await loadKnowledgeData();
-    render();
-  } catch (error) {
-    setError(error.message);
-  } finally {
-    setButtonBusy(button, false);
-  }
-}
-
 async function saveSettings(event) {
   const button = event?.currentTarget;
   if (!state.kbDir) {
@@ -2832,37 +2753,7 @@ async function saveSettings(event) {
 }
 
 async function saveConfig(event, options = {}) {
-  const button = event?.currentTarget;
-  if (!state.kbDir) {
-    notify("Select or create a knowledge base first.", "warning");
-    return;
-  }
-  setButtonBusy(button, true, "Saving...");
-  try {
-    const createProfile = options.createProfile === true;
-    await api("/api/config", {
-      method: "PUT",
-      body: JSON.stringify({
-        kb_dir: state.kbDir,
-        profile_id: state.selectedProfileId || state.config?.active_profile,
-        profile_name: $("#profileNameInput").value.trim(),
-        ...(createProfile ? { create_profile: true } : {}),
-        model: $("#modelInput").value.trim(),
-        ...settingsPayload(),
-        wire_api: $("#wireApiInput").value,
-        base_url: $("#baseUrlInput").value.trim(),
-        tags: $("#profileTagsInput")?.value || "",
-        probe_models: $("#profileProbeModelsInput")?.value || $("#modelInput").value.trim(),
-        api_key: $("#apiKeyInput").value,
-      }),
-    });
-    notify(createProfile ? "LLM profile created" : "LLM profile saved", "success");
-    await loadAll();
-  } catch (error) {
-    setError(error.message);
-  } finally {
-    setButtonBusy(button, false);
-  }
+  return saveModelPoolProfile(event, options);
 }
 
 async function saveNewProfile(event) {
@@ -2898,11 +2789,11 @@ async function testLlm(event) {
       method: "POST",
       body: JSON.stringify({
         kb_dir: state.kbDir,
-        model: $("#modelInput").value.trim(),
+        model: $("#modelInput")?.value.trim() || state.config?.model || "",
         ...settingsPayload(),
-        wire_api: $("#wireApiInput").value,
-        base_url: $("#baseUrlInput").value.trim(),
-        api_key: $("#apiKeyInput").value,
+        wire_api: $("#wireApiInput")?.value || "chat_completions",
+        base_url: $("#baseUrlInput")?.value.trim() || "",
+        api_key: $("#apiKeyInput")?.value || "",
       }),
     });
     notify(result?.message || "LLM test succeeded.", "success");
@@ -2915,7 +2806,7 @@ async function testLlm(event) {
 
 async function probeModelPoolProfile(profileId, event) {
   if (!profileId || !state.kbDir) return;
-  const button = event?.target?.closest("button");
+  const button = event?.target?.closest?.("button") || event?.currentTarget?.closest?.("button") || event?.currentTarget || null;
   setButtonBusy(button, true, "Probing...");
   try {
     const result = await api(`/api/model-pool/profiles/${encodeURIComponent(profileId)}/probe`, {
@@ -2943,6 +2834,78 @@ async function probeAllModelPool(event) {
     });
     state.modelPool = result.model_pool || state.modelPool;
     notify("Model pool probed", "success");
+    renderSettings();
+  } catch (error) {
+    notify(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+function openModelProfileDialog(profileId) {
+  state.modelProfileDialog = { profileId: profileId || null };
+  renderSettings();
+  $("#modelProfileNameInput")?.focus();
+}
+
+function closeModelProfileDialog() {
+  state.modelProfileDialog = null;
+  renderSettings();
+}
+
+function modelProfilePayload() {
+  return {
+    kb_dir: state.kbDir,
+    name: $("#modelProfileNameInput")?.value.trim() || "Model Endpoint",
+    wire_api: $("#modelProfileWireApiInput")?.value || "chat_completions",
+    base_url: $("#modelProfileBaseUrlInput")?.value.trim() || "",
+    api_key: $("#apiKeyInput")?.value || "",
+    enabled: $("#modelProfileEnabledInput") ? $("#modelProfileEnabledInput").checked : true,
+    models: parseModelRows($("#modelProfileModelsInput")?.value || ""),
+  };
+}
+
+async function saveModelPoolProfile(event) {
+  if (!state.kbDir) return;
+  const button = event?.target?.closest("button");
+  const profileId = state.modelProfileDialog?.profileId || "";
+  const payload = modelProfilePayload();
+  if (!payload.models.length) {
+    notify("Add at least one model.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Saving...");
+  try {
+    const result = await api(profileId ? `/api/model-pool/profiles/${encodeURIComponent(profileId)}` : "/api/model-pool/profiles", {
+      method: profileId ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+    state.config = result.config || state.config;
+    state.modelPool = result.model_pool || state.modelPool;
+    state.modelProfileDialog = null;
+    notify("Model endpoint saved", "success");
+    renderSettings();
+  } catch (error) {
+    notify(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function deleteModelPoolProfile(profileId, event) {
+  if (!profileId || !state.kbDir) return;
+  const profile = poolProfileById(profileId);
+  if (!window.confirm(`Delete ${profile?.name || profileId} from the model pool?`)) return;
+  const button = event?.target?.closest("button");
+  setButtonBusy(button, true, "Deleting...");
+  try {
+    const result = await api(`/api/model-pool/profiles/${encodeURIComponent(profileId)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ kb_dir: state.kbDir }),
+    });
+    state.config = result.config || state.config;
+    state.modelPool = result.model_pool || state.modelPool;
+    notify("Model endpoint deleted", "success");
     renderSettings();
   } catch (error) {
     notify(error.message, "error");
@@ -3107,3 +3070,4 @@ $("#clearAnswerBtn").addEventListener("click", () => {
 setInterval(loadJobs, 1200);
 setInterval(autoProbeModelPool, 60000);
 loadAll();
+

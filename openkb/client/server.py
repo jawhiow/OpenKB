@@ -824,6 +824,27 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
+    @app.post("/api/model-pool/profiles")
+    def model_pool_profile_create(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return kb_helpers.save_model_pool_profile(_resolve_kb_dir(payload.get("kb_dir")), payload)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.put("/api/model-pool/profiles/{profile_id}")
+    def model_pool_profile_update(profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return kb_helpers.save_model_pool_profile(_resolve_kb_dir(payload.get("kb_dir")), payload, profile_id)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.delete("/api/model-pool/profiles/{profile_id}")
+    def model_pool_profile_delete(profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return kb_helpers.delete_model_pool_profile(_resolve_kb_dir(payload.get("kb_dir")), profile_id)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
     @app.post("/api/model-pool/profiles/{profile_id}/probe")
     def model_pool_profile_probe(profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
