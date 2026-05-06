@@ -14,6 +14,19 @@ def test_client_shell_exposes_job_details_panel():
     assert 'id="toastHost"' in html
 
 
+def test_client_shell_uses_utility_workbench_layout():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    assert 'class="app-shell workbench-shell"' in html
+    assert 'class="nav-rail"' in html
+    assert 'id="utilityPanel"' in html
+    assert 'id="utilityJobsTab"' in html
+    assert 'id="utilityAssistantTab"' in html
+    assert 'id="jobsPanel"' in html
+    assert 'id="assistantPanel"' in html
+    assert 'class="job-dock"' not in html
+
+
 def test_client_script_renders_job_progress_logs_and_busy_buttons():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
@@ -27,6 +40,37 @@ def test_client_script_renders_job_progress_logs_and_busy_buttons():
     assert "async function retryJob" in script
     assert "`/api/jobs/${jobId}/stop`" in script
     assert "`/api/jobs/${jobId}/retry`" in script
+
+
+def test_client_ask_persists_and_reopens_chat_sessions():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "activeChatSessionId: null" in script
+    assert "activeChatSession: null" in script
+    assert "function renderChatTranscript" in script
+    assert "function setActiveChatSession" in script
+    assert "async function openChatSession" in script
+    assert "session_id: state.activeChatSessionId" in script
+    assert "state.activeChatSessionId = job.result?.session_id" in script
+    assert 'data-open-chat="${escapeHTML(session.id)}"' in script
+    assert 'data-action="open-chat"' in script
+    assert '`/api/chats/${encodeURIComponent(sessionId)}`' in script
+    assert "Continue in Assistant" in script
+
+
+def test_client_script_has_bounded_rendering_and_selective_refresh():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "function paginatedItems" in script
+    assert "function paginationState" in script
+    assert "function renderPager" in script
+    assert "function renderUtilityPanel" in script
+    assert "function renderJobsPanel" in script
+    assert "function renderMainView" in script
+    assert "function handleAppClick" in script
+    assert "function handleAppInput" in script
+    assert "renderJobsPanel();" in script
+    assert "renderJobs();" not in script
 
 
 def test_client_script_summarizes_partial_add_failures():
@@ -92,17 +136,94 @@ def test_client_settings_include_test_llm_button_and_handler():
     assert '"/api/config/test-llm"' in script
 
 
-def test_client_wiki_renders_folder_navigation():
+def test_client_wiki_renders_directory_scoped_file_navigation():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
 
-    assert "function buildWikiDirectory" in script
-    assert "function renderWikiDirectory" in script
-    assert "folder-row" in script
+    assert "function wikiDirectories" in script
+    assert "function filteredWikiDirectoryFiles" in script
+    assert "function renderWikiFileList" in script
+    assert 'id="wikiDirectorySelect"' in script
+    assert 'data-action="wiki-directory"' in script
+    assert 'data-action="wiki-search"' in script
+    assert 'data-action="wiki-select"' in script
     assert "file-row" in script
+    assert ".wiki-directory-toolbar" in styles
     assert ".wiki-browser" in styles
-    assert ".folder-row" in styles
+    assert ".wiki-search-row" in styles
     assert ".file-row.active" in styles
+
+
+def test_client_wiki_uses_lazy_file_loading_and_markdown_mode_tabs():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert "wikiFileCache" in script
+    assert "wikiDrafts" in script
+    assert "wikiSearch" in script
+    assert 'wikiMode: "preview"' in script
+    assert "function renderMarkdown" in script
+    assert "function wikiDisplayContent" in script
+    assert "function filteredWikiDirectoryFiles" in script
+    assert "function selectWikiFile" in script
+    assert "function ensureWikiFileLoaded" in script
+    assert "const matches = filteredWikiDirectoryFiles();" in script
+    assert "state.selectedWikiPath = matches[0].path;" in script
+    assert 'data-action="wiki-mode"' in script
+    assert 'id="wikiPreviewPane"' in script
+    assert 'id="wikiSourcePane"' in script
+    assert "/api/wiki/file" in script
+    assert "method: \"PUT\"" in script
+    assert ".wiki-mode-tabs" in styles
+    assert ".wiki-preview-pane" in styles
+    assert ".wiki-source-pane" in styles
+    assert "grid-template-rows: auto minmax(220px, 1fr) minmax(180px, 0.7fr)" not in styles
+    assert "loadWikiFile();" not in script
+
+
+def test_client_styles_define_workbench_table_and_utility_primitives():
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert ".workbench-shell" in styles
+    assert ".nav-rail" in styles
+    assert ".utility-panel" in styles
+    assert ".utility-tabs" in styles
+    assert ".data-table-shell" in styles
+    assert ".data-grid-table" in styles
+    assert ".table-pager" in styles
+    assert ".wiki-search-row" in styles
+    assert ".job-filter-bar" in styles
+
+
+def test_client_ocr_layout_keeps_actions_visible_and_runtime_compact():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert 'class="ocr-workbench"' in script
+    assert 'class="section ocr-cache-panel"' in script
+    assert 'class="ocr-runtime-strip"' in script
+    assert ".ocr-workbench" in styles
+    assert ".ocr-cache-panel" in styles
+    assert ".ocr-runtime-strip" in styles
+    assert ".ocr-table th:last-child" in styles
+    assert "position: sticky" in styles
+    assert "right: 0" in styles
+    assert "width: 300px" in styles
+    assert ".ocr-table .source-actions button" in styles
+    assert "min-width: 76px" in styles
+
+
+def test_client_jobs_panel_uses_compact_details_without_fixed_empty_space():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="jobDetails" class="job-details compact"' in html
+    assert 'details.className = "job-details compact"' in script
+    assert ".job-details.compact" in styles
+    assert ".job-log-list" in styles
+    assert "max-height: min(280px, 34vh)" in styles
+    assert "min-height: 150px" not in styles
 
 
 def test_client_settings_support_llm_profile_switching():

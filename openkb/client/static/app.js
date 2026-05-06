@@ -10,6 +10,11 @@ const state = {
   wikiTree: [],
   wikiOpenDirs: {},
   selectedWikiPath: "index.md",
+  wikiDirectory: "",
+  wikiSearch: "",
+  wikiFileCache: {},
+  wikiDrafts: {},
+  wikiLoadingPath: null,
   selectedReport: null,
   reportPreview: { path: null, content: "" },
   reportPreviewLoading: null,
@@ -22,8 +27,17 @@ const state = {
   config: null,
   selectedProfileId: null,
   queryJobId: null,
+  activeChatSessionId: null,
+  activeChatSession: null,
   jobStatuses: {},
   loadingAll: false,
+  ui: {
+    utilityTab: "jobs",
+    utilityCollapsed: false,
+    jobFilter: "all",
+    wikiMode: "preview",
+    pagination: {},
+  },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -273,12 +287,12 @@ async function loadJobs() {
     if (!state.selectedJobId && state.jobs.length) {
       state.selectedJobId = state.jobs[0].id;
     }
-    renderJobs();
+    renderJobsPanel();
     handleJobTransitions(previousStatuses);
     handleQueryJob();
   } catch (_) {
     state.jobs = [];
-    renderJobs();
+    renderJobsPanel();
   }
 }
 
@@ -308,6 +322,53 @@ function handleJobTransitions(previousStatuses) {
   }
 }
 
+function paginationState(key, total = 0, pageSize = 50) {
+  const current = state.ui.pagination[key] || {};
+  const size = Math.max(Number(current.pageSize || pageSize), 1);
+  const pages = Math.max(Math.ceil(total / size), 1);
+  const page = Math.min(Math.max(Number(current.page || 1), 1), pages);
+  state.ui.pagination[key] = { ...current, page, pageSize: size };
+  return { key, page, pageSize: size, pages, total };
+}
+
+function paginatedItems(items, key, pageSize = 50) {
+  const list = Array.isArray(items) ? items : [];
+  const meta = paginationState(key, list.length, pageSize);
+  const start = (meta.page - 1) * meta.pageSize;
+  const end = Math.min(start + meta.pageSize, list.length);
+  return {
+    items: list.slice(start, end),
+    meta: {
+      ...meta,
+      start: list.length ? start + 1 : 0,
+      end,
+    },
+  };
+}
+
+function setPage(key, page) {
+  const current = state.ui.pagination[key] || {};
+  state.ui.pagination[key] = { ...current, page: Number(page) || 1 };
+}
+
+function resetPage(key) {
+  setPage(key, 1);
+}
+
+function renderPager(meta, actionPrefix) {
+  if (!meta || meta.total <= meta.pageSize) return "";
+  return `
+    <div class="table-pager">
+      <span>Showing ${escapeHTML(meta.start)}-${escapeHTML(meta.end)} of ${escapeHTML(meta.total)}</span>
+      <span class="table-pager-actions">
+        <button type="button" data-action="${escapeHTML(actionPrefix)}-page" data-page="${escapeHTML(meta.page - 1)}" ${meta.page <= 1 ? "disabled" : ""}>Prev</button>
+        <span>Page ${escapeHTML(meta.page)} / ${escapeHTML(meta.pages)}</span>
+        <button type="button" data-action="${escapeHTML(actionPrefix)}-page" data-page="${escapeHTML(meta.page + 1)}" ${meta.page >= meta.pages ? "disabled" : ""}>Next</button>
+      </span>
+    </div>
+  `;
+}
+
 function syncFixPlanFromJobs() {
   if (state.fixPlan?.candidates?.length || !state.selectedReport) return;
   const job = state.jobs.find(
@@ -321,13 +382,58 @@ function syncFixPlanFromJobs() {
   }
 }
 
+function renderChatTranscript(session = state.activeChatSession) {
+  if (!session) return "";
+  const turns = session.user_turns || [];
+  const answers = session.assistant_texts || [];
+  const lines = [];
+  if (session.title || session.id) {
+    lines.push(`Session ${session.id}${session.title ? ` - ${session.title}` : ""}`);
+    lines.push("");
+  }
+  turns.forEach((question, index) => {
+    lines.push(`You: ${question}`);
+    if (answers[index]) {
+      lines.push("");
+      lines.push(`OpenKB: ${answers[index]}`);
+    }
+    lines.push("");
+  });
+  return lines.join("\n").trim();
+}
+
+function setActiveChatSession(session) {
+  state.activeChatSession = session || null;
+  state.activeChatSessionId = session?.id || null;
+  if ($("#answerBox")) $("#answerBox").textContent = renderChatTranscript();
+}
+
+async function openChatSession(sessionId) {
+  if (!sessionId) return;
+  try {
+    const session = await api(withKb(`/api/chats/${encodeURIComponent(sessionId)}`));
+    setActiveChatSession(session);
+    state.ui.utilityTab = "assistant";
+    renderUtilityPanel();
+    switchView("sessions");
+    notify("Continue in Assistant", "success");
+  } catch (error) {
+    setError(error.message);
+  }
+}
+
 function handleQueryJob() {
   if (!state.queryJobId) return;
   const job = state.jobs.find((item) => item.id === state.queryJobId);
   if (!job) return;
   if (job.status === "succeeded") {
-    $("#answerBox").textContent = job.result?.answer || "";
+    state.activeChatSessionId = job.result?.session_id || state.activeChatSessionId;
+    state.activeChatSession = job.result?.session || state.activeChatSession;
+    $("#answerBox").textContent = renderChatTranscript() || job.result?.answer || "";
     state.queryJobId = null;
+    loadKnowledgeData().then(() => {
+      if (state.view === "sessions") renderSessions();
+    }).catch(() => {});
   } else if (job.status === "failed" || job.status === "stopped") {
     $("#answerBox").textContent = job.error || "Query failed";
     state.queryJobId = null;
@@ -350,7 +456,7 @@ function renderQueryProgress(job) {
 
 function selectJob(jobId) {
   state.selectedJobId = jobId;
-  renderJobs();
+  renderJobsPanel();
 }
 
 function trackJob(job, message) {
@@ -358,7 +464,8 @@ function trackJob(job, message) {
   state.jobs = [job, ...state.jobs.filter((item) => item.id !== job.id)];
   state.jobStatuses[job.id] = job.status;
   state.selectedJobId = job.id;
-  renderJobs();
+  state.ui.utilityTab = "jobs";
+  renderUtilityPanel();
   notify(message || `${jobLabels[job.type] || job.type} queued`, "info");
 }
 
@@ -369,7 +476,7 @@ async function stopJob(jobId) {
     state.jobs = [job, ...state.jobs.filter((item) => item.id !== job.id)];
     state.jobStatuses[job.id] = job.status;
     state.selectedJobId = job.id;
-    renderJobs();
+    renderJobsPanel();
     notify("Stop requested", "warning");
   } catch (error) {
     notify(error.message, "error");
@@ -386,21 +493,60 @@ async function retryJob(jobId) {
   }
 }
 
-function renderJobs() {
+function filteredJobs() {
+  const filter = state.ui.jobFilter || "active";
+  if (filter === "all") return state.jobs;
+  if (filter === "active") return state.jobs.filter((job) => ["running", "stopping"].includes(job.status));
+  if (filter === "failed") return state.jobs.filter((job) => ["failed", "stopped"].includes(job.status));
+  if (filter === "succeeded") return state.jobs.filter((job) => job.status === "succeeded");
+  return state.jobs;
+}
+
+function jobFilterButton(filter, label) {
+  const active = (state.ui.jobFilter || "active") === filter ? " active" : "";
+  const count =
+    filter === "all"
+      ? state.jobs.length
+      : filter === "active"
+        ? state.jobs.filter((job) => ["running", "stopping"].includes(job.status)).length
+        : filter === "failed"
+          ? state.jobs.filter((job) => ["failed", "stopped"].includes(job.status)).length
+          : state.jobs.filter((job) => job.status === "succeeded").length;
+  return `<button class="${active.trim()}" type="button" data-action="job-filter" data-job-filter="${escapeHTML(filter)}">${escapeHTML(label)} ${escapeHTML(count)}</button>`;
+}
+
+function renderJobsPanel() {
   const list = $("#jobsList");
   if (!list) return;
   $("#jobCount").textContent = String(state.jobs.length);
   if (!state.jobs.length) {
-    list.innerHTML = `<div class="empty">No jobs</div>`;
+    list.innerHTML = `
+      <div class="job-filter-bar">
+        ${jobFilterButton("active", "Active")}
+        ${jobFilterButton("failed", "Needs attention")}
+        ${jobFilterButton("succeeded", "Done")}
+        ${jobFilterButton("all", "All")}
+      </div>
+      <div class="empty">No jobs</div>
+    `;
     renderJobDetails();
     return;
   }
-  list.innerHTML = state.jobs
-    .slice(0, 10)
+  const page = paginatedItems(filteredJobs(), "jobs", 50);
+  list.innerHTML = `
+    <div class="job-filter-bar">
+      ${jobFilterButton("active", "Active")}
+      ${jobFilterButton("failed", "Needs attention")}
+      ${jobFilterButton("succeeded", "Done")}
+      ${jobFilterButton("all", "All")}
+    </div>
+    ${
+      page.items.length
+        ? page.items
     .map((job) => {
       const active = job.id === state.selectedJobId ? " active" : "";
       return `
-        <button class="job-item${active}" type="button" data-job-id="${escapeHTML(job.id)}">
+        <button class="job-item${active}" type="button" data-action="select-job" data-job-id="${escapeHTML(job.id)}">
           <span class="job-line">
             <strong>${escapeHTML(jobLabels[job.type] || job.type)}</strong>
             ${badge(job.status)}
@@ -411,10 +557,11 @@ function renderJobs() {
         </button>
       `;
     })
-    .join("");
-  list.querySelectorAll("[data-job-id]").forEach((button) => {
-    button.addEventListener("click", () => selectJob(button.dataset.jobId));
-  });
+    .join("")
+        : `<div class="empty">No jobs match this filter</div>`
+    }
+    ${renderPager(page.meta, "jobs")}
+  `;
   renderJobDetails();
 }
 
@@ -422,6 +569,7 @@ function renderJobDetails() {
   const details = $("#jobDetails");
   if (!details) return;
   if (!state.jobs.length) {
+    details.className = "job-details compact";
     details.innerHTML = `
       <div class="empty">No job activity yet.</div>
       <div id="jobLogList" class="job-log-list hidden"></div>
@@ -430,6 +578,7 @@ function renderJobDetails() {
   }
   const job = state.jobs.find((item) => item.id === state.selectedJobId) || state.jobs[0];
   state.selectedJobId = job.id;
+  details.className = "job-details compact";
   const logs = job.logs || [];
   const canStop = ["running", "stopping"].includes(job.status);
   const canRetry = !canStop && ["failed", "stopped", "succeeded"].includes(job.status);
@@ -449,8 +598,8 @@ function renderJobDetails() {
       ${job.retry_of ? `<span>Retry of</span><strong>${escapeHTML(job.retry_of)}</strong>` : ""}
     </div>
     <div class="job-detail-actions row-actions">
-      ${canStop ? `<button type="button" class="danger" data-job-stop="${escapeHTML(job.id)}">Stop</button>` : ""}
-      ${canRetry ? `<button type="button" data-job-retry="${escapeHTML(job.id)}">Retry</button>` : ""}
+      ${canStop ? `<button type="button" class="danger" data-action="job-stop" data-job-stop="${escapeHTML(job.id)}">Stop</button>` : ""}
+      ${canRetry ? `<button type="button" data-action="job-retry" data-job-retry="${escapeHTML(job.id)}">Retry</button>` : ""}
     </div>
     <div id="jobLogList" class="job-log-list">
       ${
@@ -470,8 +619,18 @@ function renderJobDetails() {
       }
     </div>
   `;
-  details.querySelector("[data-job-stop]")?.addEventListener("click", () => stopJob(job.id));
-  details.querySelector("[data-job-retry]")?.addEventListener("click", () => retryJob(job.id));
+}
+
+function renderUtilityPanel() {
+  const activeTab = state.ui.utilityTab || "jobs";
+  $("#utilityJobsTab")?.classList.toggle("active", activeTab === "jobs");
+  $("#utilityAssistantTab")?.classList.toggle("active", activeTab === "assistant");
+  $("#jobsPanel")?.classList.toggle("active", activeTab === "jobs");
+  $("#assistantPanel")?.classList.toggle("active", activeTab === "assistant");
+  renderJobsPanel();
+  if (activeTab === "assistant" && state.activeChatSession) {
+    $("#answerBox").textContent = renderChatTranscript();
+  }
 }
 
 function render() {
@@ -491,6 +650,11 @@ function render() {
     return;
   }
 
+  renderMainView();
+  renderUtilityPanel();
+}
+
+function renderMainView() {
   if (state.view === "overview") renderOverview();
   if (state.view === "documents") renderDocuments();
   if (state.view === "sources") renderSources();
@@ -621,41 +785,50 @@ function sourceRelatedCount(doc) {
 }
 
 function documentsTable(limit) {
-  const docs = (state.documents?.documents || []).slice(0, limit || undefined);
+  const allDocs = state.documents?.documents || [];
+  const page = limit
+    ? { items: allDocs.slice(0, limit), meta: null }
+    : paginatedItems(allDocs, "documents", 50);
+  const docs = page.items;
   if (!docs.length) return `<div class="empty">No documents</div>`;
   return `
-    <table>
-      <thead><tr><th>Name</th><th>Type</th><th>Pages</th><th>Wiki Pages</th><th></th></tr></thead>
-      <tbody>
-        ${docs
-          .map((doc) => {
-            const relatedCount = sourceRelatedCount(doc);
-            return `
-              <tr>
-                <td>${escapeHTML(doc.name)}</td>
-                <td>${escapeHTML(doc.type)}</td>
-                <td>${escapeHTML(doc.pages || "")}</td>
-                <td>
-                  <button class="text-button" type="button" data-source-focus="${escapeHTML(doc.hash)}">
-                    ${escapeHTML(relatedCount)} page(s)
-                  </button>
-                </td>
-                <td class="source-actions">
-                  <button type="button" data-source-focus="${escapeHTML(doc.hash)}">Open</button>
-                  <button
-                    class="danger"
-                    type="button"
-                    data-delete-source="${escapeHTML(doc.hash)}"
-                    data-source-name="${escapeHTML(doc.name)}"
-                    data-related-count="${escapeHTML(relatedCount)}"
-                  >Delete</button>
-                </td>
-              </tr>
-            `;
-          })
-          .join("")}
-      </tbody>
-    </table>
+    <div class="data-table-shell">
+      <div class="data-grid-table documents-table">
+        <table>
+          <thead><tr><th>Name</th><th>Type</th><th>Pages</th><th>Wiki Pages</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${docs
+              .map((doc) => {
+                const relatedCount = sourceRelatedCount(doc);
+                return `
+                  <tr>
+                    <td>${escapeHTML(doc.name)}</td>
+                    <td>${escapeHTML(doc.type)}</td>
+                    <td>${escapeHTML(doc.pages || "")}</td>
+                    <td>
+                      <button class="text-button" type="button" data-source-focus="${escapeHTML(doc.hash)}">
+                        ${escapeHTML(relatedCount)} page(s)
+                      </button>
+                    </td>
+                    <td class="source-actions">
+                      <button type="button" data-source-focus="${escapeHTML(doc.hash)}">Open</button>
+                      <button
+                        class="danger"
+                        type="button"
+                        data-delete-source="${escapeHTML(doc.hash)}"
+                        data-source-name="${escapeHTML(doc.name)}"
+                        data-related-count="${escapeHTML(relatedCount)}"
+                      >Delete</button>
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+      ${page.meta ? renderPager(page.meta, "documents") : ""}
+    </div>
   `;
 }
 
@@ -677,15 +850,15 @@ function jobsSummary(limit = 5) {
 
 function renderDocuments() {
   mainView.innerHTML = `
-    <div class="content-grid">
-      <section class="section">
+    <div class="documents-layout">
+      <section class="section add-source-panel">
         <header><h3>Add Source</h3></header>
-        <div class="section-body">
-          <div class="field full">
+        <div class="section-body add-source-grid">
+          <div class="field">
             <label for="addPathInput">Path</label>
             <input id="addPathInput" type="text" placeholder="D:\\path\\to\\folder-or-document.pdf" />
           </div>
-          <div class="field full">
+          <div class="field">
             <label for="importStrategyInput">Import Strategy</label>
             <select id="importStrategyInput">
               <option value="">auto</option>
@@ -694,15 +867,14 @@ function renderDocuments() {
               <option value="ocr-pageindex-local">ocr-pageindex-local</option>
             </select>
           </div>
-          <div class="row-actions">
+          <div class="row-actions add-source-actions">
             <button id="addPathBtn" class="primary" type="button">Add Folder / File</button>
           </div>
-          <hr />
-          <div class="field full">
+          <div class="field">
             <label for="uploadInput">File</label>
             <input id="uploadInput" type="file" multiple />
           </div>
-          <div class="row-actions">
+          <div class="row-actions add-source-actions">
             <button id="uploadBtn" type="button">Upload</button>
           </div>
         </div>
@@ -787,21 +959,25 @@ function openSourceWorkbench(hash) {
 function sourceDocumentList(docs) {
   if (!sourceDocuments().length) return `<div class="empty">No documents</div>`;
   if (!docs.length) return `<div class="empty">No matching sources</div>`;
-  return docs
-    .map((doc) => {
-      const active = doc.hash === state.selectedSourceHash ? " active" : "";
-      const rawBadge = doc.raw_exists === false ? `<span class="badge warn">raw missing</span>` : `<span class="badge muted">${escapeHTML(doc.type || "unknown")}</span>`;
-      return `
-        <button class="source-list-item${active}" type="button" data-source-select="${escapeHTML(doc.hash)}">
-          <span class="source-list-name">${escapeHTML(doc.name)}</span>
-          <span class="source-list-meta">
-            ${rawBadge}
-            <span>${escapeHTML(sourceRelatedCount(doc))} page(s)</span>
-          </span>
-        </button>
-      `;
-    })
-    .join("");
+  const page = paginatedItems(docs, "sources", 50);
+  return `
+    ${page.items
+      .map((doc) => {
+        const active = doc.hash === state.selectedSourceHash ? " active" : "";
+        const rawBadge = doc.raw_exists === false ? `<span class="badge warn">raw missing</span>` : `<span class="badge muted">${escapeHTML(doc.type || "unknown")}</span>`;
+        return `
+          <button class="source-list-item${active}" type="button" data-source-select="${escapeHTML(doc.hash)}">
+            <span class="source-list-name">${escapeHTML(doc.name)}</span>
+            <span class="source-list-meta">
+              ${rawBadge}
+              <span>${escapeHTML(sourceRelatedCount(doc))} page(s)</span>
+            </span>
+          </button>
+        `;
+      })
+      .join("")}
+    ${renderPager(page.meta, "sources")}
+  `;
 }
 
 function sourceRelationGroups(doc) {
@@ -901,6 +1077,7 @@ function renderSources() {
   `;
   mainView.querySelector("[data-source-search]")?.addEventListener("input", (event) => {
     state.sourceSearch = event.target.value;
+    resetPage("sources");
     renderSources();
     const search = mainView.querySelector("[data-source-search]");
     search?.focus();
@@ -1004,8 +1181,20 @@ function renderOcr() {
   const entries = state.ocrCache?.entries || [];
   const runtime = state.pageindexLocalStatus || {};
   mainView.innerHTML = `
-    <div class="content-grid">
-      <section class="section">
+    <div class="ocr-workbench">
+      <section class="ocr-runtime-strip" aria-label="Local PageIndex">
+        <div>
+          <h3>Local PageIndex</h3>
+          <span class="muted-text">${escapeHTML(runtime.root || "")}</span>
+        </div>
+        <div class="runtime-pills">
+          ${runtime.ready ? `<span class="badge good">ready</span>` : `<span class="badge warn">setup</span>`}
+          <span><span>Enabled</span><strong>${runtime.enabled ? "yes" : "no"}</strong></span>
+          <span><span>State</span><strong>${escapeHTML(runtime.installation_state || "not_installed")}</strong></span>
+          <span><span>Version</span><strong>${escapeHTML(runtime.manifest?.version || "")}</strong></span>
+        </div>
+      </section>
+      <section class="section ocr-cache-panel">
         <header>
           <div>
             <h3>OCR Cache</h3>
@@ -1017,20 +1206,6 @@ function renderOcr() {
           ${ocrCacheTable(entries)}
         </div>
       </section>
-      <section class="section">
-        <header>
-          <div>
-            <h3>Local PageIndex</h3>
-            <span class="muted-text">${escapeHTML(runtime.root || "")}</span>
-          </div>
-          ${runtime.ready ? `<span class="badge good">ready</span>` : `<span class="badge warn">setup</span>`}
-        </header>
-        <div class="section-body runtime-list">
-          <div><span>Enabled</span><strong>${runtime.enabled ? "yes" : "no"}</strong></div>
-          <div><span>State</span><strong>${escapeHTML(runtime.installation_state || "not_installed")}</strong></div>
-          <div><span>Version</span><strong>${escapeHTML(runtime.manifest?.version || "")}</strong></div>
-        </div>
-      </section>
     </div>
   `;
   $("#refreshOcrBtn").addEventListener("click", refreshOcr);
@@ -1039,30 +1214,36 @@ function renderOcr() {
 
 function ocrCacheTable(entries) {
   if (!entries.length) return `<div class="empty">No OCR cache entries</div>`;
+  const page = paginatedItems(entries, "ocr", 50);
   return `
-    <table>
-      <thead><tr><th>Document</th><th>Status</th><th>Pages</th><th>Model</th><th>Artifacts</th><th></th></tr></thead>
-      <tbody>
-        ${entries
-          .map(
-            (entry) => `
-              <tr>
-                <td>${escapeHTML(entry.doc_name || entry.file_hash)}</td>
-                <td>${badge(entry.status || "unknown")}</td>
-                <td>${escapeHTML(entry.page_count || "")}</td>
-                <td>${escapeHTML(entry.ocr_model || "")}</td>
-                <td>${entry.has_pages ? `<span class="badge good">pages</span>` : `<span class="badge warn">pages</span>`} ${entry.has_pageindex_input ? `<span class="badge good">md</span>` : `<span class="badge warn">md</span>`}</td>
-                <td class="source-actions">
-                  <button type="button" data-ocr-rerun="${escapeHTML(entry.file_hash)}">Rerun</button>
-                  <button type="button" data-ocr-retry="${escapeHTML(entry.file_hash)}">Retry</button>
-                  <button class="danger" type="button" data-ocr-invalidate="${escapeHTML(entry.file_hash)}">Invalidate</button>
-                </td>
-              </tr>
-            `,
-          )
-          .join("")}
-      </tbody>
-    </table>
+    <div class="data-table-shell">
+      <div class="data-grid-table ocr-table">
+        <table>
+          <thead><tr><th>Document</th><th>Status</th><th>Pages</th><th>Model</th><th>Artifacts</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${page.items
+              .map(
+                (entry) => `
+                  <tr>
+                    <td>${escapeHTML(entry.doc_name || entry.file_hash)}</td>
+                    <td>${badge(entry.status || "unknown")}</td>
+                    <td>${escapeHTML(entry.page_count || "")}</td>
+                    <td>${escapeHTML(entry.ocr_model || "")}</td>
+                    <td>${entry.has_pages ? `<span class="badge good">pages</span>` : `<span class="badge warn">pages</span>`} ${entry.has_pageindex_input ? `<span class="badge good">md</span>` : `<span class="badge warn">md</span>`}</td>
+                    <td class="source-actions">
+                      <button type="button" data-ocr-rerun="${escapeHTML(entry.file_hash)}">Rerun</button>
+                      <button type="button" data-ocr-retry="${escapeHTML(entry.file_hash)}">Retry</button>
+                      <button class="danger" type="button" data-ocr-invalidate="${escapeHTML(entry.file_hash)}">Invalidate</button>
+                    </td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+      ${renderPager(page.meta, "ocr")}
+    </div>
   `;
 }
 
@@ -1132,121 +1313,305 @@ async function retryOcrCache(fileHash) {
   }
 }
 
-function renderWikiDirectory(node, depth = 0) {
-  const folderMarkup = (node.children || [])
-    .map((child) => {
-      const open = state.wikiOpenDirs[child.path] !== false ? "open" : "";
-      return `
-        <details class="folder-group" data-folder-path="${escapeHTML(child.path)}" ${open}>
-          <summary class="folder-row" style="--depth: ${depth}">
-            <span class="folder-icon" aria-hidden="true"></span>
-            <strong>${escapeHTML(child.name)}</strong>
-            <em>${escapeHTML(child.count)}</em>
-          </summary>
-          ${renderWikiDirectory(child, depth + 1)}
-        </details>
-      `;
-    })
-    .join("");
-  const fileMarkup = (node.files || [])
+function wikiFileDirectory(fileOrPath) {
+  if (typeof fileOrPath === "string") {
+    const parts = fileOrPath.split("/").filter(Boolean);
+    return parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+  }
+  return fileOrPath?.directory || wikiFileDirectory(fileOrPath?.path || "");
+}
+
+function wikiDirectoryLabel(directory) {
+  return directory ? `${directory}/` : "wiki/";
+}
+
+function wikiDirectories() {
+  const counts = new Map();
+  (state.wikiTree || []).forEach((file) => {
+    const directory = wikiFileDirectory(file);
+    counts.set(directory, (counts.get(directory) || 0) + 1);
+  });
+  return Array.from(counts.entries())
+    .map(([path, count]) => ({ path, count, label: wikiDirectoryLabel(path) }))
+    .sort((a, b) => (a.path === "" ? -1 : b.path === "" ? 1 : a.path.localeCompare(b.path)));
+}
+
+function filesInWikiDirectory(directory = state.wikiDirectory) {
+  return (state.wikiTree || []).filter((file) => wikiFileDirectory(file) === (directory || ""));
+}
+
+function filteredWikiDirectoryFiles() {
+  const query = state.wikiSearch.trim().toLowerCase();
+  const files = filesInWikiDirectory();
+  if (!query) return files;
+  return files.filter((file) => {
+    const haystack = [file.name, file.path, file.extension, file.modified].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function renderWikiFileList(files) {
+  if (!files.length) return `<div class="empty">No matching files in this directory</div>`;
+  return files
     .map((file) => {
       const active = file.path === state.selectedWikiPath ? " active" : "";
       return `
-        <button type="button" data-wiki-path="${escapeHTML(file.path)}" class="file-row${active}" style="--depth: ${depth}">
+        <button type="button" data-action="wiki-select" data-wiki-path="${escapeHTML(file.path)}" class="file-row${active}">
           <span>${escapeHTML(file.name)}</span>
-          <small>${escapeHTML(file.directory || "wiki")}</small>
+          <small>${escapeHTML(file.modified || "")}${file.size ? ` · ${escapeHTML(file.size)} bytes` : ""}</small>
         </button>
       `;
     })
     .join("");
-  return `${folderMarkup}${fileMarkup}`;
+}
+
+function wikiDisplayContent(path = state.selectedWikiPath) {
+  return state.wikiDrafts[path] ?? state.wikiFileCache[path]?.content ?? "";
+}
+
+function inlineMarkdown(text) {
+  return escapeHTML(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[\[([^\]]+)\]\]/g, "<code>[[$1]]</code>");
+}
+
+function renderMarkdown(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let inCode = false;
+  let listType = null;
+
+  const closeList = () => {
+    if (!listType) return;
+    html.push(`</${listType}>`);
+    listType = null;
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      closeList();
+      html.push(inCode ? "</code></pre>" : "<pre><code>");
+      inCode = !inCode;
+      return;
+    }
+    if (inCode) {
+      html.push(`${escapeHTML(line)}\n`);
+      return;
+    }
+    if (!trimmed) {
+      closeList();
+      return;
+    }
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      return;
+    }
+    if (/^[-*_]{3,}$/.test(trimmed)) {
+      closeList();
+      html.push("<hr />");
+      return;
+    }
+    const unordered = /^[-*]\s+(.+)$/.exec(trimmed);
+    if (unordered) {
+      if (listType !== "ul") {
+        closeList();
+        listType = "ul";
+        html.push("<ul>");
+      }
+      html.push(`<li>${inlineMarkdown(unordered[1])}</li>`);
+      return;
+    }
+    const ordered = /^\d+\.\s+(.+)$/.exec(trimmed);
+    if (ordered) {
+      if (listType !== "ol") {
+        closeList();
+        listType = "ol";
+        html.push("<ol>");
+      }
+      html.push(`<li>${inlineMarkdown(ordered[1])}</li>`);
+      return;
+    }
+    if (trimmed.startsWith(">")) {
+      closeList();
+      html.push(`<blockquote>${inlineMarkdown(trimmed.replace(/^>\s?/, ""))}</blockquote>`);
+      return;
+    }
+    closeList();
+    html.push(`<p>${inlineMarkdown(trimmed)}</p>`);
+  });
+  closeList();
+  if (inCode) html.push("</code></pre>");
+  return html.join("");
+}
+
+function updateWikiDocumentPanes(path = state.selectedWikiPath) {
+  const content = wikiDisplayContent(path);
+  if ($("#wikiPathInput")) $("#wikiPathInput").value = path || "";
+  if ($("#wikiEditor") && $("#wikiEditor").value !== content) $("#wikiEditor").value = content;
+  if ($("#wikiPreviewPane")) {
+    $("#wikiPreviewPane").innerHTML =
+      state.wikiLoadingPath === path ? `<div class="empty">Loading...</div>` : renderMarkdown(content);
+  }
+}
+
+function selectWikiFile(path) {
+  if (!path) return;
+  state.selectedWikiPath = path;
+  state.wikiDirectory = wikiFileDirectory(path);
+  renderWiki();
+  ensureWikiFileLoaded(path);
+}
+
+async function ensureWikiFileLoaded(path, options = {}) {
+  if (!path) return;
+  const cached = state.wikiFileCache[path];
+  if (cached?.content !== undefined && !options.force) {
+    if (state.selectedWikiPath === path) updateWikiDocumentPanes(path);
+    return;
+  }
+  state.wikiLoadingPath = path;
+  if (state.selectedWikiPath === path) updateWikiDocumentPanes(path);
+  try {
+    const file = await api(withKb(`/api/wiki/file?path=${encodeURIComponent(path)}`));
+    state.wikiFileCache[file.path] = { path: file.path, content: file.content };
+    if (state.wikiDrafts[file.path] === undefined && state.selectedWikiPath === file.path) {
+      updateWikiDocumentPanes(file.path);
+    }
+  } catch (error) {
+    if ($("#wikiPreviewPane") && state.selectedWikiPath === path) {
+      $("#wikiPreviewPane").innerHTML = `<div class="empty">${escapeHTML(error.message)}</div>`;
+    }
+    notify(error.message, "error");
+  } finally {
+    if (state.wikiLoadingPath === path) state.wikiLoadingPath = null;
+    if (state.selectedWikiPath === path) updateWikiDocumentPanes(path);
+  }
+}
+
+function selectWikiDirectory(directory) {
+  state.wikiDirectory = directory || "";
+  resetPage("wiki");
+  const files = filesInWikiDirectory();
+  if (files.length && !files.some((file) => file.path === state.selectedWikiPath)) {
+    state.selectedWikiPath = files[0].path;
+  }
+  renderWiki();
+  if (state.selectedWikiPath) ensureWikiFileLoaded(state.selectedWikiPath);
 }
 
 function renderWiki() {
   const files = state.wikiTree || [];
-  if (!files.some((file) => file.path === state.selectedWikiPath) && files.length) {
-    state.selectedWikiPath = files[0].path;
-  }
-  const directory = buildWikiDirectory(files);
   const selectedFile = files.find((file) => file.path === state.selectedWikiPath);
+  if (selectedFile && wikiFileDirectory(selectedFile) !== state.wikiDirectory) {
+    state.wikiDirectory = wikiFileDirectory(selectedFile);
+  }
+  if (!selectedFile && files.length) {
+    state.selectedWikiPath = files[0].path;
+    state.wikiDirectory = wikiFileDirectory(files[0]);
+  }
+  const directories = wikiDirectories();
+  if (directories.length && !directories.some((directory) => directory.path === state.wikiDirectory)) {
+    state.wikiDirectory = directories[0].path;
+  }
+  const directoryFiles = filesInWikiDirectory();
+  if (directoryFiles.length && !directoryFiles.some((file) => file.path === state.selectedWikiPath)) {
+    state.selectedWikiPath = directoryFiles[0].path;
+  }
+  const filtered = filteredWikiDirectoryFiles();
+  const page = paginatedItems(filtered, "wiki", 40);
+  const displayContent = state.wikiLoadingPath === state.selectedWikiPath ? "" : wikiDisplayContent();
+  const mode = state.ui.wikiMode || "preview";
   mainView.innerHTML = `
     <div class="wiki-layout">
-      <aside class="wiki-browser" aria-label="Wiki folders">
-        <div class="wiki-browser-head">
-          <div>
-            <strong>wiki/</strong>
-            <span>${escapeHTML(files.length)} page(s)</span>
+      <div class="wiki-directory-toolbar">
+        <div class="field">
+          <label for="wikiDirectorySelect">Directory</label>
+          <select id="wikiDirectorySelect" data-action="wiki-directory">
+            ${directories
+              .map(
+                (directory) =>
+                  `<option value="${escapeHTML(directory.path)}" ${directory.path === state.wikiDirectory ? "selected" : ""}>${escapeHTML(directory.label)} (${escapeHTML(directory.count)})</option>`,
+              )
+              .join("")}
+          </select>
+        </div>
+        <div class="wiki-search-row">
+          <input data-action="wiki-search" type="search" placeholder="Search this directory" value="${escapeHTML(state.wikiSearch)}" />
+        </div>
+        <div class="wiki-page-summary">
+          <strong>${escapeHTML(filtered.length)}</strong>
+          <span>of ${escapeHTML(directoryFiles.length)} page(s)</span>
+        </div>
+      </div>
+      <div class="wiki-body">
+        <aside class="wiki-browser" aria-label="Wiki pages">
+          <div class="wiki-tree-list">
+            ${files.length ? renderWikiFileList(page.items) : `<div class="empty">No files</div>`}
+            ${renderPager(page.meta, "wiki")}
           </div>
-          ${selectedFile ? `<span class="badge muted">${escapeHTML(selectedFile.extension || ".md")}</span>` : ""}
+        </aside>
+        <div class="markdown-pane">
+          <div class="wiki-editor-toolbar">
+            <input id="wikiPathInput" type="hidden" value="${escapeHTML(state.selectedWikiPath || "")}" />
+            <div class="wiki-current-path">
+              <strong>${escapeHTML(state.selectedWikiPath || "No page selected")}</strong>
+              <span>${state.wikiDrafts[state.selectedWikiPath] !== undefined ? "Unsaved changes" : "Saved"}</span>
+            </div>
+            <div class="wiki-mode-tabs" role="tablist" aria-label="Markdown mode">
+              <button class="${mode === "preview" ? "active" : ""}" type="button" data-action="wiki-mode" data-wiki-mode="preview">Preview</button>
+              <button class="${mode === "source" ? "active" : ""}" type="button" data-action="wiki-mode" data-wiki-mode="source">Source</button>
+            </div>
+            <button id="saveWikiBtn" class="primary" type="button">Save</button>
+          </div>
+          <section id="wikiPreviewPane" class="wiki-preview-pane${mode === "preview" ? " active" : ""}" aria-label="Markdown preview">
+            ${state.wikiLoadingPath === state.selectedWikiPath ? `<div class="empty">Loading...</div>` : renderMarkdown(displayContent)}
+          </section>
+          <section id="wikiSourcePane" class="wiki-source-pane${mode === "source" ? " active" : ""}" aria-label="Markdown source">
+            <textarea id="wikiEditor" spellcheck="false">${escapeHTML(displayContent)}</textarea>
+          </section>
         </div>
-        <div class="wiki-tree-list">
-          ${files.length ? renderWikiDirectory(directory) : `<div class="empty">No files</div>`}
-        </div>
-      </aside>
-      <div class="editor-pane">
-        <div class="row-actions wiki-path-row">
-          <input id="wikiPathInput" type="text" value="${escapeHTML(state.selectedWikiPath)}" />
-          <button id="loadWikiBtn" type="button">Load</button>
-          <button id="saveWikiBtn" class="primary" type="button">Save</button>
-        </div>
-        <textarea id="wikiEditor" spellcheck="false"></textarea>
-        <pre id="wikiPreview" class="preview"></pre>
       </div>
     </div>
   `;
-  mainView.querySelectorAll("[data-wiki-path]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.selectedWikiPath = button.dataset.wikiPath;
-      renderWiki();
-    });
+  $("#wikiDirectorySelect")?.addEventListener("change", (event) => selectWikiDirectory(event.currentTarget.value));
+  $("#saveWikiBtn")?.addEventListener("click", saveWikiFile);
+  $("#wikiEditor")?.addEventListener("input", () => {
+    state.wikiDrafts[state.selectedWikiPath] = $("#wikiEditor").value;
+    updateWikiDocumentPanes(state.selectedWikiPath);
   });
-  mainView.querySelectorAll("[data-folder-path]").forEach((folder) => {
-    folder.addEventListener("toggle", () => {
-      state.wikiOpenDirs[folder.dataset.folderPath] = folder.open;
-    });
-  });
-  $("#loadWikiBtn").addEventListener("click", (event) => {
-    state.selectedWikiPath = $("#wikiPathInput").value.trim();
-    loadWikiFile(event);
-  });
-  $("#saveWikiBtn").addEventListener("click", saveWikiFile);
-  $("#wikiEditor").addEventListener("input", () => {
-    $("#wikiPreview").textContent = $("#wikiEditor").value;
-  });
-  loadWikiFile();
-}
-
-async function loadWikiFile(event) {
-  if (!state.selectedWikiPath) return;
-  const button = event?.currentTarget;
-  setButtonBusy(button, true, "Loading...");
-  try {
-    const file = await api(withKb(`/api/wiki/file?path=${encodeURIComponent(state.selectedWikiPath)}`));
-    if (!$("#wikiEditor")) return;
-    $("#wikiPathInput").value = file.path;
-    $("#wikiEditor").value = file.content;
-    $("#wikiPreview").textContent = file.content;
-  } catch (error) {
-    if ($("#wikiPreview")) $("#wikiPreview").textContent = error.message;
-    notify(error.message, "error");
-  } finally {
-    setButtonBusy(button, false);
+  if (state.selectedWikiPath && !state.wikiFileCache[state.selectedWikiPath] && state.wikiLoadingPath !== state.selectedWikiPath) {
+    ensureWikiFileLoaded(state.selectedWikiPath);
   }
 }
 
 async function saveWikiFile(event) {
   const button = event?.currentTarget;
+  const path = state.selectedWikiPath || $("#wikiPathInput")?.value?.trim();
+  if (!path) {
+    notify("Select a wiki page first.", "warning");
+    return;
+  }
+  const content = $("#wikiEditor")?.value ?? wikiDisplayContent(path);
   setButtonBusy(button, true, "Saving...");
   try {
     await api("/api/wiki/file", {
       method: "PUT",
       body: JSON.stringify({
         kb_dir: state.kbDir,
-        path: $("#wikiPathInput").value.trim(),
-        content: $("#wikiEditor").value,
+        path,
+        content,
       }),
     });
     notify("Wiki page saved", "success");
+    state.wikiFileCache[path] = { path, content };
+    delete state.wikiDrafts[path];
+    state.selectedWikiPath = path;
+    state.wikiDirectory = wikiFileDirectory(path);
     await loadKnowledgeData();
     render();
   } catch (error) {
@@ -1258,15 +1623,21 @@ async function saveWikiFile(event) {
 
 function renderSessions() {
   const sessions = state.chats || [];
+  const page = paginatedItems(sessions, "sessions", 50);
   mainView.innerHTML = `
     <section class="section">
       <header><h3>Chat Sessions</h3></header>
       <div class="section-body">
         ${
           sessions.length
-            ? `<table><thead><tr><th>ID</th><th>Turns</th><th>Updated</th><th>Title</th><th></th></tr></thead><tbody>
-              ${sessions.map((session) => `<tr><td>${escapeHTML(session.id)}</td><td>${escapeHTML(session.turn_count)}</td><td>${escapeHTML(session.updated_at)}</td><td>${escapeHTML(session.title || "")}</td><td><button class="danger" type="button" data-delete-chat="${escapeHTML(session.id)}">Delete</button></td></tr>`).join("")}
-            </tbody></table>`
+            ? `<div class="data-table-shell">
+                <div class="data-grid-table sessions-table">
+                  <table><thead><tr><th>ID</th><th>Turns</th><th>Updated</th><th>Title</th><th>Actions</th></tr></thead><tbody>
+                    ${page.items.map((session) => `<tr><td>${escapeHTML(session.id)}</td><td>${escapeHTML(session.turn_count)}</td><td>${escapeHTML(session.updated_at)}</td><td>${escapeHTML(session.title || "")}</td><td class="source-actions"><button type="button" data-action="open-chat" data-open-chat="${escapeHTML(session.id)}">Open</button><button class="danger" type="button" data-delete-chat="${escapeHTML(session.id)}">Delete</button></td></tr>`).join("")}
+                  </tbody></table>
+                </div>
+                ${renderPager(page.meta, "sessions")}
+              </div>`
             : `<div class="empty">No sessions</div>`
         }
       </div>
@@ -1277,6 +1648,9 @@ function renderSessions() {
       setButtonBusy(button, true, "Deleting...");
       try {
         await api(withKb(`/api/chats/${encodeURIComponent(button.dataset.deleteChat)}`), { method: "DELETE" });
+        if (button.dataset.deleteChat === state.activeChatSessionId) {
+          setActiveChatSession(null);
+        }
         notify("Session deleted", "success");
         await loadKnowledgeData();
         render();
@@ -1294,6 +1668,7 @@ function renderReports() {
   syncSelectedReport(reports);
   syncFixPlanFromJobs();
   const candidates = state.fixPlan?.candidates || [];
+  const reportPage = paginatedItems(reports, "reports", 50);
   const selectedCount = candidates.filter((item) => isSelectableFix(item) && state.selectedFixes[fixKey(item)]).length;
   const activeReportName = state.selectedReport ? state.selectedReport.replace(/^reports\//, "") : "";
   mainView.innerHTML = `
@@ -1329,11 +1704,12 @@ function renderReports() {
         </header>
         <div class="section-body report-browser-body">
           <div class="report-list">
-            ${reports.map((name) => {
+            ${reportPage.items.map((name) => {
               const path = `reports/${name}`;
               const active = path === state.selectedReport ? " active" : "";
               return `<button type="button" class="report-button${active}" data-report="${escapeHTML(path)}">${escapeHTML(name)}</button>`;
             }).join("") || `<div class="empty">No reports</div>`}
+            ${renderPager(reportPage.meta, "reports")}
           </div>
           <pre id="reportPreview" class="preview report-preview">${escapeHTML(reportPreviewText())}</pre>
         </div>
@@ -1438,41 +1814,45 @@ function reportPreviewText() {
 
 function renderFixCandidates(candidates) {
   if (!candidates.length) return `<div class="empty">No fix candidates</div>`;
-  return candidates
-    .map((item) => {
-      const key = fixKey(item);
-      const auto = isAutoFix(item);
-      const review = isManualReviewFix(item);
-      const selectable = isSelectableFix(item);
-      const checked = state.selectedFixes[key] ? "checked" : "";
-      const disabled = selectable ? "" : "disabled";
-      const badgeClass = auto ? "warn" : review ? "info" : "muted";
-      const actionLabel = item.action || "create";
-      return `
-        <div class="fix-row${review ? " review-only" : ""}${selectable ? "" : " unavailable"}">
-          <label class="fix-select">
-            <input type="checkbox" data-fix-key="${escapeHTML(key)}" ${checked} ${disabled} />
-            <span class="fix-main">
-              <strong>${escapeHTML(item.title || item.name)}</strong>
-              <span>${escapeHTML(item.path || `concepts/${item.name}.md`)}</span>
-            </span>
-          </label>
-          <span class="badge ${badgeClass}">${escapeHTML(actionLabel)}</span>
-          <div class="fix-detail">
-            <div class="fix-meta">
-              <span>${escapeHTML(item.source_section || "Lint report")}</span>
-              ${item.status ? `<span>${escapeHTML(item.status)}</span>` : ""}
+  const page = paginatedItems(candidates, "fixes", 30);
+  return `
+    ${page.items
+      .map((item) => {
+        const key = fixKey(item);
+        const auto = isAutoFix(item);
+        const review = isManualReviewFix(item);
+        const selectable = isSelectableFix(item);
+        const checked = state.selectedFixes[key] ? "checked" : "";
+        const disabled = selectable ? "" : "disabled";
+        const badgeClass = auto ? "warn" : review ? "info" : "muted";
+        const actionLabel = item.action || "create";
+        return `
+          <div class="fix-row${review ? " review-only" : ""}${selectable ? "" : " unavailable"}">
+            <label class="fix-select">
+              <input type="checkbox" data-fix-key="${escapeHTML(key)}" ${checked} ${disabled} />
+              <span class="fix-main">
+                <strong>${escapeHTML(item.title || item.name)}</strong>
+                <span>${escapeHTML(item.path || `concepts/${item.name}.md`)}</span>
+              </span>
+            </label>
+            <span class="badge ${badgeClass}">${escapeHTML(actionLabel)}</span>
+            <div class="fix-detail">
+              <div class="fix-meta">
+                <span>${escapeHTML(item.source_section || "Lint report")}</span>
+                ${item.status ? `<span>${escapeHTML(item.status)}</span>` : ""}
+              </div>
+              <p class="fix-reason">${escapeHTML(item.reason || "")}</p>
+              <details class="fix-preview" open>
+                <summary>Planned content</summary>
+                <pre>${escapeHTML(item.preview || "")}</pre>
+              </details>
             </div>
-            <p class="fix-reason">${escapeHTML(item.reason || "")}</p>
-            <details class="fix-preview" open>
-              <summary>Planned content</summary>
-              <pre>${escapeHTML(item.preview || "")}</pre>
-            </details>
           </div>
-        </div>
-      `;
-    })
-    .join("");
+        `;
+      })
+      .join("")}
+    ${renderPager(page.meta, "fixes")}
+  `;
 }
 
 function renderAppliedFixes() {
@@ -1541,6 +1921,106 @@ function setAllFixes(value) {
     }
   });
   renderReports();
+}
+
+function handleAppClick(event) {
+  const target = event.target.closest("[data-action]");
+  if (!target) return;
+  const action = target.dataset.action;
+  if (action === "utility-tab") {
+    state.ui.utilityTab = target.dataset.utilityTab || "jobs";
+    renderUtilityPanel();
+    return;
+  }
+  if (action === "job-filter") {
+    state.ui.jobFilter = target.dataset.jobFilter || "active";
+    resetPage("jobs");
+    renderJobsPanel();
+    return;
+  }
+  if (action === "jobs-page") {
+    setPage("jobs", target.dataset.page);
+    renderJobsPanel();
+    return;
+  }
+  if (action === "select-job") {
+    selectJob(target.dataset.jobId);
+    return;
+  }
+  if (action === "job-stop") {
+    stopJob(target.dataset.jobStop);
+    return;
+  }
+  if (action === "job-retry") {
+    retryJob(target.dataset.jobRetry);
+    return;
+  }
+  if (action === "wiki-select") {
+    selectWikiFile(target.dataset.wikiPath);
+    return;
+  }
+  if (action === "wiki-mode") {
+    state.ui.wikiMode = target.dataset.wikiMode || "preview";
+    renderWiki();
+    return;
+  }
+  if (action === "wiki-page") {
+    setPage("wiki", target.dataset.page);
+    renderWiki();
+    return;
+  }
+  if (action === "documents-page") {
+    setPage("documents", target.dataset.page);
+    renderDocuments();
+    return;
+  }
+  if (action === "sources-page") {
+    setPage("sources", target.dataset.page);
+    renderSources();
+    return;
+  }
+  if (action === "ocr-page") {
+    setPage("ocr", target.dataset.page);
+    renderOcr();
+    return;
+  }
+  if (action === "sessions-page") {
+    setPage("sessions", target.dataset.page);
+    renderSessions();
+    return;
+  }
+  if (action === "open-chat") {
+    openChatSession(target.dataset.openChat);
+    return;
+  }
+  if (action === "reports-page") {
+    setPage("reports", target.dataset.page);
+    renderReports();
+    return;
+  }
+  if (action === "fixes-page") {
+    setPage("fixes", target.dataset.page);
+    renderReports();
+  }
+}
+
+function handleAppInput(event) {
+  const target = event.target;
+  if (target?.dataset?.action === "wiki-search") {
+    state.wikiSearch = target.value;
+    resetPage("wiki");
+    const matches = filteredWikiDirectoryFiles();
+    if (matches.length && !matches.some((file) => file.path === state.selectedWikiPath)) {
+      state.selectedWikiPath = matches[0].path;
+    }
+    renderWiki();
+    if (state.selectedWikiPath) ensureWikiFileLoaded(state.selectedWikiPath);
+    const input = document.querySelector('[data-action="wiki-search"]');
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
 }
 
 async function runLint(event) {
@@ -2077,6 +2557,8 @@ function bindViewButtons() {
 
 function switchView(view) {
   state.view = view;
+  const workspace = $(".workspace");
+  if (workspace) workspace.scrollTop = 0;
   render();
 }
 
@@ -2095,6 +2577,7 @@ async function askQuestion(event) {
       body: JSON.stringify({
         kb_dir: state.kbDir,
         question,
+        session_id: state.activeChatSessionId,
         save: $("#saveQueryInput").checked,
       }),
     });
@@ -2112,6 +2595,9 @@ async function askQuestion(event) {
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => switchView(button.dataset.view));
 });
+
+document.addEventListener("click", handleAppClick);
+document.addEventListener("input", handleAppInput);
 
 $("#refreshBtn").addEventListener("click", loadAll);
 $("#askBtn").addEventListener("click", askQuestion);

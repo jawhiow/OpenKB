@@ -481,20 +481,29 @@ def create_app(registry: JobRegistry | None = None):
             raise translate_error(exc) from exc
 
         def run(_job):
-            from openkb.agent.query import run_query
+            from openkb.agent.chat_session import ChatSession, load_session
+            from openkb.agent.query import run_query_session
             from openkb.cli import _setup_llm_key
 
             _job.raise_if_stopped()
             _job.add_log("Loading model configuration")
             config = load_config(target_kb / ".openkb" / "config.yaml")
             _setup_llm_key(target_kb)
+            model = str(config.get("model", DEFAULT_CONFIG["model"]))
+            language = str(config.get("language", DEFAULT_CONFIG.get("language", "en")))
+            session_id = str(payload.get("session_id") or "").strip()
+            session = (
+                load_session(target_kb, session_id)
+                if session_id
+                else ChatSession.new(target_kb, model, language)
+            )
             _job.add_log("Running query")
             answer = asyncio.run(
-                run_query(
+                run_query_session(
                     question,
                     target_kb,
-                    str(config.get("model", DEFAULT_CONFIG["model"])),
-                    stream=False,
+                    model,
+                    session,
                 )
             )
             _job.raise_if_stopped()
@@ -510,7 +519,11 @@ def create_app(registry: JobRegistry | None = None):
                     encoding="utf-8",
                 )
                 _job.add_log(f"Saved exploration: {explore_path.name}")
-            return {"answer": answer}
+            return {
+                "answer": answer,
+                "session_id": session.id,
+                "session": session.to_dict(),
+            }
 
         job = registry.submit("query", run, message=question)
         return {"job": job.to_dict()}

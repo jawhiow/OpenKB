@@ -5,6 +5,7 @@ import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -32,6 +33,105 @@ def _make_kb(tmp_path: Path) -> Path:
     )
     (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps({}), encoding="utf-8")
     return kb_dir
+
+
+def test_query_job_creates_persisted_chat_session_for_web_ask(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+    result = MagicMock()
+    result.final_output = "first answer"
+    result.to_input_list.return_value = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+    ]
+
+    with (
+        patch("openkb.cli._setup_llm_key"),
+        patch("openkb.agent.query.Runner.run", new_callable=AsyncMock) as mock_run,
+    ):
+        mock_run.return_value = result
+        response = client.post(
+            "/api/query",
+            json={"kb_dir": str(kb_dir), "question": "first question"},
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job"]["id"]
+        job = registry.wait(job_id, timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.result["answer"] == "first answer"
+    assert job.result["session"]["id"]
+    assert job.result["session_id"] == job.result["session"]["id"]
+    session_path = kb_dir / ".openkb" / "chats" / f"{job.result['session_id']}.json"
+    saved = json.loads(session_path.read_text(encoding="utf-8"))
+    assert saved["title"] == "first question"
+    assert saved["turn_count"] == 1
+    assert saved["user_turns"] == ["first question"]
+    assert saved["assistant_texts"] == ["first answer"]
+    assert mock_run.call_args.args[1] == [
+        {"role": "user", "content": "first question"}
+    ]
+
+
+def test_query_job_resumes_existing_web_chat_session(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    client = TestClient(create_app(registry=registry))
+    first = MagicMock()
+    first.final_output = "first answer"
+    first.to_input_list.return_value = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+    ]
+    second = MagicMock()
+    second.final_output = "second answer"
+    second.to_input_list.return_value = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "follow up"},
+        {"role": "assistant", "content": "second answer"},
+    ]
+
+    with (
+        patch("openkb.cli._setup_llm_key"),
+        patch("openkb.agent.query.Runner.run", new_callable=AsyncMock) as mock_run,
+    ):
+        mock_run.side_effect = [first, second]
+        first_response = client.post(
+            "/api/query",
+            json={"kb_dir": str(kb_dir), "question": "first question"},
+        )
+        first_job = registry.wait(first_response.json()["job"]["id"], timeout=2)
+        response = client.post(
+            "/api/query",
+            json={
+                "kb_dir": str(kb_dir),
+                "question": "follow up",
+                "session_id": first_job.result["session_id"],
+            },
+        )
+        assert response.status_code == 200
+        job = registry.wait(response.json()["job"]["id"], timeout=2)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.result["answer"] == "second answer"
+    assert job.result["session_id"] == first_job.result["session_id"]
+    assert job.result["session"]["turn_count"] == 2
+    saved = json.loads(
+        (kb_dir / ".openkb" / "chats" / f"{job.result['session_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert saved["user_turns"] == ["first question", "follow up"]
+    assert saved["assistant_texts"] == ["first answer", "second answer"]
+    assert mock_run.call_args_list[1].args[1] == [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "follow up"},
+    ]
 
 
 def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monkeypatch):

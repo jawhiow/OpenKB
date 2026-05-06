@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div class="app-shell workbench-shell">
       <header class="topbar">
         <div class="brand">
           <div class="brand-mark">OK</div>
@@ -22,7 +22,7 @@
         </div>
       </header>
 
-      <aside class="sidebar" aria-label="Primary">
+      <aside class="nav-rail" aria-label="Primary">
         <button class="nav-item active" data-view="overview" type="button">Overview</button>
         <button class="nav-item" data-view="documents" type="button">Documents</button>
         <button class="nav-item" data-view="sources" type="button">Sources</button>
@@ -41,33 +41,36 @@
         <section id="mainView" class="main-view"></section>
       </main>
 
-      <aside class="assistant-panel" aria-label="Assistant">
-        <div class="panel-header">
-          <h2>Assistant</h2>
-          <button id="clearAnswerBtn" type="button">Clear</button>
+      <aside id="utilityPanel" class="utility-panel" aria-label="Utility">
+        <div class="utility-tabs" role="tablist" aria-label="Utility panel">
+          <button id="utilityJobsTab" class="utility-tab active" data-action="utility-tab" data-utility-tab="jobs" type="button">Jobs</button>
+          <button id="utilityAssistantTab" class="utility-tab" data-action="utility-tab" data-utility-tab="assistant" type="button">Assistant</button>
         </div>
-        <textarea id="questionInput" rows="5" placeholder="Ask this knowledge base"></textarea>
-        <label class="checkline">
-          <input id="saveQueryInput" type="checkbox" />
-          Save
-        </label>
-        <button id="askBtn" class="primary" type="button">Ask</button>
-        <div id="answerBox" class="answer-box"></div>
-      </aside>
-
-      <section class="job-dock" aria-label="Jobs">
-        <div class="panel-header">
-          <h2>Jobs</h2>
-          <span id="jobCount" class="badge muted">0</span>
-        </div>
-        <div class="job-dock-body">
+        <section id="jobsPanel" class="utility-section active" aria-label="Jobs">
+          <div class="panel-header utility-header">
+            <h2>Jobs</h2>
+            <span id="jobCount" class="badge muted">0</span>
+          </div>
           <div id="jobsList" class="jobs-list"></div>
-          <aside id="jobDetails" class="job-details" aria-live="polite">
+          <aside id="jobDetails" class="job-details compact" aria-live="polite">
             <div class="empty">Select a job to view progress and logs.</div>
             <div id="jobLogList" class="job-log-list hidden"></div>
           </aside>
-        </div>
-      </section>
+        </section>
+        <section id="assistantPanel" class="utility-section assistant-panel" aria-label="Assistant">
+          <div class="panel-header utility-header">
+            <h2>Assistant</h2>
+            <button id="clearAnswerBtn" type="button">Clear</button>
+          </div>
+          <textarea id="questionInput" rows="5" placeholder="Ask this knowledge base"></textarea>
+          <label class="checkline">
+            <input id="saveQueryInput" type="checkbox" />
+            Save
+          </label>
+          <button id="askBtn" class="primary" type="button">Ask</button>
+          <div id="answerBox" class="answer-box"></div>
+        </section>
+      </aside>
     </div>
 
     <div id="toastHost" class="toast-host" aria-live="polite"></div>

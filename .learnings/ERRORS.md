@@ -26,6 +26,34 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260506-003] rg_access_denied_in_codex_desktop
+
+**Logged**: 2026-05-06T08:34:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+`rg.exe` failed with access denied in this Codex desktop session, requiring a PowerShell-native fallback for repository search.
+
+### Error
+```text
+Program 'rg.exe' failed to run: Access is denied
+```
+
+### Context
+- Commands attempted: `rg -n "session|Session|sessions|Sessions" .` and `rg --files`
+- Environment: Windows PowerShell in `D:\workspace\codex\jt-ai-tz\OpenKB`
+- Fallback used: `Get-ChildItem -Recurse -File | Select-String ...`
+
+### Suggested Fix
+When `rg` is unavailable or blocked on this workspace, use PowerShell `Get-ChildItem` plus `Select-String`, excluding large generated directories explicitly.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: n/a
+
+---
 ## [ERR-20260503-001] rg_access_denied
 
 **Logged**: 2026-05-03T13:42:00+08:00
@@ -445,5 +473,98 @@ Audit any console-specific prompt or rendering dependency in the query path and 
 - Reproducible: yes
 - Related Files: openkb/cli.py, openkb/agent/query.py
 - See Also: ERR-20260505-004
+
+---
+## [ERR-20260506-001] cleanup_removed_tracked_playwright_artifact
+
+**Logged**: 2026-05-06T07:12:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+While cleaning Playwright verification artifacts, a tracked `.playwright-mcp` log file was removed along with newly generated screenshots/snapshots.
+
+### Error
+```text
+git status showed: D .playwright-mcp/console-2026-05-03T10-48-31-537Z.log
+```
+
+### Context
+- Cleanup command removed the whole `.playwright-mcp` directory after browser verification.
+- Some files in that directory were already tracked in this repository.
+
+### Suggested Fix
+Before recursive cleanup of tool artifact directories, check `git status --short <path>` or remove only the known newly generated filenames.
+
+### Metadata
+- Reproducible: yes
+- Related Files: .playwright-mcp/console-2026-05-03T10-48-31-537Z.log
+
+### Resolution
+- **Resolved**: 2026-05-06T07:12:00+08:00
+- **Notes**: Restored the tracked file with `git restore -- .playwright-mcp/console-2026-05-03T10-48-31-537Z.log`.
+
+---
+## [ERR-20260506-002] playwright_mcp_cache_disable_method
+
+**Logged**: 2026-05-06T08:03:32+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+The Playwright MCP page object in this session did not expose `page.setCacheEnabled`, so cache-busting had to be done by using a fresh port or updating asset URLs.
+
+### Error
+```text
+TypeError: page.setCacheEnabled is not a function
+```
+
+### Context
+- Operation attempted: browser visual verification after changing static CSS/JS.
+- The page had previously loaded the old `/assets/app.js` and `/assets/styles.css`, so a hard reload/cache-bust was needed.
+
+### Suggested Fix
+For this MCP wrapper, avoid `page.setCacheEnabled`. Use a fresh local server port, a cache-busted navigation URL, or rewrite stylesheet/script asset URLs with `?v=<timestamp>` during verification.
+
+### Metadata
+- Reproducible: yes
+- Related Files: openkb/client/static/app.js, openkb/client/static/styles.css
+
+### Resolution
+- **Resolved**: 2026-05-06T08:03:32+08:00
+- **Notes**: Verified the updated UI on a fresh `8766` server and cache-busted the stylesheet URL before taking the final screenshot.
+
+---
+## [ERR-20260506-003] playwright_strict_role_selector_ambiguity
+
+**Logged**: 2026-05-06T08:51:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: frontend
+
+### Summary
+Playwright strict role matching treated the Wiki editor `Source` tab and the left navigation `Sources` button as ambiguous when using a broad role selector.
+
+### Error
+```text
+locator.click: Error: strict mode violation: getByRole('button', { name: 'Source' }) resolved to 2 elements
+```
+
+### Context
+- Operation attempted: browser verification of the Wiki Preview/Source mode toggle.
+- The navigation item `Sources` and editor tab `Source` both matched the non-exact role query.
+
+### Suggested Fix
+Use exact accessible names or stable data attributes for UI verification, for example `[data-action="wiki-mode"][data-wiki-mode="source"]`.
+
+### Metadata
+- Reproducible: yes
+- Related Files: openkb/client/static/app.js
+
+### Resolution
+- **Resolved**: 2026-05-06T08:51:00+08:00
+- **Notes**: Re-ran the verification with the explicit `data-action` selector.
 
 ---

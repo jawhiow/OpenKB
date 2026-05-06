@@ -228,3 +228,27 @@ async def run_query(
             live.stop()
         print()
     return "".join(collected) if collected else result.final_output or ""
+
+
+async def run_query_session(
+    question: str,
+    kb_dir: Path,
+    model: str,
+    session: object,
+) -> str:
+    """Run one non-streaming Q&A turn and persist it to a chat session."""
+    from agents import Runner
+    from openkb.config import load_config
+
+    openkb_dir = kb_dir / ".openkb"
+    config = load_config(openkb_dir / "config.yaml")
+    language: str = getattr(session, "language", "") or config.get("language", "en")
+    wiki_root = str(kb_dir / "wiki")
+    agent = build_query_agent(wiki_root, model, language=language)
+    new_input = getattr(session, "history", []) + [
+        {"role": "user", "content": question}
+    ]
+    result = await Runner.run(agent, new_input, max_turns=MAX_TURNS)
+    answer = result.final_output or ""
+    session.record_turn(question, answer, result.to_input_list())
+    return answer
