@@ -1826,8 +1826,18 @@ function renderLlmUsage() {
         </div>
       </header>
       <div class="section-body">
-        <div class="wiki-search-row">
-          <input id="llmUsageSearchInput" type="search" placeholder="Search feature, model, status, or error" value="${escapeHTML(state.llmUsageSearch)}" />
+        <div class="llm-usage-toolbar">
+          <div class="wiki-search-row">
+            <input id="llmUsageSearchInput" type="search" placeholder="Search feature, model, status, or error" value="${escapeHTML(state.llmUsageSearch)}" />
+          </div>
+          <div class="llm-usage-summary">
+            ${
+              meta
+                ? `Showing ${escapeHTML(meta.start)}-${escapeHTML(meta.end)} of ${escapeHTML(meta.total)}`
+                : "Loading records"
+            }
+          </div>
+          ${meta ? renderUsagePager(meta) : ""}
         </div>
         <div class="data-table-shell">
           <div class="data-grid-table">

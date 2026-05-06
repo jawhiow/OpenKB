@@ -13,7 +13,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import os
 
@@ -317,6 +317,130 @@ def _probe_failed_model_route(kb_dir: Path, route) -> None:
         record_route_failure(kb_dir, route.profile_id, route.model, exc)
 
 
+def _record_external_compile_usage(
+    kb_dir: Path,
+    *,
+    model: str,
+    wire_api: str,
+    base_url: str,
+    started_at: float,
+    status: str,
+    input_payload: dict[str, Any],
+    output_payload: dict[str, Any],
+    error: str = "",
+) -> None:
+    from openkb.llm_usage import record_usage
+
+    record_usage(
+        kb_dir=kb_dir,
+        feature="compile",
+        model=model,
+        wire_api=wire_api,
+        base_url=base_url,
+        status=status,
+        duration_ms=max(int((time.perf_counter() - started_at) * 1000), 0),
+        error=error,
+        input_payload=input_payload,
+        output_payload=output_payload,
+    )
+
+
+def _run_pageindex_with_model_pool(
+    kb_dir: Path,
+    default_profile: dict[str, str],
+    default_model: str,
+    operation: Callable[[str], object],
+    *,
+    input_payload: dict[str, Any],
+) -> object:
+    from openkb.model_pool import (
+        configured_routes,
+        is_model_pool_enabled,
+        record_route_failure,
+        record_route_success,
+        route_profile,
+        select_model_route,
+    )
+
+    if is_model_pool_enabled(kb_dir):
+        excluded_routes: set[str] = set()
+        last_exc: Exception | None = None
+        max_attempts = max(len(configured_routes(kb_dir)), 1)
+        for _attempt in range(max_attempts):
+            route = select_model_route(kb_dir, exclude=excluded_routes)
+            _setup_llm_key(kb_dir, route_profile(route))
+            started_at = time.perf_counter()
+            try:
+                result = operation(route.model)
+                record_route_success(kb_dir, route.profile_id, route.model)
+                _record_external_compile_usage(
+                    kb_dir,
+                    model=route.model,
+                    wire_api=route.wire_api,
+                    base_url=route.base_url,
+                    started_at=started_at,
+                    status="succeeded",
+                    input_payload=input_payload,
+                    output_payload={
+                        "doc_id": str(getattr(result, "doc_id", "") or ""),
+                        "description": str(getattr(result, "description", "") or ""),
+                    },
+                )
+                return result
+            except Exception as exc:
+                last_exc = exc
+                excluded_routes.add(route.route_id)
+                record_route_failure(kb_dir, route.profile_id, route.model, exc)
+                _record_external_compile_usage(
+                    kb_dir,
+                    model=route.model,
+                    wire_api=route.wire_api,
+                    base_url=route.base_url,
+                    started_at=started_at,
+                    status="failed",
+                    error=str(exc),
+                    input_payload=input_payload,
+                    output_payload={},
+                )
+                _probe_failed_model_route(kb_dir, route)
+                continue
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("No healthy model routes available for PageIndex.")
+
+    _setup_llm_key(kb_dir, default_profile)
+    started_at = time.perf_counter()
+    try:
+        result = operation(default_model)
+    except Exception as exc:
+        _record_external_compile_usage(
+            kb_dir,
+            model=default_model,
+            wire_api=default_profile.get("wire_api", ""),
+            base_url=default_profile.get("base_url", ""),
+            started_at=started_at,
+            status="failed",
+            error=str(exc),
+            input_payload=input_payload,
+            output_payload={},
+        )
+        raise
+    _record_external_compile_usage(
+        kb_dir,
+        model=default_model,
+        wire_api=default_profile.get("wire_api", ""),
+        base_url=default_profile.get("base_url", ""),
+        started_at=started_at,
+        status="succeeded",
+        input_payload=input_payload,
+        output_payload={
+            "doc_id": str(getattr(result, "doc_id", "") or ""),
+            "description": str(getattr(result, "description", "") or ""),
+        },
+    )
+    return result
+
+
 def _run_compile_with_model_pool(
     kb_dir: Path,
     progress_callback: ProgressCallback | None,
@@ -505,13 +629,24 @@ def add_single_file(
             from openkb.indexer import index_ocr_with_local_pageindex
 
             pageindex_model = str(config.get("pageindex_local_model") or profiles[0]["model"]).strip()
-            index_result = index_ocr_with_local_pageindex(
-                doc_name,
-                result.source_path,
-                result.pageindex_input_path,
+            index_result = _run_pageindex_with_model_pool(
                 kb_dir,
-                model=pageindex_model,
-                job=job,
+                profiles[0],
+                pageindex_model,
+                lambda selected_model: index_ocr_with_local_pageindex(
+                    doc_name,
+                    result.source_path,
+                    result.pageindex_input_path,
+                    kb_dir,
+                    model=selected_model,
+                    job=job,
+                ),
+                input_payload={
+                    "doc_name": doc_name,
+                    "source_path": str(result.source_path),
+                    "pageindex_input_path": str(result.pageindex_input_path),
+                    "mode": "pageindex_local",
+                },
             )
         except Exception as exc:
             click.echo(f"  [WARN] Local PageIndex failed; falling back to OCR local-long: {exc}")
@@ -564,7 +699,17 @@ def add_single_file(
         _emit_progress(progress_callback, f"Indexing long document: {file_path.name}")
         try:
             from openkb.indexer import index_long_document
-            index_result = index_long_document(result.raw_path, kb_dir)
+            index_result = _run_pageindex_with_model_pool(
+                kb_dir,
+                profiles[0],
+                str(config.get("model") or profiles[0]["model"]).strip(),
+                lambda selected_model: index_long_document(result.raw_path, kb_dir, model=selected_model),
+                input_payload={
+                    "doc_name": doc_name,
+                    "raw_path": str(result.raw_path),
+                    "mode": "pageindex_cloud",
+                },
+            )
         except Exception as exc:
             click.echo(f"  [ERROR] Indexing failed: {exc}")
             logger.debug("Indexing traceback:", exc_info=True)

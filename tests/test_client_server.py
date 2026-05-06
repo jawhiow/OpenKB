@@ -309,6 +309,102 @@ def test_query_stream_returns_delta_done_session_and_references(tmp_path):
     assert done_payload["session_id"] == done_payload["session"]["id"]
 
 
+def test_query_stream_uses_model_pool_and_retries_after_runtime_failure(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: fallback-model\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "model_pool:\n"
+        "  enabled: true\n"
+        "  strategy: weighted_round_robin\n"
+        "llm_profiles:\n"
+        "  - id: primary\n"
+        "    name: Primary\n"
+        "    model: bad-model\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://bad.example.com/v1\n"
+        "    enabled: true\n"
+        "    models:\n"
+        "      - name: bad-model\n"
+        "        weight: 100\n"
+        "  - id: backup\n"
+        "    name: Backup\n"
+        "    model: good-model\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://good.example.com/v1\n"
+        "    enabled: true\n"
+        "    models:\n"
+        "      - name: good-model\n"
+        "        weight: 100\n"
+        "active_llm_profile: primary\n",
+        encoding="utf-8",
+    )
+    from openkb.model_pool import record_route_success
+
+    record_route_success(kb_dir, "primary", "bad-model", latency_ms=10)
+    record_route_success(kb_dir, "backup", "good-model", latency_ms=20)
+    client = TestClient(create_app())
+    calls: list[str] = []
+
+    class _BadStreamResult:
+        final_output = ""
+
+        async def stream_events(self):
+            raise RuntimeError("upstream 500")
+            yield  # pragma: no cover
+
+        def to_input_list(self):
+            return []
+
+    class _GoodStreamResult:
+        final_output = "backup answer"
+
+        async def stream_events(self):
+            yield RawResponsesStreamEvent(
+                data=ResponseTextDeltaEvent(
+                    content_index=0,
+                    delta="backup answer",
+                    item_id="item_1",
+                    logprobs=[],
+                    output_index=0,
+                    sequence_number=1,
+                    type="response.output_text.delta",
+                )
+            )
+
+        def to_input_list(self):
+            return [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "backup answer"},
+            ]
+
+    def fake_run_streamed(agent, message, **kwargs):
+        calls.append(agent.model)
+        if "bad-model" in agent.model:
+            return _BadStreamResult()
+        return _GoodStreamResult()
+
+    with (
+        patch("openkb.cli._setup_llm_key"),
+        patch("openkb.agent.query.Runner.run_streamed", side_effect=fake_run_streamed),
+        patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("upstream 500")) as probe,
+    ):
+        response = client.post(
+            "/api/query/stream",
+            json={"kb_dir": str(kb_dir), "question": "question"},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert 'event: done\ndata: {"answer":"backup answer"' in body
+    assert [call.rsplit("/", 1)[-1] for call in calls] == ["bad-model", "good-model"]
+    assert probe.call_args.args[1].model == "bad-model"
+    status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
+    assert status["routes"]["primary:bad-model"]["health"] == "offline"
+    assert status["routes"]["backup:good-model"]["health"] == "healthy"
+
+
 def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     source = tmp_path / "doc.txt"

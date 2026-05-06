@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -185,6 +186,89 @@ async def test_run_chat_handles_ctrl_c_during_slash_command(tmp_path):
 
     assert prompt.calls == 2
     assert any("[aborted]" in s for s in collected)
+
+
+@pytest.mark.asyncio
+async def test_run_chat_uses_model_pool_routes_and_retries_failed_turn(tmp_path):
+    kb_dir = _setup_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: fallback-model\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "model_pool:\n"
+        "  enabled: true\n"
+        "  strategy: weighted_round_robin\n"
+        "llm_profiles:\n"
+        "  - id: primary\n"
+        "    name: Primary\n"
+        "    model: bad-model\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://bad.example.com/v1\n"
+        "    api_key_env: OPENKB_LLM_PROFILE_PRIMARY_API_KEY\n"
+        "    models:\n"
+        "      - name: bad-model\n"
+        "        weight: 100\n"
+        "  - id: backup\n"
+        "    name: Backup\n"
+        "    model: good-model\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://good.example.com/v1\n"
+        "    api_key_env: OPENKB_LLM_PROFILE_BACKUP_API_KEY\n"
+        "    models:\n"
+        "      - name: good-model\n"
+        "        weight: 100\n"
+        "active_llm_profile: primary\n",
+        encoding="utf-8",
+    )
+    from openkb.model_pool import record_route_success
+
+    record_route_success(kb_dir, "primary", "bad-model", latency_ms=10)
+    record_route_success(kb_dir, "backup", "good-model", latency_ms=20)
+    session = ChatSession.new(kb_dir, "fallback-model", "zh")
+    built_models: list[str] = []
+    setup_profiles: list[dict[str, str]] = []
+
+    class _FakePromptSession:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def prompt_async(self) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "hello"
+            raise EOFError
+
+    async def fake_run_turn(agent, session, user_input, style, kb_dir, **kwargs):
+        if "bad-model" in agent.model:
+            raise RuntimeError("upstream 500")
+        session.record_turn(user_input, "hello back", [{"role": "assistant", "content": "hello back"}])
+
+    def fake_build(_wiki_root, model, **kwargs):
+        built_models.append(model)
+        return SimpleNamespace(model=model)
+
+    def fake_setup(_kb_dir, profile=None):
+        if profile is not None:
+            setup_profiles.append(profile)
+
+    p, _collected = _collect_fmt()
+    with (
+        p,
+        patch("openkb.agent.chat._print_header"),
+        patch("openkb.agent.chat._print_resume_view"),
+        patch("openkb.agent.chat._make_prompt_session", return_value=_FakePromptSession()),
+        patch("openkb.agent.chat.build_query_agent", side_effect=fake_build),
+        patch("openkb.agent.chat._run_turn", side_effect=fake_run_turn),
+        patch("openkb.cli._setup_llm_key", side_effect=fake_setup),
+        patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe,
+    ):
+        await run_chat(kb_dir, session, no_color=True)
+
+    assert built_models == ["bad-model", "good-model"]
+    assert probe.call_args.args[1].model == "bad-model"
+    assert setup_profiles[-2]["id"] == "primary"
+    assert setup_profiles[-1]["id"] == "backup"
+    assert session.assistant_texts == ["hello back"]
 
 
 @pytest.mark.asyncio

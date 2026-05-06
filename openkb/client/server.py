@@ -78,6 +78,17 @@ def _callable_accepts_keyword(fn: Any, name: str) -> bool:
     )
 
 
+def _route_profile_payload(route: Any) -> dict[str, str]:
+    return {
+        "id": str(getattr(route, "profile_id", "") or ""),
+        "name": str(getattr(route, "profile_name", "") or ""),
+        "model": str(getattr(route, "model", "") or ""),
+        "wire_api": str(getattr(route, "wire_api", "") or ""),
+        "base_url": str(getattr(route, "base_url", "") or ""),
+        "api_key_env": str(getattr(route, "api_key_env", "") or ""),
+    }
+
+
 _RUNTIME_ENV_KEYS = (
     "LLM_API_KEY",
     "OPENAI_API_KEY",
@@ -573,6 +584,7 @@ def create_app(registry: JobRegistry | None = None):
                 for _attempt in range(3):
                     route = select_model_route(target_kb, exclude=excluded_routes)
                     try:
+                        _setup_llm_key(target_kb, _route_profile_payload(route))
                         query_result = asyncio.run(
                             run_query_session(
                                 question,
@@ -664,13 +676,50 @@ def create_app(registry: JobRegistry | None = None):
 
                 async def run_query_task() -> None:
                     try:
-                        result = await run_query_session_stream(
-                            question,
-                            target_kb,
-                            model,
-                            session,
-                            emit_delta,
+                        from openkb.model_pool import (
+                            is_model_pool_enabled,
+                            probe_model_route,
+                            record_route_failure,
+                            record_route_success,
+                            select_model_route,
                         )
+
+                        if is_model_pool_enabled(target_kb):
+                            excluded_routes: set[str] = set()
+                            last_error: Exception | None = None
+                            result = None
+                            for _attempt in range(3):
+                                route = select_model_route(target_kb, exclude=excluded_routes)
+                                try:
+                                    _setup_llm_key(target_kb, _route_profile_payload(route))
+                                    result = await run_query_session_stream(
+                                        question,
+                                        target_kb,
+                                        model,
+                                        session,
+                                        emit_delta,
+                                        route=route,
+                                    )
+                                    record_route_success(target_kb, route.profile_id, route.model)
+                                    break
+                                except Exception as exc:
+                                    last_error = exc
+                                    excluded_routes.add(route.route_id)
+                                    record_route_failure(target_kb, route.profile_id, route.model, exc)
+                                    try:
+                                        probe_model_route(target_kb, route)
+                                    except Exception as probe_exc:
+                                        record_route_failure(target_kb, route.profile_id, route.model, probe_exc)
+                            if result is None:
+                                raise last_error or RuntimeError("Model pool query failed.")
+                        else:
+                            result = await run_query_session_stream(
+                                question,
+                                target_kb,
+                                model,
+                                session,
+                                emit_delta,
+                            )
                         answer = result["answer"]
                         if payload.get("save") and answer:
                             import re

@@ -138,3 +138,67 @@ class TestRunQuery:
             await run_query("How does attention work?", tmp_path, "gpt-4o-mini")
 
         assert "How does attention work?" in captured["message"]
+
+    @pytest.mark.asyncio
+    async def test_run_query_uses_model_pool_routes_and_records_health(self, tmp_path):
+        (tmp_path / "wiki").mkdir()
+        (tmp_path / ".openkb").mkdir()
+        (tmp_path / ".openkb" / "hashes.json").write_text("{}", encoding="utf-8")
+        (tmp_path / ".openkb" / "config.yaml").write_text(
+            "model: fallback-model\n"
+            "language: zh\n"
+            "wire_api: chat_completions\n"
+            "model_pool:\n"
+            "  enabled: true\n"
+            "  strategy: weighted_round_robin\n"
+            "llm_profiles:\n"
+            "  - id: primary\n"
+            "    name: Primary\n"
+            "    model: bad-model\n"
+            "    wire_api: chat_completions\n"
+            "    base_url: https://bad.example.com/v1\n"
+            "    api_key_env: OPENKB_LLM_PROFILE_PRIMARY_API_KEY\n"
+            "    models:\n"
+            "      - name: bad-model\n"
+            "        weight: 100\n"
+            "  - id: backup\n"
+            "    name: Backup\n"
+            "    model: good-model\n"
+            "    wire_api: chat_completions\n"
+            "    base_url: https://good.example.com/v1\n"
+            "    api_key_env: OPENKB_LLM_PROFILE_BACKUP_API_KEY\n"
+            "    models:\n"
+            "      - name: good-model\n"
+            "        weight: 100\n"
+            "active_llm_profile: primary\n",
+            encoding="utf-8",
+        )
+        from openkb.model_pool import record_route_success
+
+        record_route_success(tmp_path, "primary", "bad-model", latency_ms=10)
+        record_route_success(tmp_path, "backup", "good-model", latency_ms=20)
+        calls: list[str] = []
+        setup_profiles: list[dict[str, str]] = []
+
+        async def fake_run(agent, message, **kwargs):
+            calls.append(agent.model)
+            if "bad-model" in agent.model:
+                raise RuntimeError("upstream 500")
+            return MagicMock(final_output="answer")
+
+        def fake_setup(_kb_dir, profile=None):
+            if profile is not None:
+                setup_profiles.append(profile)
+
+        with (
+            patch("openkb.cli._setup_llm_key", side_effect=fake_setup),
+            patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe,
+            patch("openkb.agent.query.Runner.run", side_effect=fake_run),
+        ):
+            answer = await run_query("How does attention work?", tmp_path, "fallback-model")
+
+        assert answer == "answer"
+        assert [call.rsplit("/", 1)[-1] for call in calls] == ["bad-model", "good-model"]
+        assert probe.call_args.args[1].model == "bad-model"
+        assert setup_profiles[-2]["id"] == "primary"
+        assert setup_profiles[-1]["id"] == "backup"

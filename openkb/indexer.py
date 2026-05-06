@@ -108,12 +108,12 @@ def _normalize_cloud_ocr_pages(payload: dict) -> list[dict]:
     return normalized
 
 
-def index_long_document(pdf_path: Path, kb_dir: Path) -> IndexResult:
+def index_long_document(pdf_path: Path, kb_dir: Path, *, model: str | None = None) -> IndexResult:
     """Index a long PDF document using PageIndex and write wiki pages."""
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
 
-    model: str = config.get("model", "gpt-5.4")
+    model = str(model or config.get("model", "gpt-5.4")).strip()
     pageindex_api_key = os.environ.get("PAGEINDEX_API_KEY", "")
 
     index_config = IndexConfig(

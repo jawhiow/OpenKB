@@ -522,6 +522,20 @@ table {
   background: #fbfcfd;
 }
 
+.llm-usage-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.llm-usage-summary {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .data-grid-table {
   min-width: 720px;
   overflow: auto;

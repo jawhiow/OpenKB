@@ -72,6 +72,47 @@ class QueryReferenceTracker:
         return list(self._references)
 
 
+async def run_with_query_model_pool(
+    kb_dir: Path,
+    model: str,
+    operation: Any,
+) -> Any:
+    from openkb.cli import _setup_llm_key
+    from openkb.model_pool import (
+        configured_routes,
+        is_model_pool_enabled,
+        probe_model_route,
+        record_route_failure,
+        record_route_success,
+        route_profile,
+        select_model_route,
+    )
+
+    if not is_model_pool_enabled(kb_dir):
+        return await operation(model, None)
+
+    excluded_routes: set[str] = set()
+    last_error: Exception | None = None
+    max_attempts = max(len(configured_routes(kb_dir)), 1)
+    for _attempt in range(max_attempts):
+        route = select_model_route(kb_dir, exclude=excluded_routes)
+        _setup_llm_key(kb_dir, route_profile(route))
+        try:
+            result = await operation(route.model, route)
+            record_route_success(kb_dir, route.profile_id, route.model)
+            return result
+        except Exception as exc:
+            last_error = exc
+            excluded_routes.add(route.route_id)
+            record_route_failure(kb_dir, route.profile_id, route.model, exc)
+            try:
+                probe_model_route(kb_dir, route)
+                record_route_success(kb_dir, route.profile_id, route.model)
+            except Exception as probe_exc:
+                record_route_failure(kb_dir, route.profile_id, route.model, probe_exc)
+    raise last_error or RuntimeError("Model pool query failed.")
+
+
 def build_query_agent(
     wiki_root: str,
     model: str,
@@ -171,12 +212,14 @@ async def run_query(
 
     wiki_root = str(kb_dir / "wiki")
 
-    agent = build_query_agent(wiki_root, model, language=language)
-
     if not stream:
-        with llm_usage_context(kb_dir, "query"):
-            result = await Runner.run(agent, question, max_turns=MAX_TURNS)
-        return result.final_output or ""
+        async def _run_once(effective_model: str, _route: Any) -> str:
+            agent = build_query_agent(wiki_root, effective_model, language=language)
+            with llm_usage_context(kb_dir, "query"):
+                result = await Runner.run(agent, question, max_turns=MAX_TURNS)
+            return result.final_output or ""
+
+        return await run_with_query_model_pool(kb_dir, model, _run_once)
 
     import os
     use_color = sys.stdout.isatty() and not os.environ.get("NO_COLOR", "")
@@ -205,70 +248,74 @@ async def run_query(
         lv.start()
         return lv
 
-    live: Live | None = None
-    last_was_text = False
-    need_blank_before_text = False
-    collected: list[str] = []
-    segment: list[str] = []
-    try:
-        live = _start_live()
-        with llm_usage_context(kb_dir, "query"):
-            result = Runner.run_streamed(agent, question, max_turns=MAX_TURNS)
-            async for event in result.stream_events():
-                if isinstance(event, RawResponsesStreamEvent):
-                    if isinstance(event.data, ResponseTextDeltaEvent):
-                        text = event.data.delta
-                        if text:
-                            if need_blank_before_text:
-                                if console is not None:
-                                    print()
-                                    segment = []
-                                    live = _start_live()
+    async def _run_stream_once(effective_model: str, _route: Any) -> str:
+        agent = build_query_agent(wiki_root, effective_model, language=language)
+        live: Live | None = None
+        last_was_text = False
+        need_blank_before_text = False
+        collected: list[str] = []
+        segment: list[str] = []
+        try:
+            live = _start_live()
+            with llm_usage_context(kb_dir, "query"):
+                result = Runner.run_streamed(agent, question, max_turns=MAX_TURNS)
+                async for event in result.stream_events():
+                    if isinstance(event, RawResponsesStreamEvent):
+                        if isinstance(event.data, ResponseTextDeltaEvent):
+                            text = event.data.delta
+                            if text:
+                                if need_blank_before_text:
+                                    if console is not None:
+                                        print()
+                                        segment = []
+                                        live = _start_live()
+                                    else:
+                                        sys.stdout.write("\n")
+                                    need_blank_before_text = False
+                                collected.append(text)
+                                segment.append(text)
+                                last_was_text = True
+                                if live:
+                                    if "\n" in text:
+                                        joined = "".join(segment)
+                                        visible = joined[: joined.rfind("\n") + 1]
+                                        if visible:
+                                            live.update(_make_markdown(visible))
+                                else:
+                                    sys.stdout.write(text)
+                                    sys.stdout.flush()
+                    elif isinstance(event, RunItemStreamEvent):
+                        item = event.item
+                        if item.type == "tool_call_item":
+                            if last_was_text:
+                                if live:
+                                    if segment:
+                                        live.update(_make_markdown("".join(segment)))
+                                    live.stop()
+                                    live = None
                                 else:
                                     sys.stdout.write("\n")
-                                need_blank_before_text = False
-                            collected.append(text)
-                            segment.append(text)
-                            last_was_text = True
+                                    sys.stdout.flush()
+                                last_was_text = False
+                            raw_item = item.raw_item
+                            name = getattr(raw_item, "name", "?")
+                            args = getattr(raw_item, "arguments", "") or ""
                             if live:
-                                if "\n" in text:
-                                    joined = "".join(segment)
-                                    visible = joined[: joined.rfind("\n") + 1]
-                                    if visible:
-                                        live.update(_make_markdown(visible))
-                            else:
-                                sys.stdout.write(text)
-                                sys.stdout.flush()
-                elif isinstance(event, RunItemStreamEvent):
-                    item = event.item
-                    if item.type == "tool_call_item":
-                        if last_was_text:
-                            if live:
-                                if segment:
-                                    live.update(_make_markdown("".join(segment)))
                                 live.stop()
                                 live = None
-                            else:
-                                sys.stdout.write("\n")
-                                sys.stdout.flush()
-                            last_was_text = False
-                        raw_item = item.raw_item
-                        name = getattr(raw_item, "name", "?")
-                        args = getattr(raw_item, "arguments", "") or ""
-                        if live:
-                            live.stop()
-                            live = None
-                        _fmt(style, ("class:tool", _format_tool_line(name, args) + "\n"))
-                        need_blank_before_text = True
-                    elif item.type == "tool_call_output_item":
-                        pass
-    finally:
-        if live:
-            if segment:
-                live.update(_make_markdown("".join(segment)))
-            live.stop()
-        print()
-    return "".join(collected) if collected else result.final_output or ""
+                            _fmt(style, ("class:tool", _format_tool_line(name, args) + "\n"))
+                            need_blank_before_text = True
+                        elif item.type == "tool_call_output_item":
+                            pass
+        finally:
+            if live:
+                if segment:
+                    live.update(_make_markdown("".join(segment)))
+                live.stop()
+            print()
+        return "".join(collected) if collected else result.final_output or ""
+
+    return await run_with_query_model_pool(kb_dir, model, _run_stream_once)
 
 
 async def run_query_session(
@@ -288,25 +335,29 @@ async def run_query_session(
     language: str = getattr(session, "language", "") or config.get("language", "en")
     wiki_root = str(kb_dir / "wiki")
     reference_tracker = QueryReferenceTracker()
-    effective_model = str(getattr(route, "model", "") or model)
-    agent = build_query_agent(
-        wiki_root,
-        effective_model,
-        language=language,
-        reference_tracker=reference_tracker,
-    )
     new_input = getattr(session, "history", []) + [
         {"role": "user", "content": question}
     ]
-    with llm_usage_context(kb_dir, "query"):
-        result = await Runner.run(agent, new_input, max_turns=MAX_TURNS)
-    answer = result.final_output or ""
-    session.record_turn(question, answer, result.to_input_list())
-    return {
-        "answer": answer,
-        "session": session,
-        "references": reference_tracker.references(),
-    }
+    async def _run_once(effective_model: str, _selected_route: Any) -> dict[str, Any]:
+        agent = build_query_agent(
+            wiki_root,
+            effective_model,
+            language=language,
+            reference_tracker=reference_tracker,
+        )
+        with llm_usage_context(kb_dir, "query"):
+            result = await Runner.run(agent, new_input, max_turns=MAX_TURNS)
+        answer = result.final_output or ""
+        session.record_turn(question, answer, result.to_input_list())
+        return {
+            "answer": answer,
+            "session": session,
+            "references": reference_tracker.references(),
+        }
+
+    if route is not None:
+        return await _run_once(str(getattr(route, "model", "") or model), route)
+    return await run_with_query_model_pool(kb_dir, model, _run_once)
 
 
 async def run_query_session_stream(
@@ -315,6 +366,7 @@ async def run_query_session_stream(
     model: str,
     session: object,
     on_delta: Any,
+    route: object | None = None,
 ) -> dict[str, Any]:
     """Run one streaming Q&A turn, persist it, and return answer metadata."""
     from agents import RawResponsesStreamEvent, Runner
@@ -326,31 +378,36 @@ async def run_query_session_stream(
     language: str = getattr(session, "language", "") or config.get("language", "en")
     wiki_root = str(kb_dir / "wiki")
     reference_tracker = QueryReferenceTracker()
-    agent = build_query_agent(
-        wiki_root,
-        model,
-        language=language,
-        reference_tracker=reference_tracker,
-    )
     new_input = getattr(session, "history", []) + [
         {"role": "user", "content": question}
     ]
-    collected: list[str] = []
-    with llm_usage_context(kb_dir, "query"):
-        result = Runner.run_streamed(agent, new_input, max_turns=MAX_TURNS)
-        async for event in result.stream_events():
-            if isinstance(event, RawResponsesStreamEvent) and isinstance(
-                event.data,
-                ResponseTextDeltaEvent,
-            ):
-                text = event.data.delta
-                if text:
-                    collected.append(text)
-                    await on_delta(text)
-    answer = "".join(collected) if collected else result.final_output or ""
-    session.record_turn(question, answer, result.to_input_list())
-    return {
-        "answer": answer,
-        "session": session,
-        "references": reference_tracker.references(),
-    }
+    async def _run_once(effective_model: str, _selected_route: Any) -> dict[str, Any]:
+        agent = build_query_agent(
+            wiki_root,
+            effective_model,
+            language=language,
+            reference_tracker=reference_tracker,
+        )
+        collected: list[str] = []
+        with llm_usage_context(kb_dir, "query"):
+            result = Runner.run_streamed(agent, new_input, max_turns=MAX_TURNS)
+            async for event in result.stream_events():
+                if isinstance(event, RawResponsesStreamEvent) and isinstance(
+                    event.data,
+                    ResponseTextDeltaEvent,
+                ):
+                    text = event.data.delta
+                    if text:
+                        collected.append(text)
+                        await on_delta(text)
+        answer = "".join(collected) if collected else result.final_output or ""
+        session.record_turn(question, answer, result.to_input_list())
+        return {
+            "answer": answer,
+            "session": session,
+            "references": reference_tracker.references(),
+        }
+
+    if route is not None:
+        return await _run_once(str(getattr(route, "model", "") or model), route)
+    return await run_with_query_model_pool(kb_dir, model, _run_once)

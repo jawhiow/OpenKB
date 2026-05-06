@@ -46,6 +46,17 @@ def route_id(profile_id: str, model: str) -> str:
     return f"{profile_id}:{model}"
 
 
+def route_profile(route: ModelRoute) -> dict[str, str]:
+    return {
+        "id": route.profile_id,
+        "name": route.profile_name,
+        "model": route.model,
+        "wire_api": route.wire_api,
+        "base_url": route.base_url,
+        "api_key_env": route.api_key_env,
+    }
+
+
 def _status_path(kb_dir: Path) -> Path:
     return Path(kb_dir) / ".openkb" / "model-pool" / "status.json"
 

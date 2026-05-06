@@ -23,7 +23,7 @@ from prompt_toolkit.shortcuts import CompleteStyle, print_formatted_text
 from prompt_toolkit.styles import Style
 
 from openkb.agent.chat_session import ChatSession
-from openkb.agent.query import MAX_TURNS, build_query_agent
+from openkb.agent.query import MAX_TURNS, build_query_agent, run_with_query_model_pool
 from openkb.llm_usage import llm_usage_context
 from openkb.log import append_log
 
@@ -553,7 +553,6 @@ async def run_chat(
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     language = session.language or config.get("language", "en")
     wiki_root = str(kb_dir / "wiki")
-    agent = build_query_agent(wiki_root, session.model, language=language)
 
     _print_header(session, kb_dir, style)
     if session.turn_count > 0:
@@ -593,13 +592,16 @@ async def run_chat(
                 return
             if action == "new_session":
                 session = ChatSession.new(kb_dir, session.model, session.language)
-                agent = build_query_agent(wiki_root, session.model, language=language)
                 prompt_session = _make_prompt_session(session, style, use_color, kb_dir)
             continue
 
         append_log(kb_dir / "wiki", "query", user_input)
         try:
-            await _run_turn(agent, session, user_input, style, kb_dir, use_color=use_color, raw=raw)
+            async def _run_chat_turn(effective_model: str, _route: Any) -> None:
+                agent = build_query_agent(wiki_root, effective_model, language=language)
+                await _run_turn(agent, session, user_input, style, kb_dir, use_color=use_color, raw=raw)
+
+            await run_with_query_model_pool(kb_dir, session.model, _run_chat_turn)
         except KeyboardInterrupt:
             _fmt(style, ("class:error", "\n[aborted]\n"))
         except Exception as exc:

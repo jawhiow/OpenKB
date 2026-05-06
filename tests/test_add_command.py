@@ -476,6 +476,94 @@ class TestAddCommand:
         hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
         assert hashes["short-pageindex-1"]["type"] == "long_pdf"
 
+    def test_add_single_file_ocr_pageindex_local_uses_model_pool_route_model(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+        from openkb.indexer import IndexResult
+        from openkb.model_pool import record_route_success
+
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "active_llm_profile: primary\n"
+            "model: fallback-model\n"
+            "wire_api: chat_completions\n"
+            "model_pool:\n"
+            "  enabled: true\n"
+            "  strategy: weighted_round_robin\n"
+            "llm_profiles:\n"
+            "- id: primary\n"
+            "  name: Primary\n"
+            "  model: bad-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://bad.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_PRIMARY_API_KEY\n"
+            "  models:\n"
+            "  - name: bad-model\n"
+            "    weight: 100\n"
+            "- id: backup\n"
+            "  name: Backup\n"
+            "  model: good-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://good.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_BACKUP_API_KEY\n"
+            "  models:\n"
+            "  - name: good-model\n"
+            "    weight: 100\n",
+            encoding="utf-8",
+        )
+        record_route_success(kb_dir, "primary", "bad-model", latency_ms=10)
+        record_route_success(kb_dir, "backup", "good-model", latency_ms=20)
+        doc = tmp_path / "scan.pdf"
+        doc.write_bytes(b"%PDF")
+        source_path = kb_dir / "wiki" / "sources" / "scan.json"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text('[{"page": 1, "content": "OCR page"}]', encoding="utf-8")
+        pageindex_input_path = tmp_path / "pageindex_input.md"
+        pageindex_input_path.write_text("## Page 1\n\nOCR page", encoding="utf-8")
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "scan.pdf",
+            source_path=source_path,
+            is_long_doc=True,
+            local_long_doc=False,
+            selected_strategy="ocr-pageindex-local",
+            pageindex_input_path=pageindex_input_path,
+            file_hash="abc123",
+        )
+        setup_profiles: list[dict[str, str]] = []
+        seen_models: list[str] = []
+        index_result = IndexResult(
+            doc_id="local-doc-1",
+            description="Local PageIndex summary",
+            tree={"structure": []},
+        )
+
+        def fake_setup(_kb_dir, profile=None):
+            if profile is not None:
+                setup_profiles.append(profile)
+
+        def fake_index(_doc_name, _source_path, _pageindex_input_path, _kb_dir, *, model=None, **kwargs):
+            seen_models.append(model)
+            if model == "bad-model":
+                raise RuntimeError("upstream 500")
+            return index_result
+
+        with (
+            patch("openkb.cli.convert_document", return_value=mock_result),
+            patch("openkb.cli._setup_llm_key", side_effect=fake_setup),
+            patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe,
+            patch("openkb.indexer.index_ocr_with_local_pageindex", side_effect=fake_index),
+            patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock, return_value=[]),
+            patch("openkb.agent.compiler.compile_long_doc", new_callable=AsyncMock, return_value=[]),
+        ):
+            add_single_file(doc, kb_dir, strategy_override="ocr-pageindex-local")
+
+        assert seen_models == ["bad-model", "good-model"]
+        assert probe.call_args.args[1].model == "bad-model"
+        setup_ids = [profile["id"] for profile in setup_profiles]
+        assert "primary" in setup_ids
+        assert "backup" in setup_ids
+        assert setup_ids.index("primary") < setup_ids.index("backup")
+
     def test_add_force_preserves_generated_pages_when_compilation_fails(self, tmp_path):
         from openkb.cli import add_single_file
         from openkb.converter import ConvertResult
