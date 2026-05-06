@@ -26,6 +26,37 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260506-004] powershell_inline_python_unicode_path
+
+**Logged**: 2026-05-06T15:45:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+Inline Python launched from PowerShell corrupted a Chinese filesystem path in source code, causing `Path.open()` to fail on `D:\知识库\...`.
+
+### Error
+```text
+OSError: [Errno 22] Invalid argument: 'D:\\???\\llm-investment-kb\\.openkb\\config.yaml'
+```
+
+### Context
+- Operation attempted: update `D:\知识库\llm-investment-kb\.openkb\config.yaml` from an inline Python script.
+- The same path existed in PowerShell, but embedding it directly in the Python heredoc turned the Chinese directory segment into question marks.
+
+### Suggested Fix
+Resolve Unicode paths in PowerShell first, pass them via environment variables, and read them with `os.environ[...]` in Python.
+
+### Metadata
+- Reproducible: yes
+- Related Files: D:\知识库\llm-investment-kb\.openkb\config.yaml
+
+### Resolution
+- **Resolved**: 2026-05-06T15:45:00+08:00
+- **Notes**: Re-ran the script with `$env:KB_PATH=(Get-Item -LiteralPath ...).FullName` and `Path(os.environ["KB_PATH"])`.
+
+---
 ## [ERR-20260506-006] pytest_global_python_missing_agents
 
 **Logged**: 2026-05-06T17:10:00+08:00
