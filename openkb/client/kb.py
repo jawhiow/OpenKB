@@ -808,6 +808,8 @@ def get_model_pool_data(kb_dir: Path) -> dict[str, Any]:
 
 
 def get_model_pool_profile(kb_dir: Path, profile_id: str) -> dict[str, Any]:
+    from openkb.model_pool import configured_routes
+
     kb_dir = require_kb_dir(kb_dir)
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     profiles, active_id = _normalize_profiles(config)
@@ -815,7 +817,23 @@ def get_model_pool_profile(kb_dir: Path, profile_id: str) -> dict[str, Any]:
     if profile is None:
         raise ClientError(f"Unknown LLM profile: {profile_id}")
     raw_status = _load_model_pool_status(kb_dir).get("profiles", {})
-    return _profile_model_pool_payload(kb_dir, profile, active_id, raw_status.get(profile["id"]) if isinstance(raw_status, dict) else None)
+    payload = _profile_model_pool_payload(kb_dir, profile, active_id, raw_status.get(profile["id"]) if isinstance(raw_status, dict) else None)
+    payload["routes"] = [
+        {
+            "id": route.route_id,
+            "profile_id": route.profile_id,
+            "model": route.model,
+            "weight": route.weight,
+            "health": route.health,
+            "latency_ms": route.latency_ms,
+            "base_url": route.base_url,
+            "wire_api": route.wire_api,
+            "last_error": (_load_model_pool_status(kb_dir).get("routes", {}).get(route.route_id, {}) or {}).get("last_error", ""),
+        }
+        for route in configured_routes(kb_dir)
+        if route.profile_id == profile["id"]
+    ]
+    return payload
 
 
 def save_model_pool_profile_status(kb_dir: Path, profile_id: str, status_update: dict[str, Any]) -> dict[str, Any]:

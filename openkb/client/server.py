@@ -572,14 +572,52 @@ def create_app(registry: JobRegistry | None = None):
                 else ChatSession.new(target_kb, model, language)
             )
             _job.add_log("Running query")
-            query_result = asyncio.run(
-                run_query_session(
-                    question,
-                    target_kb,
-                    model,
-                    session,
+            from openkb.model_pool import is_model_pool_enabled, record_route_failure, record_route_success, select_model_route
+
+            if is_model_pool_enabled(target_kb):
+                excluded_routes: set[str] = set()
+                last_error: Exception | None = None
+                query_result = None
+                for _attempt in range(3):
+                    route = select_model_route(target_kb, exclude=excluded_routes)
+                    try:
+                        query_result = asyncio.run(
+                            run_query_session(
+                                question,
+                                target_kb,
+                                model,
+                                session,
+                                route=route,
+                            )
+                        )
+                        record_route_success(target_kb, route.profile_id, route.model)
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        excluded_routes.add(route.route_id)
+                        record_route_failure(target_kb, route.profile_id, route.model, exc)
+                        try:
+                            _test_llm_config(
+                                {
+                                    "kb_dir": str(target_kb),
+                                    "model": route.model,
+                                    "wire_api": route.wire_api,
+                                    "base_url": route.base_url,
+                                }
+                            )
+                        except Exception as probe_exc:
+                            record_route_failure(target_kb, route.profile_id, route.model, probe_exc)
+                if query_result is None:
+                    raise last_error or RuntimeError("Model pool query failed.")
+            else:
+                query_result = asyncio.run(
+                    run_query_session(
+                        question,
+                        target_kb,
+                        model,
+                        session,
+                    )
                 )
-            )
             answer = query_result["answer"]
             _job.raise_if_stopped()
             if payload.get("save") and answer:
@@ -790,43 +828,27 @@ def create_app(registry: JobRegistry | None = None):
     def model_pool_probe(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             target_kb = _resolve_kb_dir(payload.get("kb_dir"))
-        except Exception as exc:
-            raise translate_error(exc) from exc
-
-        def run(job):
             pool = kb_helpers.get_model_pool_data(target_kb)
-            results = []
-            for profile in pool["profiles"]:
-                job.raise_if_stopped()
-                job.add_log(f"Probing model profile: {profile['name']}")
-                results.append(_probe_model_pool_profile(target_kb, profile["id"]))
+            results = [_probe_model_pool_profile(target_kb, profile["id"]) for profile in pool["profiles"]]
             return {
                 "profiles": results,
                 "model_pool": kb_helpers.get_model_pool_data(target_kb),
             }
-
-        job = registry.submit("model_pool_probe", run, message="Probing model pool")
-        return {"job": job.to_dict()}
+        except Exception as exc:
+            raise translate_error(exc) from exc
 
     @app.post("/api/model-pool/profiles/{profile_id}/probe")
     def model_pool_profile_probe(profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             target_kb = _resolve_kb_dir(payload.get("kb_dir"))
             kb_helpers.get_model_pool_profile(target_kb, profile_id)
-        except Exception as exc:
-            raise translate_error(exc) from exc
-
-        def run(job):
-            job.raise_if_stopped()
-            job.add_log(f"Probing model profile: {profile_id}")
             profile = _probe_model_pool_profile(target_kb, profile_id)
             return {
                 "profile": profile,
                 "model_pool": kb_helpers.get_model_pool_data(target_kb),
             }
-
-        job = registry.submit("model_pool_probe", run, message=f"Probing model profile: {profile_id}")
-        return {"job": job.to_dict()}
+        except Exception as exc:
+            raise translate_error(exc) from exc
 
     @app.post("/api/model-pool/profiles/{profile_id}/enable")
     def model_pool_profile_enable(profile_id: str, payload: dict[str, Any]) -> dict[str, Any]:

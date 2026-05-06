@@ -273,6 +273,8 @@ async def run_query_session(
     kb_dir: Path,
     model: str,
     session: object,
+    *,
+    route: object | None = None,
 ) -> dict[str, Any]:
     """Run one non-streaming Q&A turn and persist it to a chat session."""
     from agents import Runner
@@ -283,9 +285,10 @@ async def run_query_session(
     language: str = getattr(session, "language", "") or config.get("language", "en")
     wiki_root = str(kb_dir / "wiki")
     reference_tracker = QueryReferenceTracker()
+    effective_model = str(getattr(route, "model", "") or model)
     agent = build_query_agent(
         wiki_root,
-        model,
+        effective_model,
         language=language,
         reference_tracker=reference_tracker,
     )

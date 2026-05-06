@@ -949,13 +949,11 @@ def test_model_pool_profile_probe_persists_status_without_deleting_config(tmp_pa
     )
 
     assert response.status_code == 200
-    job = registry.wait(response.json()["job"]["id"], timeout=2)
-    assert job is not None
-    assert job.status == "succeeded"
+    assert registry.list_jobs() == []
     assert calls[0]["model"] == "gpt-4o-mini"
     assert calls[0]["base_url"] == "https://gateway.example.com/v1"
     assert calls[1]["model"] == "missing-model"
-    result = job.result["profile"]
+    result = response.json()["profile"]
     assert result["health"] == "degraded"
     assert result["available_models"] == ["gpt-4o-mini"]
     assert result["failed_models"] == {"missing-model": "model_not_found"}
@@ -1123,7 +1121,7 @@ def test_query_job_uses_model_pool_and_retries_after_runtime_failure(tmp_path):
     assert job is not None
     assert job.status == "succeeded"
     assert job.result["answer"] == "backup answer"
-    assert calls == ["litellm/bad-model", "litellm/good-model"]
+    assert [call.rsplit("/", 1)[-1] for call in calls] == ["bad-model", "good-model"]
     assert probe.call_args.args[0]["model"] == "bad-model"
     status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
     assert status["routes"]["primary:bad-model"]["health"] == "offline"

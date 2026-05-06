@@ -223,7 +223,7 @@ def select_model_route(kb_dir: Path, *, exclude: set[str] | None = None) -> Mode
     if not candidates:
         raise RuntimeError("No healthy model routes available.")
     expanded: list[ModelRoute] = []
-    for route in sorted(candidates, key=lambda item: item.route_id):
+    for route in candidates:
         expanded.extend([route] * max(int(route.weight), 1))
     status = load_status(kb_dir)
     scheduler = status.setdefault("scheduler", {})

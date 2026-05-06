@@ -2247,7 +2247,15 @@ function modelPoolStat(label, value) {
 
 function renderModelPoolCard(profile) {
   const endpoint = profile.base_url || "(default provider)";
-  const models = profile.probe_models || [profile.model];
+  const routes = profile.routes?.length
+    ? profile.routes
+    : (profile.probe_models || [profile.model]).map((model) => ({
+        model,
+        weight: 100,
+        health: (profile.available_models || []).includes(model) ? "healthy" : profile.failed_models?.[model] ? "offline" : "unknown",
+        latency_ms: profile.latency_ms,
+        last_error: profile.failed_models?.[model] || "",
+      }));
   const active = profile.is_active ? " active" : "";
   const disabled = profile.enabled === false;
   return `
@@ -2271,14 +2279,14 @@ function renderModelPoolCard(profile) {
         <code>${escapeHTML(endpoint)}</code>
       </div>
       <div class="model-list">
-        ${models
-          .map((model) => {
-            const ok = (profile.available_models || []).includes(model);
-            const error = profile.failed_models?.[model];
+        ${routes
+          .map((route) => {
+            const ok = route.health === "healthy";
+            const error = route.last_error || (route.health === "offline" ? "offline" : "");
             return `
               <div>
-                <span>${escapeHTML(model)}</span>
-                ${ok ? `<strong class="good-text">${escapeHTML(profile.latency_ms || "")}ms</strong>` : error ? `<strong class="bad-text">${escapeHTML(error)}</strong>` : `<strong class="muted-text">pending</strong>`}
+                <span><i class="model-health-dot ${escapeHTML(route.health || "unknown")}"></i>${escapeHTML(route.model)} <em>w${escapeHTML(route.weight || 100)}</em></span>
+                ${ok ? `<strong class="good-text">${escapeHTML(route.latency_ms || "")}ms</strong>` : error ? `<strong class="bad-text">${escapeHTML(error)}</strong>` : `<strong class="muted-text">pending</strong>`}
               </div>
             `;
           })
@@ -2907,14 +2915,16 @@ async function testLlm(event) {
 
 async function probeModelPoolProfile(profileId, event) {
   if (!profileId || !state.kbDir) return;
-  const button = event?.currentTarget?.closest("button") || event?.target?.closest("button");
+  const button = event?.target?.closest("button");
   setButtonBusy(button, true, "Probing...");
   try {
     const result = await api(`/api/model-pool/profiles/${encodeURIComponent(profileId)}/probe`, {
       method: "POST",
       body: JSON.stringify({ kb_dir: state.kbDir }),
     });
-    trackJob(result.job, "Model profile probe queued");
+    state.modelPool = result.model_pool || state.modelPool;
+    notify("Model profile probed", "success");
+    renderSettings();
   } catch (error) {
     notify(error.message, "error");
   } finally {
@@ -2931,7 +2941,9 @@ async function probeAllModelPool(event) {
       method: "POST",
       body: JSON.stringify({ kb_dir: state.kbDir }),
     });
-    trackJob(result.job, "Model pool probe queued");
+    state.modelPool = result.model_pool || state.modelPool;
+    notify("Model pool probed", "success");
+    renderSettings();
   } catch (error) {
     notify(error.message, "error");
   } finally {
@@ -2941,7 +2953,7 @@ async function probeAllModelPool(event) {
 
 async function toggleModelPoolProfile(profileId, enable, event) {
   if (!profileId || !state.kbDir) return;
-  const button = event?.currentTarget?.closest("button") || event?.target?.closest("button");
+  const button = event?.target?.closest("button");
   setButtonBusy(button, true, enable ? "Enabling..." : "Disabling...");
   try {
     const result = await api(`/api/model-pool/profiles/${encodeURIComponent(profileId)}/${enable ? "enable" : "disable"}`, {

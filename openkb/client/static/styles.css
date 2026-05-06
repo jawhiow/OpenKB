@@ -1977,6 +1977,18 @@ th {
   white-space: nowrap;
 }
 
+.model-list span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-list em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+}
+
 .model-pool-card footer {
   display: grid;
   gap: 10px;

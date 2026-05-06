@@ -291,6 +291,8 @@ def test_client_settings_renders_model_pool_cards_and_probe_actions():
     assert "function probeAllModelPool" in script
     assert '"/api/model-pool"' in script
     assert '`/api/model-pool/profiles/${encodeURIComponent(profileId)}/probe`' in script
+    assert "trackJob(result.job, \"Model pool probe queued\")" not in script
+    assert "state.modelPool = result.model_pool || state.modelPool" in script
     assert 'data-action="settings-tab"' in script
     assert 'data-settings-tab="model-pool"' in script
     assert 'data-model-pool-search' in script
@@ -300,6 +302,7 @@ def test_client_settings_renders_model_pool_cards_and_probe_actions():
     assert ".model-pool-toolbar" in styles
     assert ".model-pool-grid" in styles
     assert ".model-pool-card" in styles
+    assert "profile.routes" in script
     assert ".model-health-dot" in styles
 
 
