@@ -434,6 +434,7 @@ def add_single_file(
         compile_short_doc,
         compile_progress_callback,
     )
+    from openkb.llm_usage import llm_usage_context
     from openkb.state import HashRegistry
 
     logger = logging.getLogger(__name__)
@@ -443,6 +444,15 @@ def add_single_file(
     _setup_llm_key(kb_dir, profiles[0])
     compile_max_concurrency = max(int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])), 1)
     registry = HashRegistry(openkb_dir / "hashes.json")
+
+    def _run_compile(operation):
+        with llm_usage_context(kb_dir, "compile"):
+            return _run_compile_with_profile_fallback(
+                kb_dir,
+                profiles,
+                progress_callback,
+                operation,
+            )
 
     # 2. Convert document
     click.echo(f"Adding: {file_path.name}")
@@ -470,10 +480,7 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling local page index document: {file_path.name}")
         try:
             with compile_progress_callback(progress_callback):
-                removed_stale_pages = _run_compile_with_profile_fallback(
-                    kb_dir,
-                    profiles,
-                    progress_callback,
+                removed_stale_pages = _run_compile(
                     lambda model: compile_local_long_doc(
                         doc_name,
                         result.source_path,
@@ -512,10 +519,7 @@ def add_single_file(
             _emit_progress(progress_callback, f"Falling back to OCR local-long: {file_path.name}")
             try:
                 with compile_progress_callback(progress_callback):
-                    removed_stale_pages = _run_compile_with_profile_fallback(
-                        kb_dir,
-                        profiles,
-                        progress_callback,
+                    removed_stale_pages = _run_compile(
                         lambda model: compile_local_long_doc(
                             doc_name,
                             result.source_path,
@@ -537,10 +541,7 @@ def add_single_file(
             _emit_progress(progress_callback, f"Compiling local PageIndex document: {file_path.name}")
             try:
                 with compile_progress_callback(progress_callback):
-                    removed_stale_pages = _run_compile_with_profile_fallback(
-                        kb_dir,
-                        profiles,
-                        progress_callback,
+                    removed_stale_pages = _run_compile(
                         lambda model: compile_long_doc(
                             doc_name,
                             summary_path,
@@ -576,10 +577,7 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling long document: {file_path.name}")
         try:
             with compile_progress_callback(progress_callback):
-                removed_stale_pages = _run_compile_with_profile_fallback(
-                    kb_dir,
-                    profiles,
-                    progress_callback,
+                removed_stale_pages = _run_compile(
                     lambda model: compile_long_doc(
                         doc_name,
                         summary_path,
@@ -602,10 +600,7 @@ def add_single_file(
         _emit_progress(progress_callback, f"Compiling short document: {file_path.name}")
         try:
             with compile_progress_callback(progress_callback):
-                removed_stale_pages = _run_compile_with_profile_fallback(
-                    kb_dir,
-                    profiles,
-                    progress_callback,
+                removed_stale_pages = _run_compile(
                     lambda model: compile_short_doc(
                         doc_name,
                         result.source_path,
@@ -1051,6 +1046,7 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
         format_coverage_gap_concept_candidates,
         run_knowledge_lint,
     )
+    from openkb.llm_usage import llm_usage_context
 
     openkb_dir = kb_dir / ".openkb"
 
@@ -1095,7 +1091,8 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
                 _safe_echo(f"Retrying knowledge lint with model route {route.profile_name}/{route.model}...")
             _setup_llm_key(kb_dir, _profile_from_model_route(route))
             try:
-                knowledge_report = await run_knowledge_lint(kb_dir, route.model)
+                with llm_usage_context(kb_dir, "lint"):
+                    knowledge_report = await run_knowledge_lint(kb_dir, route.model)
                 record_route_success(kb_dir, route.profile_id, route.model)
                 break
             except Exception as exc:
@@ -1110,7 +1107,8 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
                 _safe_echo(f"Retrying knowledge lint with LLM profile {_profile_label(profile)}...")
             _setup_llm_key(kb_dir, profile)
             try:
-                knowledge_report = await run_knowledge_lint(kb_dir, profile["model"])
+                with llm_usage_context(kb_dir, "lint"):
+                    knowledge_report = await run_knowledge_lint(kb_dir, profile["model"])
                 break
             except Exception as exc:
                 if not _is_retryable_llm_failure(exc) or profile_index == len(profiles) - 1:

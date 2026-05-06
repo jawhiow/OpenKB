@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import import_module
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -57,6 +58,12 @@ def _fake_requests_response(text: str) -> MagicMock:
 def _clear_gateway_env(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+
+
+def _make_usage_kb(tmp_path) -> object:
+    kb_dir = tmp_path / "kb"
+    (kb_dir / ".openkb").mkdir(parents=True)
+    return kb_dir
 
 
 def test_completion_retries_retryable_responses_error(monkeypatch):
@@ -275,3 +282,88 @@ async def test_acompletion_uses_requests_for_custom_gateway_models(monkeypatch):
     assert result.text == "OK"
     assert mock_post.call_args.kwargs["json"]["model"] == "doubao-seed-2-0-pro-260215"
     assert mock_post.call_args.kwargs["json"]["stream"] is False
+
+
+def test_completion_records_usage_when_feature_context_is_active(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    _clear_gateway_env(monkeypatch)
+    kb_dir = _make_usage_kb(tmp_path)
+    usage = import_module("openkb.llm_usage")
+
+    with patch("openkb.llm_runtime.litellm.completion", return_value=_fake_chat_response("OK")):
+        with usage.llm_usage_context(kb_dir, "query"):
+            result = completion(
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "Reply with OK"}],
+                max_tokens=16,
+            )
+
+    assert result.text == "OK"
+    rows = usage.export_usage(kb_dir)
+    assert len(rows) == 1
+    assert rows[0]["feature"] == "query"
+    assert rows[0]["model"] == "gpt-5.4"
+    assert rows[0]["status"] == "succeeded"
+    assert rows[0]["duration_ms"] >= 0
+    assert rows[0]["input_payload"]["messages"][0]["content"] == "Reply with OK"
+    assert rows[0]["output_payload"]["text"] == "OK"
+
+
+@pytest.mark.asyncio
+async def test_acompletion_records_usage_when_feature_context_is_active(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    _clear_gateway_env(monkeypatch)
+    kb_dir = _make_usage_kb(tmp_path)
+    usage = import_module("openkb.llm_usage")
+
+    with patch("openkb.llm_runtime.litellm.acompletion", AsyncMock(return_value=_fake_chat_response("OK"))):
+        with usage.llm_usage_context(kb_dir, "compile"):
+            result = await acompletion(
+                model="gpt-5.4",
+                messages=[{"role": "user", "content": "Compile this"}],
+            )
+
+    assert result.text == "OK"
+    rows = usage.export_usage(kb_dir)
+    assert len(rows) == 1
+    assert rows[0]["feature"] == "compile"
+    assert rows[0]["status"] == "succeeded"
+    assert rows[0]["output_payload"]["text"] == "OK"
+
+
+def test_completion_records_failure_when_feature_context_is_active(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    _clear_gateway_env(monkeypatch)
+    kb_dir = _make_usage_kb(tmp_path)
+    usage = import_module("openkb.llm_usage")
+
+    with patch("openkb.llm_runtime.litellm.completion", side_effect=RuntimeError("provider down")):
+        with pytest.raises(RuntimeError, match="provider down"):
+            with usage.llm_usage_context(kb_dir, "lint"):
+                completion(
+                    model="gpt-5.4",
+                    messages=[{"role": "user", "content": "Lint this"}],
+                )
+
+    rows = usage.export_usage(kb_dir)
+    assert len(rows) == 1
+    assert rows[0]["feature"] == "lint"
+    assert rows[0]["status"] == "failed"
+    assert "provider down" in rows[0]["error"]
+    assert rows[0]["duration_ms"] >= 0
+
+
+def test_completion_without_feature_context_does_not_record_usage(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    _clear_gateway_env(monkeypatch)
+    kb_dir = _make_usage_kb(tmp_path)
+    usage = import_module("openkb.llm_usage")
+
+    with patch("openkb.llm_runtime.litellm.completion", return_value=_fake_chat_response("OK")):
+        result = completion(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+
+    assert result.text == "OK"
+    assert usage.export_usage(kb_dir) == []

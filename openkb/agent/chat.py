@@ -24,6 +24,7 @@ from prompt_toolkit.styles import Style
 
 from openkb.agent.chat_session import ChatSession
 from openkb.agent.query import MAX_TURNS, build_query_agent
+from openkb.llm_usage import llm_usage_context
 from openkb.log import append_log
 
 
@@ -306,7 +307,7 @@ def _make_markdown(text: str) -> Any:
 
 
 async def _run_turn(
-    agent: Any, session: ChatSession, user_input: str, style: Style,
+    agent: Any, session: ChatSession, user_input: str, style: Style, kb_dir: Path,
     *, use_color: bool = True, raw: bool = False,
 ) -> None:
     """Run one agent turn with streaming output and persist the new history."""
@@ -318,8 +319,6 @@ async def _run_turn(
     from openai.types.responses import ResponseTextDeltaEvent
 
     new_input = session.history + [{"role": "user", "content": user_input}]
-
-    result = Runner.run_streamed(agent, new_input, max_turns=MAX_TURNS)
 
     print()
     collected: list[str] = []
@@ -345,52 +344,54 @@ async def _run_turn(
     live = _start_live()
 
     try:
-        async for event in result.stream_events():
-            if isinstance(event, RawResponsesStreamEvent):
-                if isinstance(event.data, ResponseTextDeltaEvent):
-                    text = event.data.delta
-                    if text:
-                        if need_blank_before_text:
-                            if console is not None:
-                                print()
-                                segment = []
-                                live = _start_live()
+        with llm_usage_context(kb_dir, "chat"):
+            result = Runner.run_streamed(agent, new_input, max_turns=MAX_TURNS)
+            async for event in result.stream_events():
+                if isinstance(event, RawResponsesStreamEvent):
+                    if isinstance(event.data, ResponseTextDeltaEvent):
+                        text = event.data.delta
+                        if text:
+                            if need_blank_before_text:
+                                if console is not None:
+                                    print()
+                                    segment = []
+                                    live = _start_live()
+                                else:
+                                    sys.stdout.write("\n")
+                                need_blank_before_text = False
+                            collected.append(text)
+                            segment.append(text)
+                            last_was_text = True
+                            if live:
+                                if "\n" in text:
+                                    joined = "".join(segment)
+                                    visible = joined[: joined.rfind("\n") + 1]
+                                    if visible:
+                                        live.update(_make_markdown(visible))
+                            else:
+                                sys.stdout.write(text)
+                                sys.stdout.flush()
+                elif isinstance(event, RunItemStreamEvent):
+                    item = event.item
+                    if item.type == "tool_call_item":
+                        if last_was_text:
+                            if live:
+                                if segment:
+                                    live.update(_make_markdown("".join(segment)))
+                                live.stop()
+                                live = None
                             else:
                                 sys.stdout.write("\n")
-                            need_blank_before_text = False
-                        collected.append(text)
-                        segment.append(text)
-                        last_was_text = True
+                                sys.stdout.flush()
+                            last_was_text = False
+                        raw_item = item.raw_item
+                        name = getattr(raw_item, "name", "?")
+                        args = getattr(raw_item, "arguments", "") or ""
                         if live:
-                            if "\n" in text:
-                                joined = "".join(segment)
-                                visible = joined[: joined.rfind("\n") + 1]
-                                if visible:
-                                    live.update(_make_markdown(visible))
-                        else:
-                            sys.stdout.write(text)
-                            sys.stdout.flush()
-            elif isinstance(event, RunItemStreamEvent):
-                item = event.item
-                if item.type == "tool_call_item":
-                    if last_was_text:
-                        if live:
-                            if segment:
-                                live.update(_make_markdown("".join(segment)))
                             live.stop()
                             live = None
-                        else:
-                            sys.stdout.write("\n")
-                            sys.stdout.flush()
-                        last_was_text = False
-                    raw_item = item.raw_item
-                    name = getattr(raw_item, "name", "?")
-                    args = getattr(raw_item, "arguments", "") or ""
-                    if live:
-                        live.stop()
-                        live = None
-                    _fmt(style, ("class:tool", _format_tool_line(name, args) + "\n"))
-                    need_blank_before_text = True
+                        _fmt(style, ("class:tool", _format_tool_line(name, args) + "\n"))
+                        need_blank_before_text = True
     finally:
         if live:
             if segment:
@@ -598,7 +599,7 @@ async def run_chat(
 
         append_log(kb_dir / "wiki", "query", user_input)
         try:
-            await _run_turn(agent, session, user_input, style, use_color=use_color, raw=raw)
+            await _run_turn(agent, session, user_input, style, kb_dir, use_color=use_color, raw=raw)
         except KeyboardInterrupt:
             _fmt(style, ("class:error", "\n[aborted]\n"))
         except Exception as exc:

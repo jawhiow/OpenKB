@@ -1058,6 +1058,29 @@ def get_pageindex_local_status(kb_dir: Path) -> dict[str, Any]:
     }
 
 
+def get_llm_usage_data(
+    kb_dir: Path,
+    *,
+    q: str = "",
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    """Return paginated LLM usage rows without payload blobs."""
+    kb_dir = require_kb_dir(kb_dir)
+    from openkb.llm_usage import list_usage
+
+    return list_usage(kb_dir, q=q, page=page, page_size=page_size)
+
+
+def export_llm_usage_data(kb_dir: Path, *, q: str = "") -> dict[str, Any]:
+    """Return exportable LLM usage rows including payload blobs."""
+    kb_dir = require_kb_dir(kb_dir)
+    from openkb.llm_usage import export_usage
+
+    items = export_usage(kb_dir, q=q)
+    return {"items": items, "total": len(items)}
+
+
 def export_config_data(kb_dir: Path) -> dict[str, Any]:
     """Export portable LLM profile settings, including stored API keys."""
     kb_dir = require_kb_dir(kb_dir)

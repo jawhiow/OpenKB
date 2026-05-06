@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import import_module
 import json
 import os
 import threading
@@ -35,6 +36,49 @@ def _make_kb(tmp_path: Path) -> Path:
     )
     (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps({}), encoding="utf-8")
     return kb_dir
+
+
+def _seed_llm_usage_rows(kb_dir: Path) -> None:
+    usage = import_module("openkb.llm_usage")
+    usage.record_usage(
+        kb_dir=kb_dir,
+        feature="compile",
+        model="gpt-4o-mini",
+        wire_api="responses",
+        base_url="",
+        status="succeeded",
+        duration_ms=210,
+        error="",
+        input_payload={"messages": [{"role": "user", "content": "compile"}]},
+        output_payload={"text": "compiled"},
+        created_at="2026-05-06T10:00:00Z",
+    )
+    usage.record_usage(
+        kb_dir=kb_dir,
+        feature="query",
+        model="gpt-5.4",
+        wire_api="responses",
+        base_url="",
+        status="succeeded",
+        duration_ms=90,
+        error="",
+        input_payload={"messages": [{"role": "user", "content": "who won"}]},
+        output_payload={"text": "answer"},
+        created_at="2026-05-06T10:01:00Z",
+    )
+    usage.record_usage(
+        kb_dir=kb_dir,
+        feature="query",
+        model="gpt-5.4",
+        wire_api="responses",
+        base_url="",
+        status="failed",
+        duration_ms=120,
+        error="upstream timeout",
+        input_payload={"messages": [{"role": "user", "content": "why failed"}]},
+        output_payload={"text": ""},
+        created_at="2026-05-06T10:02:00Z",
+    )
 
 
 def test_query_job_creates_persisted_chat_session_for_web_ask(tmp_path):
@@ -76,6 +120,74 @@ def test_query_job_creates_persisted_chat_session_for_web_ask(tmp_path):
     assert mock_run.call_args.args[1] == [
         {"role": "user", "content": "first question"}
     ]
+
+
+def test_llm_usage_endpoints_support_list_search_pagination_and_export(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    _seed_llm_usage_rows(kb_dir)
+    client = TestClient(create_app())
+
+    listed = client.get(
+        "/api/llm-usage",
+        params={"kb_dir": str(kb_dir), "page": 1, "page_size": 2},
+    )
+
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body["total"] == 3
+    assert body["page"] == 1
+    assert body["page_size"] == 2
+    assert body["pages"] == 2
+    assert len(body["items"]) == 2
+    assert body["items"][0]["feature"] == "query"
+    assert body["items"][0]["status"] == "failed"
+    assert "input_payload" not in body["items"][0]
+    assert "output_payload" not in body["items"][0]
+
+    searched = client.get(
+        "/api/llm-usage",
+        params={"kb_dir": str(kb_dir), "q": "timeout"},
+    )
+
+    assert searched.status_code == 200
+    searched_body = searched.json()
+    assert searched_body["total"] == 1
+    assert searched_body["items"][0]["error"] == "upstream timeout"
+
+    exported = client.get(
+        "/api/llm-usage/export",
+        params={"kb_dir": str(kb_dir), "q": "query"},
+    )
+
+    assert exported.status_code == 200
+    export_body = exported.json()
+    assert len(export_body["items"]) == 2
+    assert export_body["items"][0]["input_payload"]["messages"][0]["content"] == "why failed"
+    assert export_body["items"][0]["output_payload"]["text"] == ""
+
+
+def test_llm_usage_excludes_llm_test_and_model_pool_probe(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    usage = import_module("openkb.llm_usage")
+    client = TestClient(create_app())
+
+    def fake_completion(model, messages, **kwargs):
+        return SimpleNamespace(text="pong")
+
+    monkeypatch.setattr("openkb.llm_runtime.completion", fake_completion)
+
+    llm_test = client.post(
+        "/api/config/test-llm",
+        json={"kb_dir": str(kb_dir), "model": "gpt-5.4-mini"},
+    )
+    probe = client.post(
+        "/api/model-pool/probe",
+        json={"kb_dir": str(kb_dir)},
+    )
+
+    assert llm_test.status_code == 200
+    assert probe.status_code == 200
+    assert usage.export_usage(kb_dir) == []
 
 
 def test_query_job_resumes_existing_web_chat_session(tmp_path):

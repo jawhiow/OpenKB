@@ -25,6 +25,7 @@ def test_client_shell_uses_utility_workbench_layout():
     assert 'id="jobsPanel"' in html
     assert 'id="assistantPanel"' in html
     assert 'class="job-dock"' not in html
+    assert 'data-view="usage"' in html
 
 
 def test_client_script_renders_job_progress_logs_and_busy_buttons():
@@ -95,6 +96,16 @@ def test_client_script_has_bounded_rendering_and_selective_refresh():
     assert "function handleAppInput" in script
     assert "renderJobsPanel();" in script
     assert "renderJobs();" not in script
+
+
+def test_client_renders_llm_usage_page_and_export_action():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'usage: "LLM Usage"' in script
+    assert "function renderLlmUsage" in script
+    assert '"/api/llm-usage"' in script
+    assert '"/api/llm-usage/export"' in script
+    assert 'data-action="usage-page"' in script
 
 
 def test_client_script_summarizes_partial_add_failures():

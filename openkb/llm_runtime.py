@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import os
 import time
 from dataclasses import dataclass
@@ -25,6 +27,416 @@ _async_client_config: tuple[str | None, str | None] | None = None
 _sync_client: OpenAI | None = None
 _sync_client_config: tuple[str | None, str | None] | None = None
 _agents_configured: tuple[str | None, str | None, str] | None = None
+_LOW_LEVEL_USAGE_LOGGING_SUPPRESSED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "openkb_low_level_usage_logging_suppressed",
+    default=False,
+)
+_ORIGINAL_LITELLM_ACOMPLETION = litellm.acompletion
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _json_safe(value.model_dump())
+        except Exception:
+            return str(value)
+    if hasattr(value, "__dict__"):
+        return _json_safe(vars(value))
+    return str(value)
+
+
+def _usage_payload(usage: Any) -> Any:
+    return _json_safe(usage)
+
+
+def _current_usage_context() -> Any:
+    try:
+        from openkb.llm_usage import get_llm_usage_context
+    except ModuleNotFoundError:
+        return None
+    return get_llm_usage_context()
+
+
+@contextlib.contextmanager
+def _suppress_low_level_usage_logging():
+    token = _LOW_LEVEL_USAGE_LOGGING_SUPPRESSED.set(True)
+    try:
+        yield
+    finally:
+        _LOW_LEVEL_USAGE_LOGGING_SUPPRESSED.reset(token)
+
+
+def _should_log_low_level_usage() -> bool:
+    return not _LOW_LEVEL_USAGE_LOGGING_SUPPRESSED.get() and _current_usage_context() is not None
+
+
+def _record_usage_from_context(
+    *,
+    model: str,
+    wire_api: str,
+    base_url: str,
+    status: str,
+    duration_ms: int,
+    error: str = "",
+    input_payload: Any = None,
+    output_payload: Any = None,
+) -> None:
+    context = _current_usage_context()
+    if context is None:
+        return
+    from openkb.llm_usage import record_usage
+
+    record_usage(
+        kb_dir=context.kb_dir,
+        feature=context.feature,
+        model=model,
+        wire_api=wire_api,
+        base_url=base_url,
+        status=status,
+        duration_ms=duration_ms,
+        error=error,
+        input_payload=input_payload,
+        output_payload=output_payload,
+    )
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(int((time.perf_counter() - started_at) * 1000), 0)
+
+
+def _request_payload_for_completion(model: str, messages: list[dict], kwargs: dict[str, Any]) -> dict[str, Any]:
+    payload_kwargs = dict(kwargs)
+    if uses_responses_api(model):
+        return _json_safe(_responses_request_kwargs(model, list(messages), **dict(payload_kwargs)))
+    normalized_model = normalize_model_name(model)
+    if is_custom_openai_compatible(normalized_model):
+        return _json_safe(_custom_openai_payload(normalized_model, list(messages), **dict(payload_kwargs)))
+    return _json_safe(
+        {
+            "model": normalized_model,
+            "messages": list(messages),
+            "kwargs": _apply_default_timeout(payload_kwargs),
+        }
+    )
+
+
+def _request_payload_for_litellm_call(*args, **kwargs) -> dict[str, Any]:
+    model = kwargs.get("model")
+    messages = kwargs.get("messages")
+    if model is None and args:
+        model = args[0]
+    if messages is None and len(args) > 1:
+        messages = args[1]
+    return _json_safe(
+        {
+            "model": model,
+            "messages": messages,
+            "kwargs": dict(kwargs),
+        }
+    )
+
+
+def _text_from_litellm_response(response: Any) -> str:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    return ((getattr(message, "content", "") or "") if message is not None else "").strip()
+
+
+def _response_payload_from_completion_result(result: CompletionResult) -> dict[str, Any]:
+    return {
+        "text": result.text,
+        "usage": _usage_payload(result.usage),
+    }
+
+
+def _response_payload_from_litellm_response(response: Any) -> dict[str, Any]:
+    return {
+        "text": _text_from_litellm_response(response),
+        "usage": _usage_payload(getattr(response, "usage", None)),
+    }
+
+
+def _response_payload_from_openai_response(response: Any, fallback_text: str = "") -> dict[str, Any]:
+    text = str(getattr(response, "output_text", "") or fallback_text).strip()
+    return {
+        "text": text,
+        "usage": _usage_payload(getattr(response, "usage", None)),
+    }
+
+
+class _UsageLoggingAsyncStream:
+    def __init__(
+        self,
+        stream: Any,
+        *,
+        model: str,
+        wire_api: str,
+        base_url: str,
+        input_payload: Any,
+        started_at: float,
+    ) -> None:
+        self._stream = stream
+        self._model = model
+        self._wire_api = wire_api
+        self._base_url = base_url
+        self._input_payload = input_payload
+        self._started_at = started_at
+        self._collected: list[str] = []
+        self._logged = False
+
+    def __aiter__(self) -> "_UsageLoggingAsyncStream":
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            event = await self._stream.__anext__()
+        except StopAsyncIteration:
+            self._log_success({"text": "".join(self._collected)})
+            raise
+        except Exception as exc:
+            self._log_failure(exc, {"text": "".join(self._collected)})
+            raise
+        self._consume_event(event)
+        return event
+
+    async def aclose(self) -> None:
+        aclose = getattr(self._stream, "aclose", None)
+        if callable(aclose):
+            await aclose()
+
+    def _consume_event(self, event: Any) -> None:
+        event_type = getattr(event, "type", "")
+        if event_type == "response.output_text.delta":
+            delta = getattr(event, "delta", "") or ""
+            if delta:
+                self._collected.append(str(delta))
+            return
+        if event_type == "response.completed":
+            response = getattr(event, "response", None)
+            self._log_success(_response_payload_from_openai_response(response, "".join(self._collected)))
+            return
+        if event_type in {"response.failed", "response.incomplete", "response.error"}:
+            response = getattr(event, "response", None)
+            error_value = getattr(event, "error", None) or getattr(response, "error", None) or str(event)
+            self._log_failure(error_value, _response_payload_from_openai_response(response, "".join(self._collected)))
+
+    def _log_success(self, output_payload: Any) -> None:
+        if self._logged:
+            return
+        self._logged = True
+        _record_usage_from_context(
+            model=self._model,
+            wire_api=self._wire_api,
+            base_url=self._base_url,
+            status="succeeded",
+            duration_ms=_elapsed_ms(self._started_at),
+            input_payload=self._input_payload,
+            output_payload=output_payload,
+        )
+
+    def _log_failure(self, exc: Any, output_payload: Any) -> None:
+        if self._logged:
+            return
+        self._logged = True
+        _record_usage_from_context(
+            model=self._model,
+            wire_api=self._wire_api,
+            base_url=self._base_url,
+            status="failed",
+            duration_ms=_elapsed_ms(self._started_at),
+            error=str(exc),
+            input_payload=self._input_payload,
+            output_payload=output_payload,
+        )
+
+
+class _StreamingApiResponseProxy:
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        model: str,
+        base_url: str,
+        input_payload: Any,
+        started_at: float,
+    ) -> None:
+        self._inner = inner
+        self._model = model
+        self._base_url = base_url
+        self._input_payload = input_payload
+        self._started_at = started_at
+
+    async def parse(self) -> Any:
+        parsed = await self._inner.parse()
+        if not _should_log_low_level_usage():
+            return parsed
+        return _UsageLoggingAsyncStream(
+            parsed,
+            model=self._model,
+            wire_api="responses",
+            base_url=self._base_url,
+            input_payload=self._input_payload,
+            started_at=self._started_at,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class _StreamingCreateContextManagerProxy:
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        model: str,
+        base_url: str,
+        input_payload: Any,
+    ) -> None:
+        self._inner = inner
+        self._model = model
+        self._base_url = base_url
+        self._input_payload = input_payload
+        self._started_at = time.perf_counter()
+
+    async def __aenter__(self) -> Any:
+        entered = await self._inner.__aenter__()
+        if not _should_log_low_level_usage():
+            return entered
+        return _StreamingApiResponseProxy(
+            entered,
+            model=self._model,
+            base_url=self._base_url,
+            input_payload=self._input_payload,
+            started_at=self._started_at,
+        )
+
+    async def __aexit__(self, exc_type, exc, tb) -> Any:
+        return await self._inner.__aexit__(exc_type, exc, tb)
+
+
+class _StreamingResponsesProxy:
+    def __init__(self, inner: Any, *, model: str) -> None:
+        self._inner = inner
+        self._model = model
+
+    def create(self, **kwargs) -> Any:
+        if not _should_log_low_level_usage():
+            return self._inner.create(**kwargs)
+        model = str(kwargs.get("model") or self._model or "")
+        return _StreamingCreateContextManagerProxy(
+            self._inner.create(**kwargs),
+            model=model,
+            base_url=get_base_url(model) or "",
+            input_payload=_json_safe(kwargs),
+        )
+
+
+class _ResponsesProxy:
+    def __init__(self, inner: Any, *, model: str) -> None:
+        self._inner = inner
+        self._model = model
+
+    async def create(self, **kwargs) -> Any:
+        if not _should_log_low_level_usage():
+            return await self._inner.create(**kwargs)
+        started_at = time.perf_counter()
+        model = str(kwargs.get("model") or self._model or "")
+        input_payload = _json_safe(kwargs)
+        try:
+            response = await self._inner.create(**kwargs)
+        except Exception as exc:
+            _record_usage_from_context(
+                model=model,
+                wire_api="responses",
+                base_url=get_base_url(model) or "",
+                status="failed",
+                duration_ms=_elapsed_ms(started_at),
+                error=str(exc),
+                input_payload=input_payload,
+                output_payload={"text": ""},
+            )
+            raise
+        _record_usage_from_context(
+            model=model,
+            wire_api="responses",
+            base_url=get_base_url(model) or "",
+            status="succeeded",
+            duration_ms=_elapsed_ms(started_at),
+            input_payload=input_payload,
+            output_payload=_response_payload_from_openai_response(response),
+        )
+        return response
+
+    @property
+    def with_streaming_response(self) -> Any:
+        streaming = getattr(self._inner, "with_streaming_response", None)
+        if streaming is None:
+            return None
+        return _StreamingResponsesProxy(streaming, model=self._model)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class _AsyncOpenAIClientProxy:
+    def __init__(self, inner: AsyncOpenAI, *, model: str | None) -> None:
+        self._inner = inner
+        self._model = model
+
+    @property
+    def responses(self) -> Any:
+        return _ResponsesProxy(self._inner.responses, model=self._model or "")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+async def _instrumented_litellm_acompletion(*args, **kwargs) -> Any:
+    if not _should_log_low_level_usage():
+        return await _ORIGINAL_LITELLM_ACOMPLETION(*args, **kwargs)
+    started_at = time.perf_counter()
+    request_payload = _request_payload_for_litellm_call(*args, **kwargs)
+    model = str(kwargs.get("model") or (args[0] if args else ""))
+    base_url = str(kwargs.get("base_url") or get_base_url(model) or "")
+    try:
+        response = await _ORIGINAL_LITELLM_ACOMPLETION(*args, **kwargs)
+    except Exception as exc:
+        _record_usage_from_context(
+            model=model,
+            wire_api="chat_completions",
+            base_url=base_url,
+            status="failed",
+            duration_ms=_elapsed_ms(started_at),
+            error=str(exc),
+            input_payload=request_payload,
+            output_payload={"text": ""},
+        )
+        raise
+    _record_usage_from_context(
+        model=model,
+        wire_api="chat_completions",
+        base_url=base_url,
+        status="succeeded",
+        duration_ms=_elapsed_ms(started_at),
+        input_payload=request_payload,
+        output_payload=_response_payload_from_litellm_response(response),
+    )
+    return response
+
+
+def _install_low_level_usage_wrappers() -> None:
+    if getattr(litellm.acompletion, "__openkb_usage_wrapped__", False):
+        return
+    _instrumented_litellm_acompletion.__openkb_usage_wrapped__ = True
+    litellm.acompletion = _instrumented_litellm_acompletion
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -285,13 +697,13 @@ def _get_sync_openai_client(model: str | None = None) -> OpenAI:
     return _sync_client
 
 
-def _get_async_openai_client(model: str | None = None) -> AsyncOpenAI:
+def _get_async_openai_client(model: str | None = None) -> Any:
     global _async_client, _async_client_config
     config = (get_api_key(), get_base_url(model))
     if _async_client is None or _async_client_config != config:
         _async_client = AsyncOpenAI(api_key=config[0], base_url=config[1])
         _async_client_config = config
-    return _async_client
+    return _AsyncOpenAIClientProxy(_async_client, model=model)
 
 
 def configure_runtime(model: str | None = None) -> None:
@@ -375,12 +787,42 @@ def _completion_once(model: str, messages: list[dict], **kwargs) -> CompletionRe
 
 def completion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     max_retries = get_llm_max_retries()
+    request_payload = _request_payload_for_completion(model, messages, kwargs)
+    wire_api = get_wire_api(model)
+    effective_model = (
+        normalize_model_name(model)
+        if not uses_responses_api(model)
+        else model.strip()
+    )
+    base_url = get_base_url(model) or ""
+    started_at = time.perf_counter()
 
     for attempt in range(max_retries + 1):
         try:
-            return _completion_once(model, messages, **kwargs)
+            with _suppress_low_level_usage_logging():
+                result = _completion_once(model, messages, **kwargs)
+            _record_usage_from_context(
+                model=effective_model,
+                wire_api=wire_api,
+                base_url=base_url,
+                status="succeeded",
+                duration_ms=_elapsed_ms(started_at),
+                input_payload=request_payload,
+                output_payload=_response_payload_from_completion_result(result),
+            )
+            return result
         except Exception as exc:
             if attempt >= max_retries or not _is_retryable_llm_error(exc):
+                _record_usage_from_context(
+                    model=effective_model,
+                    wire_api=wire_api,
+                    base_url=base_url,
+                    status="failed",
+                    duration_ms=_elapsed_ms(started_at),
+                    error=str(exc),
+                    input_payload=request_payload,
+                    output_payload={"text": ""},
+                )
                 raise
             time.sleep(_retry_delay_seconds(attempt, exc))
     raise RuntimeError("LLM completion retry loop exhausted.")
@@ -407,12 +849,45 @@ async def _acompletion_once(model: str, messages: list[dict], **kwargs) -> Compl
 
 async def acompletion(model: str, messages: list[dict], **kwargs) -> CompletionResult:
     max_retries = get_llm_max_retries()
+    request_payload = _request_payload_for_completion(model, messages, kwargs)
+    wire_api = get_wire_api(model)
+    effective_model = (
+        normalize_model_name(model)
+        if not uses_responses_api(model)
+        else model.strip()
+    )
+    base_url = get_base_url(model) or ""
+    started_at = time.perf_counter()
 
     for attempt in range(max_retries + 1):
         try:
-            return await _acompletion_once(model, messages, **kwargs)
+            with _suppress_low_level_usage_logging():
+                result = await _acompletion_once(model, messages, **kwargs)
+            _record_usage_from_context(
+                model=effective_model,
+                wire_api=wire_api,
+                base_url=base_url,
+                status="succeeded",
+                duration_ms=_elapsed_ms(started_at),
+                input_payload=request_payload,
+                output_payload=_response_payload_from_completion_result(result),
+            )
+            return result
         except Exception as exc:
             if attempt >= max_retries or not _is_retryable_llm_error(exc):
+                _record_usage_from_context(
+                    model=effective_model,
+                    wire_api=wire_api,
+                    base_url=base_url,
+                    status="failed",
+                    duration_ms=_elapsed_ms(started_at),
+                    error=str(exc),
+                    input_payload=request_payload,
+                    output_payload={"text": ""},
+                )
                 raise
             await asyncio.sleep(_retry_delay_seconds(attempt, exc))
     raise RuntimeError("LLM completion retry loop exhausted.")
+
+
+_install_low_level_usage_wrappers()

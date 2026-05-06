@@ -8,6 +8,7 @@ from agents import Agent, Runner, function_tool
 
 from agents import ToolOutputImage, ToolOutputText
 from openkb.agent.tools import get_wiki_page_content, read_wiki_file, read_wiki_image
+from openkb.llm_usage import llm_usage_context
 from openkb.llm_runtime import build_agent_model_settings, resolve_agent_model
 
 MAX_TURNS = 50
@@ -173,7 +174,8 @@ async def run_query(
     agent = build_query_agent(wiki_root, model, language=language)
 
     if not stream:
-        result = await Runner.run(agent, question, max_turns=MAX_TURNS)
+        with llm_usage_context(kb_dir, "query"):
+            result = await Runner.run(agent, question, max_turns=MAX_TURNS)
         return result.final_output or ""
 
     import os
@@ -206,59 +208,60 @@ async def run_query(
     live: Live | None = None
     last_was_text = False
     need_blank_before_text = False
-    result = Runner.run_streamed(agent, question, max_turns=MAX_TURNS)
     collected: list[str] = []
     segment: list[str] = []
     try:
         live = _start_live()
-        async for event in result.stream_events():
-            if isinstance(event, RawResponsesStreamEvent):
-                if isinstance(event.data, ResponseTextDeltaEvent):
-                    text = event.data.delta
-                    if text:
-                        if need_blank_before_text:
-                            if console is not None:
-                                print()
-                                segment = []
-                                live = _start_live()
+        with llm_usage_context(kb_dir, "query"):
+            result = Runner.run_streamed(agent, question, max_turns=MAX_TURNS)
+            async for event in result.stream_events():
+                if isinstance(event, RawResponsesStreamEvent):
+                    if isinstance(event.data, ResponseTextDeltaEvent):
+                        text = event.data.delta
+                        if text:
+                            if need_blank_before_text:
+                                if console is not None:
+                                    print()
+                                    segment = []
+                                    live = _start_live()
+                                else:
+                                    sys.stdout.write("\n")
+                                need_blank_before_text = False
+                            collected.append(text)
+                            segment.append(text)
+                            last_was_text = True
+                            if live:
+                                if "\n" in text:
+                                    joined = "".join(segment)
+                                    visible = joined[: joined.rfind("\n") + 1]
+                                    if visible:
+                                        live.update(_make_markdown(visible))
+                            else:
+                                sys.stdout.write(text)
+                                sys.stdout.flush()
+                elif isinstance(event, RunItemStreamEvent):
+                    item = event.item
+                    if item.type == "tool_call_item":
+                        if last_was_text:
+                            if live:
+                                if segment:
+                                    live.update(_make_markdown("".join(segment)))
+                                live.stop()
+                                live = None
                             else:
                                 sys.stdout.write("\n")
-                            need_blank_before_text = False
-                        collected.append(text)
-                        segment.append(text)
-                        last_was_text = True
+                                sys.stdout.flush()
+                            last_was_text = False
+                        raw_item = item.raw_item
+                        name = getattr(raw_item, "name", "?")
+                        args = getattr(raw_item, "arguments", "") or ""
                         if live:
-                            if "\n" in text:
-                                joined = "".join(segment)
-                                visible = joined[: joined.rfind("\n") + 1]
-                                if visible:
-                                    live.update(_make_markdown(visible))
-                        else:
-                            sys.stdout.write(text)
-                            sys.stdout.flush()
-            elif isinstance(event, RunItemStreamEvent):
-                item = event.item
-                if item.type == "tool_call_item":
-                    if last_was_text:
-                        if live:
-                            if segment:
-                                live.update(_make_markdown("".join(segment)))
                             live.stop()
                             live = None
-                        else:
-                            sys.stdout.write("\n")
-                            sys.stdout.flush()
-                        last_was_text = False
-                    raw_item = item.raw_item
-                    name = getattr(raw_item, "name", "?")
-                    args = getattr(raw_item, "arguments", "") or ""
-                    if live:
-                        live.stop()
-                        live = None
-                    _fmt(style, ("class:tool", _format_tool_line(name, args) + "\n"))
-                    need_blank_before_text = True
-                elif item.type == "tool_call_output_item":
-                    pass
+                        _fmt(style, ("class:tool", _format_tool_line(name, args) + "\n"))
+                        need_blank_before_text = True
+                    elif item.type == "tool_call_output_item":
+                        pass
     finally:
         if live:
             if segment:
@@ -295,7 +298,8 @@ async def run_query_session(
     new_input = getattr(session, "history", []) + [
         {"role": "user", "content": question}
     ]
-    result = await Runner.run(agent, new_input, max_turns=MAX_TURNS)
+    with llm_usage_context(kb_dir, "query"):
+        result = await Runner.run(agent, new_input, max_turns=MAX_TURNS)
     answer = result.final_output or ""
     session.record_turn(question, answer, result.to_input_list())
     return {
@@ -331,17 +335,18 @@ async def run_query_session_stream(
     new_input = getattr(session, "history", []) + [
         {"role": "user", "content": question}
     ]
-    result = Runner.run_streamed(agent, new_input, max_turns=MAX_TURNS)
     collected: list[str] = []
-    async for event in result.stream_events():
-        if isinstance(event, RawResponsesStreamEvent) and isinstance(
-            event.data,
-            ResponseTextDeltaEvent,
-        ):
-            text = event.data.delta
-            if text:
-                collected.append(text)
-                await on_delta(text)
+    with llm_usage_context(kb_dir, "query"):
+        result = Runner.run_streamed(agent, new_input, max_turns=MAX_TURNS)
+        async for event in result.stream_events():
+            if isinstance(event, RawResponsesStreamEvent) and isinstance(
+                event.data,
+                ResponseTextDeltaEvent,
+            ):
+                text = event.data.delta
+                if text:
+                    collected.append(text)
+                    await on_delta(text)
     answer = "".join(collected) if collected else result.final_output or ""
     session.record_turn(question, answer, result.to_input_list())
     return {

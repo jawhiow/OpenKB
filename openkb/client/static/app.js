@@ -3,12 +3,14 @@
   kbDir: null,
   status: null,
   documents: null,
+  llmUsage: null,
   ocrCache: null,
   modelPool: null,
   pageindexLocalStatus: null,
   modelPoolSearch: "",
   modelPoolHealthFilter: "all",
   modelProfileDialog: null,
+  llmUsageSearch: "",
   sourceSearch: "",
   selectedSourceHash: null,
   wikiTree: [],
@@ -58,6 +60,7 @@ const viewLabels = {
   ocr: "OCR",
   wiki: "Wiki",
   sessions: "Sessions",
+  usage: "LLM Usage",
   reports: "Quality",
   settings: "Settings",
 };
@@ -91,6 +94,20 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function poolProfileById(profileId) {
@@ -259,6 +276,23 @@ async function loadOcrData() {
   state.pageindexLocalStatus = pageindexLocalStatus;
 }
 
+async function loadLlmUsage(options = {}) {
+  if (!state.kbDir) return;
+  const pageState = state.ui.pagination["usage"] || {};
+  const page = Number(options.page || pageState.page || 1);
+  const pageSize = Number(options.pageSize || pageState.pageSize || 50);
+  const url = new URL(withKb("/api/llm-usage"), window.location.origin);
+  url.searchParams.set("q", state.llmUsageSearch || "");
+  url.searchParams.set("page", String(page));
+  url.searchParams.set("page_size", String(pageSize));
+  state.llmUsage = await api(`${url.pathname}${url.search}`);
+  state.ui.pagination["usage"] = {
+    ...(state.ui.pagination["usage"] || {}),
+    page: state.llmUsage.page || page,
+    pageSize: state.llmUsage.page_size || pageSize,
+  };
+}
+
 async function refreshKnowledgeData() {
   if (!state.kbDir) return;
   try {
@@ -282,9 +316,13 @@ async function loadAll(event) {
 
     if (state.kbDir) {
       await loadKnowledgeData();
+      if (state.view === "usage") {
+        await loadLlmUsage();
+      }
     } else {
       state.status = null;
       state.documents = null;
+      state.llmUsage = null;
       state.ocrCache = null;
       state.modelPool = null;
       state.pageindexLocalStatus = null;
@@ -346,6 +384,11 @@ function handleJobTransitions(previousStatuses) {
     }
   });
   if (shouldRefresh && !state.loadingAll) {
+    if (state.view === "usage") {
+      loadLlmUsage().then(() => {
+        if (state.view === "usage") renderLlmUsage();
+      }).catch(() => {});
+    }
     refreshKnowledgeData();
   }
 }
@@ -392,6 +435,20 @@ function renderPager(meta, actionPrefix) {
         <button type="button" data-action="${escapeHTML(actionPrefix)}-page" data-page="${escapeHTML(meta.page - 1)}" ${meta.page <= 1 ? "disabled" : ""}>Prev</button>
         <span>Page ${escapeHTML(meta.page)} / ${escapeHTML(meta.pages)}</span>
         <button type="button" data-action="${escapeHTML(actionPrefix)}-page" data-page="${escapeHTML(meta.page + 1)}" ${meta.page >= meta.pages ? "disabled" : ""}>Next</button>
+      </span>
+    </div>
+  `;
+}
+
+function renderUsagePager(meta) {
+  if (!meta || meta.total <= meta.pageSize) return "";
+  return `
+    <div class="table-pager">
+      <span>Showing ${escapeHTML(meta.start)}-${escapeHTML(meta.end)} of ${escapeHTML(meta.total)}</span>
+      <span class="table-pager-actions">
+        <button type="button" data-action="usage-page" data-page="${escapeHTML(meta.page - 1)}" ${meta.page <= 1 ? "disabled" : ""}>Prev</button>
+        <span>Page ${escapeHTML(meta.page)} / ${escapeHTML(meta.pages)}</span>
+        <button type="button" data-action="usage-page" data-page="${escapeHTML(meta.page + 1)}" ${meta.page >= meta.pages ? "disabled" : ""}>Next</button>
       </span>
     </div>
   `;
@@ -737,6 +794,7 @@ function renderMainView() {
   if (state.view === "ocr") renderOcr();
   if (state.view === "wiki") renderWiki();
   if (state.view === "sessions") renderSessions();
+  if (state.view === "usage") renderLlmUsage();
   if (state.view === "reports") renderReports();
   if (state.view === "settings") renderSettings();
 }
@@ -1743,6 +1801,86 @@ function renderSessions() {
   });
 }
 
+function renderLlmUsage() {
+  const usage = state.llmUsage;
+  const items = usage?.items || [];
+  const meta = usage
+    ? {
+        page: usage.page || 1,
+        pageSize: usage.page_size || 50,
+        pages: usage.pages || 1,
+        total: usage.total || 0,
+        start: usage.start || 0,
+        end: usage.end || 0,
+      }
+    : null;
+  mainView.innerHTML = `
+    <section class="section">
+      <header>
+        <div>
+          <h3>LLM Usage</h3>
+          <span class="muted-text">${escapeHTML(meta?.total || 0)} record(s)</span>
+        </div>
+        <div class="row-actions">
+          <button id="exportLlmUsageBtn" type="button">Export</button>
+        </div>
+      </header>
+      <div class="section-body">
+        <div class="wiki-search-row">
+          <input id="llmUsageSearchInput" type="search" placeholder="Search feature, model, status, or error" value="${escapeHTML(state.llmUsageSearch)}" />
+        </div>
+        <div class="data-table-shell">
+          <div class="data-grid-table">
+            <table>
+              <thead>
+                <tr><th>Time</th><th>Feature</th><th>Model</th><th>API</th><th>Duration</th><th>Status</th><th>Error</th></tr>
+              </thead>
+              <tbody>
+                ${
+                  usage === null
+                    ? `<tr><td colspan="7">Loading...</td></tr>`
+                    : items.length
+                      ? items
+                          .map(
+                            (item) => `
+                              <tr>
+                                <td>${escapeHTML(formatDateTime(item.created_at))}</td>
+                                <td>${escapeHTML(item.feature)}</td>
+                                <td>${escapeHTML(item.model)}</td>
+                                <td>${escapeHTML(item.wire_api)}</td>
+                                <td>${escapeHTML(`${item.duration_ms} ms`)}</td>
+                                <td>${badge(item.status)}</td>
+                                <td>${escapeHTML(item.error || "")}</td>
+                              </tr>
+                            `,
+                          )
+                          .join("")
+                      : `<tr><td colspan="7">No usage records</td></tr>`
+                }
+              </tbody>
+            </table>
+          </div>
+          ${meta ? renderUsagePager(meta) : ""}
+        </div>
+      </div>
+    </section>
+  `;
+  $("#llmUsageSearchInput")?.addEventListener("input", async (event) => {
+    state.llmUsageSearch = event.target.value;
+    setPage("usage", 1);
+    try {
+      await loadLlmUsage({ page: 1 });
+      renderLlmUsage();
+      const search = $("#llmUsageSearchInput");
+      search?.focus();
+      search?.setSelectionRange(search.value.length, search.value.length);
+    } catch (error) {
+      notify(error.message, "error");
+    }
+  });
+  $("#exportLlmUsageBtn")?.addEventListener("click", exportLlmUsage);
+}
+
 function renderReports() {
   const reports = state.documents?.reports || [];
   syncSelectedReport(reports);
@@ -2067,6 +2205,15 @@ function handleAppClick(event) {
   if (action === "sessions-page") {
     setPage("sessions", target.dataset.page);
     renderSessions();
+    return;
+  }
+  if (action === "usage-page") {
+    setPage("usage", target.dataset.page);
+    loadLlmUsage({ page: target.dataset.page }).then(() => {
+      renderLlmUsage();
+    }).catch((error) => {
+      notify(error.message, "error");
+    });
     return;
   }
   if (action === "open-chat") {
@@ -2683,6 +2830,32 @@ async function createKb(event) {
   }
 }
 
+async function exportLlmUsage(event) {
+  const button = event?.currentTarget;
+  if (!state.kbDir) {
+    notify("Select or create a knowledge base first.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Exporting...");
+  try {
+    const url = new URL(withKb("/api/llm-usage/export"), window.location.origin);
+    if (state.llmUsageSearch) url.searchParams.set("q", state.llmUsageSearch);
+    const result = await api(`${url.pathname}${url.search}`);
+    const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = "openkb-llm-usage.json";
+    link.click();
+    URL.revokeObjectURL(objectUrl);
+    notify("LLM usage exported", "success");
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
 async function exportLlmConfig(event) {
   const button = event?.currentTarget;
   if (!state.kbDir) {
@@ -2945,6 +3118,13 @@ function switchView(view) {
   const workspace = $(".workspace");
   if (workspace) workspace.scrollTop = 0;
   render();
+  if (view === "usage" && state.kbDir) {
+    loadLlmUsage().then(() => {
+      if (state.view === "usage") renderLlmUsage();
+    }).catch((error) => {
+      notify(error.message, "error");
+    });
+  }
 }
 
 function parseSseChunk(buffer, onEvent) {

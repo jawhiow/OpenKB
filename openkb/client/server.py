@@ -887,6 +887,33 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
+    @app.get("/api/llm-usage")
+    def llm_usage(
+        kb_dir: str | None = Query(default=None),
+        q: str = Query(default=""),
+        page: int = Query(default=1),
+        page_size: int = Query(default=50),
+    ) -> dict[str, Any]:
+        try:
+            return kb_helpers.get_llm_usage_data(
+                _resolve_kb_dir(kb_dir),
+                q=q,
+                page=page,
+                page_size=page_size,
+            )
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.get("/api/llm-usage/export")
+    def llm_usage_export(
+        kb_dir: str | None = Query(default=None),
+        q: str = Query(default=""),
+    ) -> dict[str, Any]:
+        try:
+            return kb_helpers.export_llm_usage_data(_resolve_kb_dir(kb_dir), q=q)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
     @app.get("/api/ocr/cache")
     def ocr_cache(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
         try:
