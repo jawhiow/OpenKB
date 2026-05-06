@@ -327,6 +327,9 @@ def test_client_settings_renders_model_pool_cards_and_probe_actions():
     assert '["general", "General"]' in script
     assert 'data-model-pool-search' in script
     assert 'data-model-health-filter' in script
+    assert 'id="modelPoolEnabledInput"' in script
+    assert 'id="saveModelPoolSettingsBtn"' in script
+    assert "saveModelPoolSettings" in script
     assert 'class="model-pool-grid"' in script
     assert ".settings-tabs" in styles
     assert ".model-pool-toolbar" in styles

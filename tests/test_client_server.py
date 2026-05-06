@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from agents import RawResponsesStreamEvent
 from openai.types.responses import ResponseTextDeltaEvent
+import yaml
 
 from openkb.client.jobs import JobRegistry
 from openkb.client.server import create_app
@@ -1106,7 +1107,7 @@ def test_model_pool_endpoint_merges_profiles_with_health_status(tmp_path):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["enabled"] is False
+    assert body["enabled"] is True
     assert body["active_profile"] == "gateway"
     assert body["summary"]["total"] == 1
     assert body["summary"]["degraded"] == 1
@@ -1494,6 +1495,10 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
             "pageindex_local_repo_dir": str(runtime_dir / "repo"),
             "pageindex_local_python_path": str(runtime_dir / "python.exe"),
             "pageindex_local_script_path": str(runtime_dir / "run_pageindex.py"),
+            "model_pool_enabled": False,
+            "model_pool_probe_interval_seconds": 300,
+            "model_pool_failure_threshold": 2,
+            "model_pool_timeout_seconds": 18,
             "api_key": "gateway-secret",
         },
     )
@@ -1517,6 +1522,11 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
     assert exported["settings"]["pageindex_local_repo_dir"] == str(runtime_dir / "repo")
     assert exported["settings"]["pageindex_local_python_path"] == str(runtime_dir / "python.exe")
     assert exported["settings"]["pageindex_local_script_path"] == str(runtime_dir / "run_pageindex.py")
+    assert exported["settings"]["model_pool_enabled"] is False
+    assert exported["settings"]["model_pool_strategy"] == "weighted_round_robin"
+    assert exported["settings"]["model_pool_probe_interval_seconds"] == 300
+    assert exported["settings"]["model_pool_failure_threshold"] == 2
+    assert exported["settings"]["model_pool_timeout_seconds"] == 18
     assert exported["profiles"][0]["api_key"] == "default-secret"
     assert exported["profiles"][1]["api_key"] == "gateway-secret"
 
@@ -1544,6 +1554,14 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
     assert [profile["id"] for profile in imported["profiles"]] == ["default", "gateway"]
     assert imported["api_key"] == "gateway-secret"
     assert imported["profiles"][1]["api_key"] == "gateway-secret"
+    saved = yaml.safe_load((target / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["model_pool"] == {
+        "enabled": False,
+        "failure_threshold": 2,
+        "probe_interval_seconds": 300,
+        "strategy": "weighted_round_robin",
+        "timeout_seconds": 18,
+    }
     target_manifest = json.loads((target / ".openkb" / "pageindex-local" / "installation.json").read_text(encoding="utf-8"))
     assert target_manifest == {
         "repo_dir": str(runtime_dir / "repo"),

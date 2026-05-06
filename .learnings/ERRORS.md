@@ -26,6 +26,33 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260506-004] rg_access_denied_in_powershell
+
+**Logged**: 2026-05-06T14:55:57+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+`rg` failed with Access denied in this PowerShell session, so code search had to fall back to `Get-ChildItem` plus `Select-String`.
+
+### Error
+```text
+Program 'rg.exe' failed to run: Access is denied
+```
+
+### Context
+- Command attempted: `rg -n "model_pool|llm_profiles|active_llm_profile|Enable Model|strategy" openkb tests`
+- Environment: PowerShell in `D:\workspace\codex\jt-ai-tz\OpenKB`
+
+### Suggested Fix
+Use PowerShell `Select-String` as a fallback when `rg` is unavailable or blocked in this workspace.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: none
+
+---
 ## [ERR-20260506-005] node_playwright_module_missing
 
 **Logged**: 2026-05-06T09:06:00+08:00

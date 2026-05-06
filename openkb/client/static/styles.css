@@ -1842,6 +1842,15 @@ th {
   margin-bottom: 14px;
 }
 
+.model-pool-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
 .model-pool-toolbar input,
 .model-pool-toolbar select {
   min-height: 38px;

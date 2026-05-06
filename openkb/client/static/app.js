@@ -2543,6 +2543,13 @@ function renderModelPool() {
           <button id="addModelProfileBtn" class="primary" type="button" data-action="model-add">Add Endpoint</button>
         </div>
       </header>
+      <div class="model-pool-toggle-row">
+        <label class="checkline">
+          <input id="modelPoolEnabledInput" type="checkbox" ${pool.enabled ? "checked" : ""} />
+          Enable Model Pool
+        </label>
+        <button id="saveModelPoolSettingsBtn" type="button">Save Pool Settings</button>
+      </div>
       <div class="model-pool-toolbar">
         <input type="search" placeholder="Search sites or API base URL..." value="${escapeHTML(state.modelPoolSearch)}" data-model-pool-search />
         <select data-model-health-filter>
@@ -2707,6 +2714,7 @@ function renderSettings() {
   $("#importProfilesBtn")?.addEventListener("click", () => $("#importProfilesInput").click());
   $("#importProfilesInput")?.addEventListener("change", importLlmConfig);
   $("#probeAllModelPoolBtn")?.addEventListener("click", probeAllModelPool);
+  $("#saveModelPoolSettingsBtn")?.addEventListener("click", saveModelPoolSettings);
   const healthFilter = document.querySelector("[data-model-health-filter]");
   if (healthFilter) healthFilter.value = state.modelPoolHealthFilter || "all";
 }
@@ -2926,6 +2934,31 @@ async function saveSettings(event) {
       }),
     });
     notify("Settings saved", "success");
+    await loadAll();
+    render();
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function saveModelPoolSettings(event) {
+  const button = event?.currentTarget;
+  if (!state.kbDir) {
+    notify("Select or create a knowledge base first.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Saving...");
+  try {
+    await api("/api/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        kb_dir: state.kbDir,
+        model_pool_enabled: $("#modelPoolEnabledInput") ? $("#modelPoolEnabledInput").checked : true,
+      }),
+    });
+    notify("Model pool settings saved", "success");
     await loadAll();
     render();
   } catch (error) {

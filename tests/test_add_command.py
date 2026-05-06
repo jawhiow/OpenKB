@@ -317,6 +317,12 @@ class TestAddCommand:
         from openkb.converter import ConvertResult
 
         kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "model: gpt-4o-mini\n"
+            "model_pool:\n"
+            "  enabled: false\n",
+            encoding="utf-8",
+        )
         doc = tmp_path / "scan.pdf"
         doc.write_bytes(b"%PDF")
         source_path = kb_dir / "wiki" / "sources" / "scan.json"
@@ -682,6 +688,8 @@ class TestAddCommand:
             "model: bad-model\n"
             "wire_api: chat_completions\n"
             "base_url: https://bad.example.com/v1\n"
+            "model_pool:\n"
+            "  enabled: false\n"
             "llm_profiles:\n"
             "- id: bad\n"
             "  name: Bad\n"

@@ -12,6 +12,7 @@ def test_default_config_keys():
     assert "ocr_default_model" in DEFAULT_CONFIG
     assert "ocr_chunk_pages" in DEFAULT_CONFIG
     assert "pageindex_local_enabled" in DEFAULT_CONFIG
+    assert "model_pool" in DEFAULT_CONFIG
 
 
 def test_default_config_values():
@@ -23,12 +24,34 @@ def test_default_config_values():
     assert DEFAULT_CONFIG["ocr_default_model"] == "PaddleOCR-VL-1.5"
     assert DEFAULT_CONFIG["ocr_chunk_pages"] == 100
     assert DEFAULT_CONFIG["pageindex_local_enabled"] is False
+    assert DEFAULT_CONFIG["model_pool"]["enabled"] is True
+    assert DEFAULT_CONFIG["model_pool"]["strategy"] == "weighted_round_robin"
 
 
 def test_load_missing_file_returns_defaults(tmp_path):
     missing = tmp_path / "nonexistent" / "config.yaml"
     config = load_config(missing)
     assert config == DEFAULT_CONFIG
+
+
+def test_load_config_returns_independent_nested_defaults(tmp_path):
+    missing = tmp_path / "nonexistent" / "config.yaml"
+    config = load_config(missing)
+
+    config["model_pool"]["enabled"] = False
+
+    assert DEFAULT_CONFIG["model_pool"]["enabled"] is True
+
+
+def test_load_config_merges_nested_defaults(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    save_config(config_path, {"model_pool": {"timeout_seconds": 30}})
+
+    loaded = load_config(config_path)
+
+    assert loaded["model_pool"]["enabled"] is True
+    assert loaded["model_pool"]["strategy"] == "weighted_round_robin"
+    assert loaded["model_pool"]["timeout_seconds"] == 30
 
 
 def test_save_creates_parent_dirs(tmp_path):

@@ -13,6 +13,7 @@ from openkb.client.kb import (
     export_config_data,
     get_config_data,
     get_document_data,
+    get_model_pool_data,
     get_source_document_data,
     get_status_data,
     import_config_data,
@@ -296,6 +297,7 @@ def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
     assert saved["base_url"] == "https://gateway.example.com/v1"
     assert saved["active_llm_profile"] == "default"
     assert saved["llm_profiles"][0]["id"] == "default"
+    assert saved["model_pool"]["enabled"] is True
 
 
 def test_config_data_can_create_and_switch_llm_profiles_with_separate_keys(tmp_path: Path):
@@ -364,6 +366,10 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
             "pageindex_local_repo_dir": str(runtime_dir / "repo"),
             "pageindex_local_python_path": str(runtime_dir / "python.exe"),
             "pageindex_local_script_path": str(runtime_dir / "run_pageindex.py"),
+            "model_pool_enabled": False,
+            "model_pool_probe_interval_seconds": 300,
+            "model_pool_failure_threshold": 2,
+            "model_pool_timeout_seconds": 18,
             "api_key": "gateway-secret",
         },
     )
@@ -385,6 +391,11 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
     assert exported["settings"]["pageindex_local_repo_dir"] == str(runtime_dir / "repo")
     assert exported["settings"]["pageindex_local_python_path"] == str(runtime_dir / "python.exe")
     assert exported["settings"]["pageindex_local_script_path"] == str(runtime_dir / "run_pageindex.py")
+    assert exported["settings"]["model_pool_enabled"] is False
+    assert exported["settings"]["model_pool_strategy"] == "weighted_round_robin"
+    assert exported["settings"]["model_pool_probe_interval_seconds"] == 300
+    assert exported["settings"]["model_pool_failure_threshold"] == 2
+    assert exported["settings"]["model_pool_timeout_seconds"] == 18
     assert [profile["id"] for profile in exported["profiles"]] == ["default", "gateway"]
     assert exported["profiles"][0]["api_key"] == "default-secret"
     assert exported["profiles"][1]["api_key"] == "gateway-secret"
@@ -422,6 +433,13 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
     assert saved["pageindex_local_enabled"] is True
     assert saved["pageindex_local_model"] == "gpt-5.4"
     assert saved["pageindex_local_installation_state"] == "installed"
+    assert saved["model_pool"] == {
+        "enabled": False,
+        "failure_threshold": 2,
+        "probe_interval_seconds": 300,
+        "strategy": "weighted_round_robin",
+        "timeout_seconds": 18,
+    }
     env_text = (target / ".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=gateway-secret\n" in env_text
     assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=default-secret\n" in env_text
@@ -455,6 +473,8 @@ def test_init_kb_creates_openkb_layout(tmp_path: Path):
     assert (kb_dir / ".openkb" / "config.yaml").is_file()
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["base_url"] == "https://gateway.example.com"
+    assert saved["model_pool"]["enabled"] is True
+    assert saved["model_pool"]["strategy"] == "weighted_round_robin"
     assert saved["compile_max_concurrency"] == 3
     assert saved["ocr_enabled"] is True
     assert saved["ocr_default_model"] == "PaddleOCR-VL-1.5"
@@ -464,3 +484,34 @@ def test_init_kb_creates_openkb_layout(tmp_path: Path):
     env_text = (kb_dir / ".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=sk-test\n" in env_text
     assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=sk-test\n" in env_text
+
+
+def test_model_pool_enabled_can_be_toggled_via_config_update(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+
+    initial_pool = get_model_pool_data(kb_dir)
+    assert initial_pool["enabled"] is True
+    assert initial_pool["strategy"] == "weighted_round_robin"
+
+    update_config_data(
+        kb_dir,
+        {
+            "model_pool_enabled": False,
+        },
+    )
+
+    disabled_pool = get_model_pool_data(kb_dir)
+    assert disabled_pool["enabled"] is False
+
+    saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["model_pool"]["enabled"] is False
+
+    update_config_data(
+        kb_dir,
+        {
+            "model_pool_enabled": True,
+        },
+    )
+
+    enabled_pool = get_model_pool_data(kb_dir)
+    assert enabled_pool["enabled"] is True

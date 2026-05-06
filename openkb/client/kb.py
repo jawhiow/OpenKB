@@ -21,6 +21,7 @@ from openkb.config import (
     save_config,
 )
 from openkb.llm_runtime import model_prefers_responses_api
+from openkb.model_pool import model_pool_config
 from openkb.schema import AGENTS_MD
 
 
@@ -51,6 +52,13 @@ _GENERAL_CONFIG_KEYS = {
     "pageindex_local_enabled",
     "pageindex_local_model",
     "pageindex_local_installation_state",
+}
+_MODEL_POOL_CONFIG_KEYS = {
+    "model_pool_enabled",
+    "model_pool_strategy",
+    "model_pool_probe_interval_seconds",
+    "model_pool_failure_threshold",
+    "model_pool_timeout_seconds",
 }
 _PROFILE_CONFIG_KEYS = {"model", "wire_api", "base_url"}
 _PROFILE_LIST_KEYS = {"tags", "features", "probe_models"}
@@ -910,7 +918,7 @@ def get_model_pool_data(kb_dir: Path) -> dict[str, Any]:
         card["routes"] = routes_by_profile.get(card["id"], [])
     return {
         "enabled": bool(pool_config.get("enabled", False)),
-        "strategy": str(pool_config.get("strategy") or "priority_then_latency"),
+        "strategy": str(pool_config.get("strategy") or "weighted_round_robin"),
         "probe_interval_seconds": int(pool_config.get("probe_interval_seconds") or 600),
         "failure_threshold": int(pool_config.get("failure_threshold") or 3),
         "timeout_seconds": int(pool_config.get("timeout_seconds") or 12),
@@ -1113,6 +1121,26 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
                     DEFAULT_CONFIG["pageindex_local_installation_state"],
                 )
             ),
+            "model_pool_enabled": bool(model_pool_config(config).get("enabled", DEFAULT_CONFIG["model_pool"]["enabled"])),
+            "model_pool_strategy": str(model_pool_config(config).get("strategy", DEFAULT_CONFIG["model_pool"]["strategy"])),
+            "model_pool_probe_interval_seconds": int(
+                model_pool_config(config).get(
+                    "probe_interval_seconds",
+                    DEFAULT_CONFIG["model_pool"]["probe_interval_seconds"],
+                )
+            ),
+            "model_pool_failure_threshold": int(
+                model_pool_config(config).get(
+                    "failure_threshold",
+                    DEFAULT_CONFIG["model_pool"]["failure_threshold"],
+                )
+            ),
+            "model_pool_timeout_seconds": int(
+                model_pool_config(config).get(
+                    "timeout_seconds",
+                    DEFAULT_CONFIG["model_pool"]["timeout_seconds"],
+                )
+            ),
             **runtime_fields,
         },
         "profiles": [
@@ -1205,6 +1233,18 @@ def import_config_data(kb_dir: Path, imported: dict[str, Any]) -> dict[str, Any]
             ).strip()
             or DEFAULT_CONFIG["pageindex_local_installation_state"]
         )
+    pool = model_pool_config(config)
+    if "model_pool_enabled" in settings:
+        pool["enabled"] = bool(settings["model_pool_enabled"])
+    if "model_pool_strategy" in settings:
+        pool["strategy"] = str(settings["model_pool_strategy"] or DEFAULT_CONFIG["model_pool"]["strategy"]).strip() or DEFAULT_CONFIG["model_pool"]["strategy"]
+    if "model_pool_probe_interval_seconds" in settings:
+        pool["probe_interval_seconds"] = max(int(settings["model_pool_probe_interval_seconds"]), 1)
+    if "model_pool_failure_threshold" in settings:
+        pool["failure_threshold"] = max(int(settings["model_pool_failure_threshold"]), 1)
+    if "model_pool_timeout_seconds" in settings:
+        pool["timeout_seconds"] = max(int(settings["model_pool_timeout_seconds"]), 1)
+    config["model_pool"] = pool
     _update_pageindex_local_runtime(kb_dir, settings)
 
     active_id = str(imported.get("active_profile") or profiles[0]["id"]).strip()
@@ -1292,6 +1332,19 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
             else:
                 value = str(value or "").strip() if key not in {"language"} else value
             config[key] = value
+        elif key in _MODEL_POOL_CONFIG_KEYS:
+            pool = model_pool_config(config)
+            if key == "model_pool_enabled":
+                pool["enabled"] = bool(value)
+            elif key == "model_pool_strategy":
+                pool["strategy"] = str(value or DEFAULT_CONFIG["model_pool"]["strategy"]).strip() or DEFAULT_CONFIG["model_pool"]["strategy"]
+            elif key == "model_pool_probe_interval_seconds":
+                pool["probe_interval_seconds"] = max(int(value), 1)
+            elif key == "model_pool_failure_threshold":
+                pool["failure_threshold"] = max(int(value), 1)
+            elif key == "model_pool_timeout_seconds":
+                pool["timeout_seconds"] = max(int(value), 1)
+            config["model_pool"] = pool
 
     api_key = str(updates.get("api_key") or "").strip()
     if api_key:
@@ -1380,6 +1433,7 @@ def init_kb(
         "pageindex_local_enabled": DEFAULT_CONFIG["pageindex_local_enabled"],
         "pageindex_local_model": DEFAULT_CONFIG["pageindex_local_model"],
         "pageindex_local_installation_state": DEFAULT_CONFIG["pageindex_local_installation_state"],
+        "model_pool": dict(DEFAULT_CONFIG["model_pool"]),
         "wire_api": resolved_wire_api,
         "base_url": resolved_base_url,
     }

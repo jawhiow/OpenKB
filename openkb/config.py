@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pageindex_local_enabled": False,
     "pageindex_local_model": "",
     "pageindex_local_installation_state": "not_installed",
+    "model_pool": {
+        "enabled": True,
+        "strategy": "weighted_round_robin",
+        "probe_interval_seconds": 600,
+        "failure_threshold": 3,
+        "timeout_seconds": 12,
+    },
     "wire_api": "chat_completions",
     "base_url": "",
 }
@@ -26,16 +34,26 @@ GLOBAL_CONFIG_DIR = Path.home() / ".config" / "openkb"
 GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_DIR / "global.yaml"
 
 
+def _merge_config_defaults(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(defaults)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_config_defaults(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(config_path: Path) -> dict[str, Any]:
     """Load YAML config from config_path, merged with DEFAULT_CONFIG.
 
     If the file does not exist, returns a copy of the defaults.
     """
-    config = dict(DEFAULT_CONFIG)
+    config = deepcopy(DEFAULT_CONFIG)
     if config_path.exists():
         with config_path.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
-        config.update(data)
+        config = _merge_config_defaults(config, data)
     return config
 
 
