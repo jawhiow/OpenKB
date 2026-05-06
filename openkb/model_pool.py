@@ -1,12 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from openkb.config import DEFAULT_CONFIG, load_config
+from dotenv import load_dotenv
+
+from openkb.config import DEFAULT_CONFIG, GLOBAL_CONFIG_DIR, load_config
+
+
+_RUNTIME_ENV_KEYS = (
+    "LLM_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENKB_WIRE_API",
+    "OPENAI_WIRE_API",
+)
 
 
 @dataclass(frozen=True)
@@ -232,3 +247,59 @@ def select_model_route(kb_dir: Path, *, exclude: set[str] | None = None) -> Mode
     scheduler["weighted_round_robin_cursor"] = cursor + 1
     save_status(kb_dir, status)
     return selected
+
+
+def probe_model_route(kb_dir: Path, route: ModelRoute, *, api_key: str = "", timeout: int = 20) -> dict[str, Any]:
+    from openkb.llm_runtime import completion, normalize_model_name
+
+    model = route.model
+    wire_api = route.wire_api
+    base_url = route.base_url
+    if base_url and wire_api != "responses" and model.startswith("openai/"):
+        model = model.split("/", 1)[1]
+    else:
+        model = normalize_model_name(model)
+
+    completion_kwargs: dict[str, Any] = {
+        "max_tokens": 8,
+        "timeout": timeout,
+    }
+    if base_url and wire_api != "responses":
+        completion_kwargs["custom_llm_provider"] = "custom_openai"
+    snapshot = {key: os.environ.get(key) for key in _RUNTIME_ENV_KEYS}
+    try:
+        env_file = Path(kb_dir) / ".env"
+        if env_file.exists():
+            load_dotenv(env_file, override=True)
+        global_env = GLOBAL_CONFIG_DIR / ".env"
+        if global_env.exists():
+            load_dotenv(global_env, override=False)
+        if wire_api:
+            os.environ["OPENKB_WIRE_API"] = wire_api
+        if base_url:
+            os.environ["OPENAI_BASE_URL"] = base_url
+            os.environ["OPENAI_API_BASE"] = base_url
+        selected_key = api_key.strip()
+        if not selected_key and route.api_key_env:
+            selected_key = os.environ.get(route.api_key_env, "").strip()
+        if selected_key:
+            os.environ["LLM_API_KEY"] = selected_key
+            os.environ["OPENAI_API_KEY"] = selected_key
+        result = completion(
+            model=model,
+            messages=[{"role": "user", "content": "Ping. Reply with exactly pong."}],
+            **completion_kwargs,
+        )
+    finally:
+        for key, value in snapshot.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return {
+        "ok": True,
+        "model": model,
+        "wire_api": wire_api,
+        "base_url": base_url,
+        "response_text": result.text,
+    }

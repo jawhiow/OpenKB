@@ -209,7 +209,7 @@ def _test_llm_config(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _probe_model_pool_profile(target_kb: Path, profile_id: str) -> dict[str, Any]:
-    from openkb.model_pool import configured_routes, record_route_failure, record_route_success
+    from openkb.model_pool import configured_routes, probe_model_route, record_route_failure, record_route_success
 
     profile = kb_helpers.get_model_pool_profile(target_kb, profile_id)
     if not profile.get("enabled", True):
@@ -233,15 +233,7 @@ def _probe_model_pool_profile(target_kb: Path, profile_id: str) -> dict[str, Any
     for route in routes:
         started = time.perf_counter()
         try:
-            _test_llm_config(
-                {
-                    "kb_dir": str(target_kb),
-                    "model": route.model,
-                    "wire_api": route.wire_api,
-                    "base_url": route.base_url,
-                    "api_key": profile.get("api_key"),
-                }
-            )
+            probe_model_route(target_kb, route, api_key=str(profile.get("api_key") or ""))
             latency = int((time.perf_counter() - started) * 1000)
             available_models.append(route.model)
             latencies.append(latency)
@@ -597,14 +589,9 @@ def create_app(registry: JobRegistry | None = None):
                         excluded_routes.add(route.route_id)
                         record_route_failure(target_kb, route.profile_id, route.model, exc)
                         try:
-                            _test_llm_config(
-                                {
-                                    "kb_dir": str(target_kb),
-                                    "model": route.model,
-                                    "wire_api": route.wire_api,
-                                    "base_url": route.base_url,
-                                }
-                            )
+                            from openkb.model_pool import probe_model_route
+
+                            probe_model_route(target_kb, route)
                         except Exception as probe_exc:
                             record_route_failure(target_kb, route.profile_id, route.model, probe_exc)
                 if query_result is None:

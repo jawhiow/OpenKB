@@ -933,13 +933,13 @@ def test_model_pool_profile_probe_persists_status_without_deleting_config(tmp_pa
     )
     calls: list[dict[str, object]] = []
 
-    def fake_test_llm(payload):
-        calls.append(payload)
-        if payload["model"] == "missing-model":
+    def fake_probe(_kb_dir, route, **_kwargs):
+        calls.append({"model": route.model, "base_url": route.base_url})
+        if route.model == "missing-model":
             raise RuntimeError("model_not_found")
         return {"ok": True, "latency_ms": 25}
 
-    monkeypatch.setattr("openkb.client.server._test_llm_config", fake_test_llm)
+    monkeypatch.setattr("openkb.model_pool.probe_model_route", fake_probe)
     registry = JobRegistry()
     client = TestClient(create_app(registry=registry))
 
@@ -986,12 +986,12 @@ def test_model_pool_probe_returns_direct_result_without_job(tmp_path, monkeypatc
         encoding="utf-8",
     )
 
-    def fake_test_llm(payload):
-        if payload["model"] == "missing-model":
+    def fake_probe(_kb_dir, route, **_kwargs):
+        if route.model == "missing-model":
             raise RuntimeError("model_not_found")
         return {"ok": True, "latency_ms": 25}
 
-    monkeypatch.setattr("openkb.client.server._test_llm_config", fake_test_llm)
+    monkeypatch.setattr("openkb.model_pool.probe_model_route", fake_probe)
     registry = JobRegistry()
     client = TestClient(create_app(registry=registry))
 
@@ -1109,7 +1109,7 @@ def test_query_job_uses_model_pool_and_retries_after_runtime_failure(tmp_path):
     with (
         patch("openkb.cli._setup_llm_key"),
         patch("openkb.agent.query.Runner.run", side_effect=fake_run),
-        patch("openkb.client.server._test_llm_config", side_effect=RuntimeError("upstream 500")) as probe,
+        patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("upstream 500")) as probe,
     ):
         response = client.post(
             "/api/query",
@@ -1122,7 +1122,7 @@ def test_query_job_uses_model_pool_and_retries_after_runtime_failure(tmp_path):
     assert job.status == "succeeded"
     assert job.result["answer"] == "backup answer"
     assert [call.rsplit("/", 1)[-1] for call in calls] == ["bad-model", "good-model"]
-    assert probe.call_args.args[0]["model"] == "bad-model"
+    assert probe.call_args.args[1].model == "bad-model"
     status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
     assert status["routes"]["primary:bad-model"]["health"] == "offline"
     assert status["routes"]["backup:good-model"]["health"] == "healthy"

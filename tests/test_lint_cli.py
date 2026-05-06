@@ -156,6 +156,73 @@ class TestLintCommand:
         assert "No issues." in report_text
         assert "Knowledge lint failed" not in report_text
 
+    @pytest.mark.asyncio
+    async def test_run_lint_uses_model_pool_routes_and_records_health(self, tmp_path):
+        from openkb.cli import run_lint
+        from openkb.model_pool import record_route_success
+
+        kb_dir = _setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps({"abc": {"name": "paper.pdf", "type": "pdf"}}))
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "active_llm_profile: primary\n"
+            "model: fallback-model\n"
+            "wire_api: chat_completions\n"
+            "model_pool:\n"
+            "  enabled: true\n"
+            "  strategy: weighted_round_robin\n"
+            "llm_profiles:\n"
+            "- id: primary\n"
+            "  name: Primary\n"
+            "  model: bad-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://bad.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_PRIMARY_API_KEY\n"
+            "  models:\n"
+            "  - name: bad-model\n"
+            "    weight: 100\n"
+            "- id: backup\n"
+            "  name: Backup\n"
+            "  model: good-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://good.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_BACKUP_API_KEY\n"
+            "  models:\n"
+            "  - name: good-model\n"
+            "    weight: 100\n",
+            encoding="utf-8",
+        )
+        record_route_success(kb_dir, "primary", "bad-model", latency_ms=10)
+        record_route_success(kb_dir, "backup", "good-model", latency_ms=20)
+        calls: list[str] = []
+        setup_profiles: list[dict[str, str]] = []
+
+        async def run_knowledge_lint(_kb_dir, model):
+            calls.append(model)
+            if model == "bad-model":
+                raise RuntimeError("upstream 500")
+            return "No issues."
+
+        def fake_setup(_kb_dir, profile):
+            setup_profiles.append(profile)
+
+        with patch("openkb.cli._setup_llm_key", side_effect=fake_setup), \
+             patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe, \
+             patch("openkb.agent.linter.run_knowledge_lint", side_effect=run_knowledge_lint):
+            report_path = await run_lint(kb_dir)
+
+        assert calls == ["bad-model", "good-model"]
+        assert probe.call_count == 1
+        assert probe.call_args.args[1].model == "bad-model"
+        assert setup_profiles[-2]["id"] == "primary"
+        assert setup_profiles[-2]["model"] == "bad-model"
+        assert setup_profiles[-1]["id"] == "backup"
+        assert setup_profiles[-1]["model"] == "good-model"
+        assert report_path is not None
+        assert "No issues." in report_path.read_text(encoding="utf-8")
+        status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
+        assert status["routes"]["primary:bad-model"]["health"] == "offline"
+        assert status["routes"]["backup:good-model"]["health"] == "healthy"
+
     def test_lint_fix_creates_coverage_gap_draft_pages(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)
         hashes = {"abc": {"name": "paper.pdf", "type": "pdf"}}

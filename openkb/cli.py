@@ -296,12 +296,80 @@ def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> 
         progress_callback(message)
 
 
+def _profile_from_model_route(route) -> dict[str, str]:
+    return {
+        "id": route.profile_id,
+        "name": route.profile_name,
+        "model": route.model,
+        "wire_api": route.wire_api,
+        "base_url": route.base_url,
+        "api_key_env": route.api_key_env,
+    }
+
+
+def _probe_failed_model_route(kb_dir: Path, route) -> None:
+    from openkb.model_pool import probe_model_route, record_route_failure, record_route_success
+
+    try:
+        probe_model_route(kb_dir, route)
+        record_route_success(kb_dir, route.profile_id, route.model)
+    except Exception as exc:
+        record_route_failure(kb_dir, route.profile_id, route.model, exc)
+
+
+def _run_compile_with_model_pool(
+    kb_dir: Path,
+    progress_callback: ProgressCallback | None,
+    operation: CompileOperation,
+) -> object:
+    from openkb.model_pool import (
+        configured_routes,
+        record_route_failure,
+        record_route_success,
+        select_model_route,
+    )
+
+    excluded_routes: set[str] = set()
+    last_exc: Exception | None = None
+    max_attempts = max(len(configured_routes(kb_dir)), 1)
+    for attempt in range(max_attempts):
+        try:
+            route = select_model_route(kb_dir, exclude=excluded_routes)
+        except RuntimeError:
+            if last_exc is not None:
+                raise last_exc
+            raise
+        if attempt > 0:
+            message = f"Retrying with model route {route.profile_name}/{route.model}"
+            click.echo(f"  {message}...")
+            _emit_progress(progress_callback, message)
+        _setup_llm_key(kb_dir, _profile_from_model_route(route))
+        try:
+            result = asyncio.run(operation(route.model))
+            record_route_success(kb_dir, route.profile_id, route.model)
+            return result
+        except Exception as exc:
+            last_exc = exc
+            excluded_routes.add(route.route_id)
+            record_route_failure(kb_dir, route.profile_id, route.model, exc)
+            _probe_failed_model_route(kb_dir, route)
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("No healthy model routes available for compilation.")
+
+
 def _run_compile_with_profile_fallback(
     kb_dir: Path,
     profiles: list[dict[str, str]],
     progress_callback: ProgressCallback | None,
     operation: CompileOperation,
 ) -> object:
+    from openkb.model_pool import is_model_pool_enabled
+
+    if is_model_pool_enabled(kb_dir):
+        return _run_compile_with_model_pool(kb_dir, progress_callback, operation)
+
     last_exc: Exception | None = None
     for profile_index, profile in enumerate(profiles):
         if profile_index > 0:
@@ -1006,17 +1074,48 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
 
     _safe_echo("Running knowledge lint...")
     knowledge_report = ""
-    for profile_index, profile in enumerate(profiles):
-        if profile_index > 0:
-            _safe_echo(f"Retrying knowledge lint with LLM profile {_profile_label(profile)}...")
-        _setup_llm_key(kb_dir, profile)
-        try:
-            knowledge_report = await run_knowledge_lint(kb_dir, profile["model"])
-            break
-        except Exception as exc:
-            if not _is_retryable_llm_failure(exc) or profile_index == len(profiles) - 1:
+    from openkb.model_pool import (
+        configured_routes,
+        is_model_pool_enabled,
+        record_route_failure,
+        record_route_success,
+        select_model_route,
+    )
+
+    if is_model_pool_enabled(kb_dir):
+        excluded_routes: set[str] = set()
+        max_attempts = max(len(configured_routes(kb_dir)), 1)
+        for attempt in range(max_attempts):
+            try:
+                route = select_model_route(kb_dir, exclude=excluded_routes)
+            except RuntimeError as exc:
                 knowledge_report = f"Knowledge lint failed: {exc}"
                 break
+            if attempt > 0:
+                _safe_echo(f"Retrying knowledge lint with model route {route.profile_name}/{route.model}...")
+            _setup_llm_key(kb_dir, _profile_from_model_route(route))
+            try:
+                knowledge_report = await run_knowledge_lint(kb_dir, route.model)
+                record_route_success(kb_dir, route.profile_id, route.model)
+                break
+            except Exception as exc:
+                excluded_routes.add(route.route_id)
+                record_route_failure(kb_dir, route.profile_id, route.model, exc)
+                _probe_failed_model_route(kb_dir, route)
+                knowledge_report = f"Knowledge lint failed: {exc}"
+                continue
+    else:
+        for profile_index, profile in enumerate(profiles):
+            if profile_index > 0:
+                _safe_echo(f"Retrying knowledge lint with LLM profile {_profile_label(profile)}...")
+            _setup_llm_key(kb_dir, profile)
+            try:
+                knowledge_report = await run_knowledge_lint(kb_dir, profile["model"])
+                break
+            except Exception as exc:
+                if not _is_retryable_llm_failure(exc) or profile_index == len(profiles) - 1:
+                    knowledge_report = f"Knowledge lint failed: {exc}"
+                    break
     _safe_echo(knowledge_report)
 
     coverage_candidates = extract_coverage_gap_concept_candidates(

@@ -643,6 +643,84 @@ class TestAddCommand:
         hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
         assert hashes["abc123"]["name"] == "test.md"
 
+    def test_add_single_file_uses_model_pool_routes_and_records_health(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+        from openkb.model_pool import record_route_success
+
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "active_llm_profile: primary\n"
+            "model: fallback-model\n"
+            "wire_api: chat_completions\n"
+            "model_pool:\n"
+            "  enabled: true\n"
+            "  strategy: weighted_round_robin\n"
+            "llm_profiles:\n"
+            "- id: primary\n"
+            "  name: Primary\n"
+            "  model: bad-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://bad.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_PRIMARY_API_KEY\n"
+            "  models:\n"
+            "  - name: bad-model\n"
+            "    weight: 100\n"
+            "- id: backup\n"
+            "  name: Backup\n"
+            "  model: good-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://good.example.com/v1\n"
+            "  api_key_env: OPENKB_LLM_PROFILE_BACKUP_API_KEY\n"
+            "  models:\n"
+            "  - name: good-model\n"
+            "    weight: 100\n",
+            encoding="utf-8",
+        )
+        record_route_success(kb_dir, "primary", "bad-model", latency_ms=10)
+        record_route_success(kb_dir, "backup", "good-model", latency_ms=20)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+        source_path = kb_dir / "wiki" / "sources" / "test.md"
+        source_path.write_text("# Hello converted")
+        calls: list[str] = []
+        setup_profiles: list[dict[str, str]] = []
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "test.md",
+            source_path=source_path,
+            is_long_doc=False,
+            file_hash="abc123",
+        )
+
+        async def compile_short_doc(_doc_name, _source_path, _kb_dir, model, **_kwargs):
+            calls.append(model)
+            if model == "bad-model":
+                raise RuntimeError("upstream 500")
+            return []
+
+        def fake_setup(_kb_dir, profile):
+            setup_profiles.append(profile)
+
+        with patch("openkb.cli.convert_document", return_value=mock_result), \
+             patch("openkb.cli._setup_llm_key", side_effect=fake_setup), \
+             patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe, \
+             patch("openkb.agent.compiler.compile_short_doc", side_effect=compile_short_doc):
+            add_single_file(doc, kb_dir, strict=True)
+
+        assert calls == ["bad-model", "good-model"]
+        assert probe.call_count == 1
+        assert probe.call_args.args[1].model == "bad-model"
+        assert setup_profiles[-2]["id"] == "primary"
+        assert setup_profiles[-2]["model"] == "bad-model"
+        assert setup_profiles[-1]["id"] == "backup"
+        assert setup_profiles[-1]["model"] == "good-model"
+        status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
+        assert status["routes"]["primary:bad-model"]["health"] == "offline"
+        assert status["routes"]["backup:good-model"]["health"] == "healthy"
+        hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+        assert hashes["abc123"]["name"] == "test.md"
+
 
 class TestRebuildCommand:
     def _setup_kb(self, tmp_path):
