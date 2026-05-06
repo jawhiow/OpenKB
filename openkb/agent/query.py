@@ -7,7 +7,12 @@ from typing import Any
 from agents import Agent, Runner, function_tool
 
 from agents import ToolOutputImage, ToolOutputText
-from openkb.agent.tools import get_wiki_page_content, read_wiki_file, read_wiki_image
+from openkb.agent.tools import (
+    get_wiki_page_content,
+    read_wiki_file,
+    read_wiki_image,
+    search_long_document_pages,
+)
 from openkb.llm_usage import llm_usage_context
 from openkb.llm_runtime import build_agent_model_settings, resolve_agent_model
 
@@ -35,14 +40,15 @@ You are OpenKB, a knowledge-base Q&A agent. You answer questions by searching th
    exact source support. It maps wiki pages to source summaries, page numbers,
    and short evidence snippets.
 7. When you need detailed source document content, each summary page has a
-   `full_text` frontmatter field with the path to the original document content:
-   - Short documents (doc_type: short): read_file with that path.
-   - PageIndex documents (doc_type: pageindex): use get_page_content(doc_name, pages)
-     with tight page ranges. The summary shows document tree structure with page
-     ranges to help you target.
-   - Local long documents (doc_type: local-long): use get_page_content(doc_name, pages)
-     with tight page ranges. These are locally extracted per-page JSON files.
-   Never fetch the whole long document when a tight page range is enough.
+    `full_text` frontmatter field with the path to the original document content:
+    - Short documents (doc_type: short): read_file with that path.
+    - PageIndex documents (doc_type: pageindex): if the exact page range is not
+      obvious, call search_long_documents(query, doc_name, top_k) first. Then use
+      get_page_content(doc_name, pages) with tight page ranges.
+    - Local long documents (doc_type: local-long): if the exact page range is not
+      obvious, call search_long_documents(query, doc_name, top_k) first. Then use
+      get_page_content(doc_name, pages) with tight page ranges.
+    Never fetch the whole long document when a tight page range is enough.
 8. Source content may reference images (e.g. ![image](sources/images/doc/file.png)).
    Use the get_image tool to view them when needed.
 9. Synthesize a clear, concise, well-cited answer grounded in wiki content.
@@ -136,6 +142,31 @@ def build_query_agent(
         return read_wiki_file(path, wiki_root)
 
     @function_tool
+    def search_long_documents(query: str, doc_name: str = "", top_k: int = 5) -> str:
+        """Find relevant pages in PageIndex/local-long documents.
+
+        Use when a long-document summary does not make the exact page range
+        obvious. This searches local PageIndex tree summaries and per-page JSON
+        sources; it does not require live PageIndex credentials.
+
+        Args:
+            query: Search phrase or question to locate in long documents.
+            doc_name: Optional document name without extension. Leave blank to
+                search across all long documents.
+            top_k: Maximum number of page hits to return.
+        """
+        if reference_tracker is not None:
+            reference_tracker.add(
+                {
+                    "type": "long_document_search",
+                    "query": query,
+                    "doc_name": doc_name,
+                    "top_k": top_k,
+                }
+            )
+        return search_long_document_pages(query, wiki_root, doc_name=doc_name, top_k=top_k)
+
+    @function_tool
     def get_page_content(doc_name: str, pages: str) -> str:
         """Get text content of specific pages from a long document.
         Use for documents with doc_type: pageindex or local-long. For short
@@ -174,7 +205,7 @@ def build_query_agent(
     return Agent(
         name="wiki-query",
         instructions=instructions,
-        tools=[read_file, get_page_content, get_image],
+        tools=[read_file, search_long_documents, get_page_content, get_image],
         model=resolve_agent_model(model),
         model_settings=build_agent_model_settings(parallel_tool_calls=False, model=model),
     )

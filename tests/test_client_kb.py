@@ -19,6 +19,7 @@ from openkb.client.kb import (
     import_config_data,
     init_kb,
     read_wiki_file,
+    save_model_pool_profile,
     update_config_data,
     write_wiki_file,
 )
@@ -224,6 +225,12 @@ def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):
                 "model": "gpt-5.4-mini",
                 "wire_api": "responses",
                 "base_url": "https://llm.example.com",
+                "enabled": True,
+                "tags": [],
+                "features": [],
+                "probe_models": ["gpt-5.4-mini"],
+                "models": [{"name": "gpt-5.4-mini", "weight": 100}],
+                "priority": 50,
                 "api_key": "secret",
                 "api_key_configured": True,
                 "is_active": True,
@@ -373,6 +380,20 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
             "api_key": "gateway-secret",
         },
     )
+    save_model_pool_profile(
+        source,
+        {
+            "name": "Gateway",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v1",
+            "models": [
+                {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},
+                {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
+            ],
+            "enabled": False,
+        },
+        profile_id="gateway",
+    )
 
     exported = export_config_data(source)
 
@@ -399,6 +420,15 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
     assert [profile["id"] for profile in exported["profiles"]] == ["default", "gateway"]
     assert exported["profiles"][0]["api_key"] == "default-secret"
     assert exported["profiles"][1]["api_key"] == "gateway-secret"
+    assert exported["profiles"][1]["enabled"] is False
+    assert exported["profiles"][1]["probe_models"] == [
+        "openai/doubao-seed-2-0-pro-260215",
+        "openai/doubao-seed-2-0-thinking",
+    ]
+    assert exported["profiles"][1]["models"] == [
+        {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},
+        {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
+    ]
 
     target = _make_kb(tmp_path / "target")
     (target / ".env").write_text("LLM_API_KEY=target-secret\n", encoding="utf-8")
@@ -423,8 +453,18 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
     assert [profile["id"] for profile in imported["profiles"]] == ["default", "gateway"]
     assert imported["profiles"][0]["api_key"] == "default-secret"
     assert imported["profiles"][1]["api_key"] == "gateway-secret"
+    assert imported["profiles"][1]["enabled"] is False
+    assert imported["profiles"][1]["models"] == [
+        {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},
+        {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
+    ]
     saved = yaml.safe_load((target / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["llm_profiles"][1]["api_key_env"] == "OPENKB_LLM_PROFILE_GATEWAY_API_KEY"
+    assert saved["llm_profiles"][1]["enabled"] is False
+    assert saved["llm_profiles"][1]["models"] == [
+        {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},
+        {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
+    ]
     assert saved["ocr_enabled"] is False
     assert saved["ocr_detection_mode"] == "always_ask"
     assert saved["ocr_default_model"] == "PP-StructureV3"

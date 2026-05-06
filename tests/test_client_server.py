@@ -1503,6 +1503,21 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
         },
     )
     assert create_response.status_code == 200
+    profile_response = client.put(
+        "/api/model-pool/profiles/gateway",
+        json={
+            "kb_dir": str(source),
+            "name": "Gateway",
+            "wire_api": "chat_completions",
+            "base_url": "https://gateway.example.com/v1",
+            "models": [
+                {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},
+                {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
+            ],
+            "enabled": False,
+        },
+    )
+    assert profile_response.status_code == 200
 
     export_response = client.get("/api/config/export", params={"kb_dir": str(source)})
 
@@ -1529,6 +1544,11 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
     assert exported["settings"]["model_pool_timeout_seconds"] == 18
     assert exported["profiles"][0]["api_key"] == "default-secret"
     assert exported["profiles"][1]["api_key"] == "gateway-secret"
+    assert exported["profiles"][1]["enabled"] is False
+    assert exported["profiles"][1]["models"] == [
+        {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},
+        {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
+    ]
 
     import_response = client.post(
         "/api/config/import",
@@ -1554,7 +1574,17 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
     assert [profile["id"] for profile in imported["profiles"]] == ["default", "gateway"]
     assert imported["api_key"] == "gateway-secret"
     assert imported["profiles"][1]["api_key"] == "gateway-secret"
+    assert imported["profiles"][1]["enabled"] is False
+    assert imported["profiles"][1]["models"] == [
+        {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},
+        {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
+    ]
     saved = yaml.safe_load((target / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["llm_profiles"][1]["enabled"] is False
+    assert saved["llm_profiles"][1]["models"] == [
+        {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},
+        {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
+    ]
     assert saved["model_pool"] == {
         "enabled": False,
         "failure_threshold": 2,

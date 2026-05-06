@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from openkb.agent.tools import get_wiki_page_content, list_wiki_files, parse_pages, read_wiki_file, write_wiki_file
+from openkb.agent.tools import (
+    get_wiki_page_content,
+    list_wiki_files,
+    parse_pages,
+    read_wiki_file,
+    search_long_document_pages,
+    write_wiki_file,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -213,3 +220,60 @@ class TestGetWikiPageContent:
         (tmp_path / "sources").mkdir()
         result = get_wiki_page_content("../../etc/passwd", "1", wiki_root)
         assert "denied" in result.lower() or "not found" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# search_long_document_pages
+# ---------------------------------------------------------------------------
+
+
+class TestSearchLongDocumentPages:
+    def test_finds_relevant_page_using_pageindex_summary_and_page_json(self, tmp_path):
+        import json
+
+        wiki_root = str(tmp_path)
+        (tmp_path / "summaries").mkdir()
+        (tmp_path / "sources").mkdir()
+        (tmp_path / "summaries" / "report.md").write_text(
+            "---\n"
+            "doc_type: pageindex\n"
+            "full_text: sources/report.json\n"
+            "---\n\n"
+            "# AI memory cycle (pages 1-3)\n\n"
+            "Summary: HBM demand, CoWoS capacity, and accelerator attach rates.\n\n"
+            "# Appendix (pages 4-5)\n\n"
+            "Summary: Methodology notes.\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "sources" / "report.json").write_text(
+            json.dumps(
+                [
+                    {"page": 1, "content": "Executive overview of AI servers."},
+                    {"page": 2, "content": "HBM demand reaches 32bn Gb and CoWoS remains tight."},
+                    {"page": 3, "content": "Accelerator attach rates drive memory content."},
+                    {"page": 4, "content": "Regression methodology."},
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = search_long_document_pages("HBM demand CoWoS", wiki_root, top_k=2)
+
+        assert "report pages 2" in result
+        assert "HBM demand reaches 32bn Gb" in result
+        assert "Regression methodology" not in result
+        assert 'get_page_content(doc_name="report", pages="2")' in result
+
+        result_with_extension = search_long_document_pages(
+            "HBM demand", wiki_root, doc_name="report.pdf", top_k=1
+        )
+
+        assert "report pages 2" in result_with_extension
+
+    def test_returns_no_matches_when_no_long_documents_exist(self, tmp_path):
+        (tmp_path / "summaries").mkdir()
+        (tmp_path / "sources").mkdir()
+
+        result = search_long_document_pages("HBM demand", str(tmp_path))
+
+        assert "No long-document sources found" in result

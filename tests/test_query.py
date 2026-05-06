@@ -16,19 +16,21 @@ class TestBuildQueryAgent:
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
         assert agent.name == "wiki-query"
 
-    def test_agent_has_three_tools(self, tmp_path):
+    def test_agent_has_adaptive_long_document_tool(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
-        assert len(agent.tools) == 3
+        assert len(agent.tools) == 4
 
     def test_agent_tool_names(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
         names = {t.name for t in agent.tools}
         assert "read_file" in names
+        assert "search_long_documents" in names
         assert "get_page_content" in names
         assert "get_image" in names
 
-    def test_instructions_mention_get_page_content(self, tmp_path):
+    def test_instructions_mention_adaptive_long_document_search(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
+        assert "search_long_documents" in agent.instructions
         assert "get_page_content" in agent.instructions
         assert "pageindex_retrieve" not in agent.instructions
 
@@ -80,6 +82,16 @@ class TestBuildQueryAgent:
             '[{"page": 2, "content": "Page two"}]',
             encoding="utf-8",
         )
+        (wiki / "summaries").mkdir()
+        (wiki / "summaries" / "paper.md").write_text(
+            "---\n"
+            "doc_type: pageindex\n"
+            "full_text: sources/paper.json\n"
+            "---\n\n"
+            "# Findings (pages 2-2)\n\n"
+            "Summary: Page two discusses HBM demand.\n",
+            encoding="utf-8",
+        )
         (wiki / "sources" / "images" / "paper" / "p2.png").write_bytes(b"png")
         tracker = QueryReferenceTracker()
         agent = build_query_agent(str(wiki), "gpt-4o-mini", reference_tracker=tracker)
@@ -87,6 +99,10 @@ class TestBuildQueryAgent:
         ctx = ToolContext(None, tool_name="test", tool_call_id="call_1", tool_arguments="{}")
 
         await tools["read_file"].on_invoke_tool(ctx, '{"path":"index.md"}')
+        await tools["search_long_documents"].on_invoke_tool(
+            ctx,
+            '{"query":"HBM demand","doc_name":"paper","top_k":1}',
+        )
         await tools["get_page_content"].on_invoke_tool(
             ctx,
             '{"doc_name":"paper","pages":"2"}',
@@ -98,6 +114,12 @@ class TestBuildQueryAgent:
 
         assert tracker.references() == [
             {"type": "wiki_file", "path": "index.md"},
+            {
+                "type": "long_document_search",
+                "query": "HBM demand",
+                "doc_name": "paper",
+                "top_k": 1,
+            },
             {
                 "type": "source_pages",
                 "path": "sources/paper.json",

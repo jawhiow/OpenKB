@@ -7,6 +7,8 @@ tested in isolation without requiring the openai-agents runtime.
 from __future__ import annotations
 
 import json as _json
+import re
+from collections import Counter
 from pathlib import Path
 
 
@@ -131,6 +133,279 @@ def get_wiki_page_content(doc_name: str, pages: str, wiki_root: str) -> str:
         parts.append(block)
 
     return "\n\n".join(parts) + "\n\n"
+
+
+_WORD_RE = re.compile(r"[a-z0-9][a-z0-9_.%+-]*|[\u4e00-\u9fff]+", re.IGNORECASE)
+_PAGE_RANGE_RE = re.compile(
+    r"^\s*#{1,6}\s+(?P<title>.*?)\s+\(pages?\s+"
+    r"(?P<start>\d+)\s*[-\u2013\u2014]\s*(?P<end>\d+)\)",
+    re.IGNORECASE,
+)
+_LONG_DOC_TYPES = {"pageindex", "local-long"}
+
+
+def _search_terms(text: str) -> list[str]:
+    terms: list[str] = []
+    for raw in _WORD_RE.findall(text.lower()):
+        if not raw:
+            continue
+        if re.fullmatch(r"[\u4e00-\u9fff]+", raw):
+            if len(raw) == 1:
+                terms.append(raw)
+            else:
+                terms.append(raw)
+                terms.extend(raw[index : index + 2] for index in range(len(raw) - 1))
+            continue
+        if len(raw) >= 2:
+            terms.append(raw)
+    return terms
+
+
+def _score_text(text: str, query_terms: list[str], query_phrase: str) -> int:
+    if not query_terms:
+        return 0
+    counts = Counter(_search_terms(text))
+    score = sum(counts.get(term, 0) for term in query_terms)
+    normalized_text = " ".join(text.lower().split())
+    if query_phrase and query_phrase in normalized_text:
+        score += max(len(query_terms) * 4, 4)
+    return score
+
+
+def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+
+    metadata: dict[str, str] = {}
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return metadata, "\n".join(lines[index + 1 :])
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        metadata[key.strip()] = value.strip().strip("'\"")
+    return metadata, text
+
+
+def _summary_doc_name(metadata: dict[str, str], summary_path: Path) -> str:
+    full_text = metadata.get("full_text", "")
+    if full_text:
+        return Path(full_text).stem
+    return summary_path.stem
+
+
+def _parse_summary_nodes(markdown_body: str) -> list[dict]:
+    nodes: list[dict] = []
+    current: dict | None = None
+
+    for line in markdown_body.splitlines():
+        match = _PAGE_RANGE_RE.match(line)
+        if match:
+            if current is not None:
+                nodes.append(current)
+            start = int(match.group("start"))
+            end = int(match.group("end"))
+            if end < start:
+                start, end = end, start
+            current = {
+                "title": match.group("title").strip(),
+                "start": start,
+                "end": end,
+                "text": [],
+            }
+            continue
+        if current is not None and line.strip():
+            current["text"].append(line.strip())
+
+    if current is not None:
+        nodes.append(current)
+    return nodes
+
+
+def _resolve_source_path(root: Path, metadata: dict[str, str], doc_name: str) -> Path:
+    full_text = metadata.get("full_text", "")
+    if full_text:
+        return (root / full_text).resolve()
+    return (root / "sources" / f"{doc_name}.json").resolve()
+
+
+def _iter_long_document_summaries(root: Path, doc_name: str) -> list[dict]:
+    summaries_dir = root / "summaries"
+    if not summaries_dir.exists():
+        return []
+
+    requested_raw = doc_name.strip().lower()
+    requested_names = {requested_raw, Path(requested_raw).stem} if requested_raw else set()
+    documents: list[dict] = []
+    for summary_path in sorted(summaries_dir.glob("*.md")):
+        text = summary_path.read_text(encoding="utf-8")
+        metadata, body = _split_frontmatter(text)
+        doc_type = metadata.get("doc_type", "").strip().lower()
+        if doc_type not in _LONG_DOC_TYPES:
+            continue
+        resolved_doc_name = _summary_doc_name(metadata, summary_path)
+        document_names = {resolved_doc_name.lower(), summary_path.stem.lower()}
+        if requested_names and document_names.isdisjoint(requested_names):
+            continue
+        source_path = _resolve_source_path(root, metadata, resolved_doc_name)
+        if not source_path.is_relative_to(root) or source_path.suffix.lower() != ".json":
+            continue
+        if not source_path.exists():
+            continue
+        documents.append(
+            {
+                "doc_name": resolved_doc_name,
+                "summary_path": summary_path,
+                "source_path": source_path,
+                "nodes": _parse_summary_nodes(body),
+            }
+        )
+    return documents
+
+
+def _load_source_pages(source_path: Path) -> list[dict]:
+    data = _json.loads(source_path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        return []
+
+    pages: list[dict] = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            page_num = int(entry.get("page"))
+        except (TypeError, ValueError):
+            continue
+        if page_num <= 0:
+            continue
+        pages.append(
+            {
+                "page": page_num,
+                "content": str(entry.get("content", "")),
+                "images": entry.get("images") if isinstance(entry.get("images"), list) else [],
+            }
+        )
+    return pages
+
+
+def _page_node_score(page_num: int, nodes: list[dict], query_terms: list[str], query_phrase: str) -> tuple[int, str]:
+    best_score = 0
+    best_label = ""
+    for node in nodes:
+        if not (node["start"] <= page_num <= node["end"]):
+            continue
+        node_text = f"{node['title']}\n{' '.join(node['text'])}"
+        score = _score_text(node_text, query_terms, query_phrase)
+        if score > best_score:
+            best_score = score
+            best_label = f"{node['title']} pages {node['start']}-{node['end']}"
+    return best_score, best_label
+
+
+def _snippet(content: str, query_terms: list[str], max_chars: int) -> str:
+    compact = " ".join(content.split())
+    if len(compact) <= max_chars:
+        return compact
+
+    lower = compact.lower()
+    first_hit = min(
+        (index for term in query_terms for index in [lower.find(term)] if index >= 0),
+        default=0,
+    )
+    start = max(first_hit - max_chars // 3, 0)
+    end = min(start + max_chars, len(compact))
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(compact) else ""
+    return f"{prefix}{compact[start:end].strip()}{suffix}"
+
+
+def search_long_document_pages(
+    query: str,
+    wiki_root: str,
+    doc_name: str = "",
+    top_k: int = 5,
+    max_chars: int = 360,
+) -> str:
+    """Search locally indexed long documents and return likely relevant pages.
+
+    The search is self-contained: it uses PageIndex-rendered summary trees under
+    ``summaries/`` and per-page source JSON under ``sources/``. It does not need
+    PageIndex credentials or a live PageIndex runtime at query time.
+    """
+    root = Path(wiki_root).resolve()
+    if not root.exists():
+        return f"Wiki root not found: {wiki_root}"
+
+    query = query.strip()
+    if not query:
+        return "Query is required for long-document search."
+
+    try:
+        limit = min(max(int(top_k), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        snippet_chars = min(max(int(max_chars), 120), 1200)
+    except (TypeError, ValueError):
+        snippet_chars = 360
+
+    documents = _iter_long_document_summaries(root, doc_name)
+    if not documents:
+        suffix = f" matching {doc_name!r}" if doc_name else ""
+        return f"No long-document sources found{suffix}."
+
+    query_terms = _search_terms(query)
+    query_phrase = " ".join(query.lower().split())
+    candidates: list[dict] = []
+
+    for document in documents:
+        pages = _load_source_pages(document["source_path"])
+        for page in pages:
+            page_score = _score_text(page["content"], query_terms, query_phrase)
+            node_score, node_label = _page_node_score(
+                page["page"],
+                document["nodes"],
+                query_terms,
+                query_phrase,
+            )
+            score = page_score * 3 + node_score
+            if score <= 0:
+                continue
+            candidates.append(
+                {
+                    "score": score,
+                    "page": page["page"],
+                    "content": page["content"],
+                    "doc_name": document["doc_name"],
+                    "summary_path": document["summary_path"],
+                    "source_path": document["source_path"],
+                    "node_label": node_label,
+                }
+            )
+
+    if not candidates:
+        return f"No matching long-document pages found for query: {query}"
+
+    candidates.sort(key=lambda item: (-item["score"], item["doc_name"], item["page"]))
+    selected = candidates[:limit]
+
+    lines = [f"Long document search results for: {query}"]
+    for item in selected:
+        page_spec = str(item["page"])
+        summary_rel = item["summary_path"].relative_to(root).as_posix()
+        source_rel = item["source_path"].relative_to(root).as_posix()
+        lines.append("")
+        lines.append(f"- {item['doc_name']} pages {page_spec} (score {item['score']})")
+        if item["node_label"]:
+            lines.append(f"  Matched tree node: {item['node_label']}")
+        lines.append(f"  Summary: {summary_rel}")
+        lines.append(f"  Source: {source_rel}")
+        lines.append(f"  Snippet: {_snippet(item['content'], query_terms, snippet_chars)}")
+        lines.append(
+            f"  Next: get_page_content(doc_name=\"{item['doc_name']}\", pages=\"{page_spec}\")"
+        )
+    return "\n".join(lines)
 
 
 _MIME_TYPES = {

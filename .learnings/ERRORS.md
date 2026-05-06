@@ -26,6 +26,33 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260506-006] pytest_global_python_missing_agents
+
+**Logged**: 2026-05-06T17:10:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: tests
+
+### Summary
+Running `python -m pytest` from the global Python interpreter failed because project test dependencies such as `agents` are installed in the repository `.venv`.
+
+### Error
+```text
+ModuleNotFoundError: No module named 'agents'
+```
+
+### Context
+- Command attempted: `python -m pytest tests/test_agent_tools.py tests/test_query.py`
+- Environment: PowerShell in `D:\workspace\codex\jt-ai-tz\OpenKB`
+
+### Suggested Fix
+Use `.\.venv\Scripts\python.exe -m pytest ...` for this repository's tests.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+---
 ## [ERR-20260506-004] rg_access_denied_in_powershell
 
 **Logged**: 2026-05-06T14:55:57+08:00

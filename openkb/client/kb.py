@@ -581,6 +581,33 @@ def _profile_has_api_key(
     return bool(_profile_api_key(kb_dir, profile, active_id, env_values))
 
 
+def _profile_public_payload(
+    kb_dir: Path,
+    profile: dict[str, Any],
+    active_id: str,
+    env_values: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    env_values = env_values if env_values is not None else _read_env_values(kb_dir)
+    models = list(profile.get("models") or [{"name": profile["model"], "weight": 100}])
+    probe_models = list(profile.get("probe_models") or [item["name"] for item in models])
+    return {
+        "id": profile["id"],
+        "name": profile["name"],
+        "model": profile["model"],
+        "wire_api": profile["wire_api"],
+        "base_url": profile["base_url"],
+        "enabled": bool(profile.get("enabled", True)),
+        "tags": list(profile.get("tags") or []),
+        "features": list(profile.get("features") or []),
+        "probe_models": probe_models,
+        "models": models,
+        "priority": int(profile.get("priority") or 50),
+        "api_key": _profile_api_key(kb_dir, profile, active_id, env_values),
+        "api_key_configured": _profile_has_api_key(kb_dir, profile, active_id, env_values),
+        "is_active": profile["id"] == active_id,
+    }
+
+
 def _profile_api_key(
     kb_dir: Path,
     profile: dict[str, str],
@@ -610,19 +637,7 @@ def _profile_api_key(
 
 def _public_profiles(kb_dir: Path, profiles: list[dict[str, str]], active_id: str) -> list[dict[str, Any]]:
     env_values = _read_env_values(kb_dir)
-    return [
-        {
-            "id": profile["id"],
-            "name": profile["name"],
-            "model": profile["model"],
-            "wire_api": profile["wire_api"],
-            "base_url": profile["base_url"],
-            "api_key": _profile_api_key(kb_dir, profile, active_id, env_values),
-            "api_key_configured": _profile_has_api_key(kb_dir, profile, active_id, env_values),
-            "is_active": profile["id"] == active_id,
-        }
-        for profile in profiles
-    ]
+    return [_profile_public_payload(kb_dir, profile, active_id, env_values) for profile in profiles]
 
 
 def _persist_profiles(config: dict[str, Any], profiles: list[dict[str, str]], active_id: str) -> None:
@@ -1150,6 +1165,12 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
                 "model": profile["model"],
                 "wire_api": profile["wire_api"],
                 "base_url": profile["base_url"],
+                "enabled": bool(profile.get("enabled", True)),
+                "tags": list(profile.get("tags") or []),
+                "features": list(profile.get("features") or []),
+                "probe_models": list(profile.get("probe_models") or [profile["model"]]),
+                "models": list(profile.get("models") or [{"name": profile["model"], "weight": 100}]),
+                "priority": int(profile.get("priority") or 50),
                 "api_key": _profile_api_key(kb_dir, profile, active_id, env_values),
             }
             for profile in profiles
