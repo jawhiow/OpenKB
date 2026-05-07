@@ -26,6 +26,38 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260507-001] git_subprocess_utf8_decode
+
+**Logged**: 2026-05-07T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: backend
+
+### Summary
+Runtime KB Git initialization succeeded for a Chinese-path knowledge base, but Python printed a background `UnicodeDecodeError` while reading Git subprocess output with the Windows default codec.
+
+### Error
+```text
+UnicodeDecodeError: 'gbk' codec can't decode byte 0x93 in position 47: illegal multibyte sequence
+```
+
+### Context
+- Operation attempted: `ensure_kb_git()` for `D:\知识库\llm-investment-kb`.
+- Git operations succeeded, but `subprocess.run(..., text=True, capture_output=True)` used the locale default codec for captured output.
+- The KB path and tracked wiki filenames include non-ASCII text.
+
+### Suggested Fix
+Pass explicit `encoding="utf-8"` and `errors="replace"` for Git subprocess calls that capture output.
+
+### Metadata
+- Reproducible: yes
+- Related Files: openkb/kb_git.py
+
+### Resolution
+- **Resolved**: 2026-05-07T00:00:00+08:00
+- **Notes**: Added explicit UTF-8 decoding with replacement and a regression test around `_run_git()`.
+
+---
 ## [ERR-20260506-004] powershell_inline_python_unicode_path
 
 **Logged**: 2026-05-06T15:45:00+08:00

@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import openkb.kb_git as kb_git
 from openkb.kb_git import commit_kb_changes, ensure_kb_git
 
 
@@ -65,3 +66,18 @@ def test_commit_kb_changes_skips_empty_commits_and_keeps_raw_untracked(tmp_path:
     assert final_count == after_count
     assert "wiki/concepts/Git.md" in tracked
     assert "raw/source.pdf" not in tracked
+
+
+def test_run_git_decodes_output_as_utf8_with_replacement(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(kb_git.subprocess, "run", fake_run)
+
+    kb_git._run_git(tmp_path, "status")
+
+    assert calls[0]["encoding"] == "utf-8"
+    assert calls[0]["errors"] == "replace"

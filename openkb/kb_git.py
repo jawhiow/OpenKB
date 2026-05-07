@@ -44,7 +44,8 @@ def _run_git(kb_dir: Path, *args: str, check: bool = True) -> subprocess.Complet
         ["git", *args],
         cwd=kb_dir,
         check=check,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
     )
 
