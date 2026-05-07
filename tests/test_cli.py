@@ -1,6 +1,7 @@
 import os
 import json
-from unittest.mock import patch
+import subprocess
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import yaml
@@ -8,6 +9,17 @@ from click.testing import CliRunner
 
 from openkb.cli import cli
 from openkb.schema import AGENTS_MD
+
+
+def _git(cwd, *args):
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
 
 
 def test_init_creates_structure(tmp_path):
@@ -38,10 +50,19 @@ def test_init_creates_structure(tmp_path):
         assert (cwd / "wiki" / "index.md").is_file()
         assert (cwd / ".openkb" / "config.yaml").is_file()
         assert (cwd / ".openkb" / "hashes.json").is_file()
+        assert (cwd / ".git").is_dir()
+        assert "/raw/" in (cwd / ".gitignore").read_text(encoding="utf-8")
 
         # hashes.json is empty object
         hashes = json.loads((cwd / ".openkb" / "hashes.json").read_text())
         assert hashes == {}
+        tracked = set(_git(cwd, "ls-files").splitlines())
+        assert ".gitignore" in tracked
+        assert ".openkb/config.yaml" in tracked
+        assert ".openkb/hashes.json" in tracked
+        assert "wiki/index.md" in tracked
+        assert not any(path.startswith("raw/") for path in tracked)
+        assert _git(cwd, "log", "-1", "--pretty=%s") == "Initialize OpenKB knowledge base"
 
         config = json.loads(json.dumps(yaml.safe_load((cwd / ".openkb" / "config.yaml").read_text())))
         assert config["wire_api"] == "responses"
@@ -77,6 +98,28 @@ def test_init_schema_content(tmp_path):
         assert "themes/" in agents_content
         assert "metrics/" in agents_content
         assert "risks/" in agents_content
+
+
+def test_query_save_commits_changed_wiki_files(tmp_path):
+    kb_dir = tmp_path / "kb"
+    (kb_dir / ".openkb").mkdir(parents=True)
+    (kb_dir / "wiki").mkdir()
+    (kb_dir / "wiki" / "log.md").write_text("# Operations Log\n\n", encoding="utf-8")
+    (kb_dir / ".openkb" / "config.yaml").write_text("model: gpt-5.4-mini\n", encoding="utf-8")
+
+    runner = CliRunner()
+    with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+         patch("openkb.cli._ensure_wiki_schema"), \
+         patch("openkb.cli._setup_llm_key"), \
+         patch("openkb.agent.query.run_query", new_callable=AsyncMock, return_value="Answer"):
+        result = runner.invoke(cli, ["query", "What changed?", "--save"])
+
+    assert result.exit_code == 0
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert "wiki/log.md" in tracked
+    assert any(path.startswith("wiki/explorations/") for path in tracked)
+    assert not any(path.startswith("raw/") for path in tracked)
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Query What changed?"
 
 
 def test_init_already_exists(tmp_path):

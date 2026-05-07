@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -12,6 +13,17 @@ from prompt_toolkit.styles import Style
 
 from openkb.agent.chat import _handle_slash, _run_add, run_chat
 from openkb.agent.chat_session import ChatSession
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
 
 
 def _setup_kb(tmp_path: Path) -> Path:
@@ -269,6 +281,10 @@ async def test_run_chat_uses_model_pool_routes_and_retries_failed_turn(tmp_path)
     assert setup_profiles[-2]["id"] == "primary"
     assert setup_profiles[-1]["id"] == "backup"
     assert session.assistant_texts == ["hello back"]
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert session.path.relative_to(kb_dir).as_posix() in tracked
+    assert not any(path.startswith("raw/") for path in tracked)
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Chat hello"
 
 
 @pytest.mark.asyncio

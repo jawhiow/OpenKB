@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 import json
 import os
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,17 @@ import yaml
 
 from openkb.client.jobs import JobRegistry
 from openkb.client.server import create_app
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
 
 
 def _make_kb(tmp_path: Path) -> Path:
@@ -104,7 +116,7 @@ def test_query_job_creates_persisted_chat_session_for_web_ask(tmp_path):
         )
         assert response.status_code == 200
         job_id = response.json()["job"]["id"]
-        job = registry.wait(job_id, timeout=2)
+        job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -118,6 +130,10 @@ def test_query_job_creates_persisted_chat_session_for_web_ask(tmp_path):
     assert saved["turn_count"] == 1
     assert saved["user_turns"] == ["first question"]
     assert saved["assistant_texts"] == ["first answer"]
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert session_path.relative_to(kb_dir).as_posix() in tracked
+    assert not any(path.startswith("raw/") for path in tracked)
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Query first question"
     assert mock_run.call_args.args[1] == [
         {"role": "user", "content": "first question"}
     ]
@@ -219,7 +235,7 @@ def test_query_job_resumes_existing_web_chat_session(tmp_path):
             "/api/query",
             json={"kb_dir": str(kb_dir), "question": "first question"},
         )
-        first_job = registry.wait(first_response.json()["job"]["id"], timeout=2)
+        first_job = registry.wait(first_response.json()["job"]["id"], timeout=10)
         response = client.post(
             "/api/query",
             json={
@@ -229,7 +245,7 @@ def test_query_job_resumes_existing_web_chat_session(tmp_path):
             },
         )
         assert response.status_code == 200
-        job = registry.wait(response.json()["job"]["id"], timeout=2)
+        job = registry.wait(response.json()["job"]["id"], timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -431,7 +447,7 @@ def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monke
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "failed"
@@ -473,7 +489,7 @@ def test_add_document_job_passes_job_object_for_internal_ocr_logs(tmp_path, monk
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert calls["job"] is job
@@ -510,7 +526,7 @@ def test_add_document_folder_continues_after_one_file_failure(tmp_path, monkeypa
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -549,7 +565,7 @@ def test_upload_document_accepts_single_file_and_queues_add_job(tmp_path, monkey
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -581,7 +597,7 @@ def test_upload_document_accepts_multiple_files_in_one_add_job(tmp_path, monkeyp
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -638,7 +654,7 @@ def test_delete_document_endpoint_runs_cleanup_job(tmp_path):
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -832,7 +848,7 @@ def test_lint_apply_fixes_job_creates_only_explicitly_approved_draft_pages(tmp_p
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -844,6 +860,10 @@ def test_lint_apply_fixes_job_creates_only_explicitly_approved_draft_pages(tmp_p
     assert "# AI CPU" in ai_cpu
     assert (kb_dir / "wiki" / "concepts" / "AI_GPU.md").read_text(encoding="utf-8") == "# Existing AI GPU"
     assert not (kb_dir / "wiki" / "concepts" / "Cloud_CAPEX.md").exists()
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert "wiki/concepts/AI_CPU.md" in tracked
+    assert not any(path.startswith("raw/") for path in tracked)
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Apply lint fixes"
 
 
 def test_lint_apply_fixes_job_creates_approved_company_and_schema_drafts(tmp_path):
@@ -887,7 +907,7 @@ def test_lint_apply_fixes_job_creates_approved_company_and_schema_drafts(tmp_pat
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -938,7 +958,7 @@ def test_lint_apply_fixes_job_returns_approved_manual_review_items_without_rewri
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -974,7 +994,7 @@ def test_lint_apply_fixes_job_ignores_unapproved_candidates(tmp_path):
 
     assert response.status_code == 200
     job_id = response.json()["job"]["id"]
-    job = registry.wait(job_id, timeout=2)
+    job = registry.wait(job_id, timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"
@@ -1384,7 +1404,7 @@ def test_query_job_uses_model_pool_and_retries_after_runtime_failure(tmp_path):
             json={"kb_dir": str(kb_dir), "question": "question"},
         )
         assert response.status_code == 200
-        job = registry.wait(response.json()["job"]["id"], timeout=2)
+        job = registry.wait(response.json()["job"]["id"], timeout=10)
 
     assert job is not None
     assert job.status == "succeeded"

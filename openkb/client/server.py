@@ -15,6 +15,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from openkb.client.jobs import JobRegistry, JobStopped, default_registry
+from openkb.kb_git import commit_kb_changes
 from openkb.client import kb as kb_helpers
 from openkb.config import DEFAULT_CONFIG, load_config, load_global_config
 
@@ -631,6 +632,7 @@ def create_app(registry: JobRegistry | None = None):
                     encoding="utf-8",
                 )
                 _job.add_log(f"Saved exploration: {explore_path.name}")
+            commit_kb_changes(target_kb, f"Query {question}")
             return {
                 "answer": answer,
                 "session_id": session.id,
@@ -732,6 +734,7 @@ def create_app(registry: JobRegistry | None = None):
                                 f"---\nquery: \"{question}\"\n---\n\n{answer}\n",
                                 encoding="utf-8",
                             )
+                        commit_kb_changes(target_kb, f"Query {question}")
                         await queue.put(
                             _sse_event(
                                 "done",
@@ -786,7 +789,11 @@ def create_app(registry: JobRegistry | None = None):
         try:
             from openkb.agent.chat_session import delete_session
 
-            return {"deleted": delete_session(_resolve_kb_dir(kb_dir), session_id)}
+            target_kb = _resolve_kb_dir(kb_dir)
+            deleted = delete_session(target_kb, session_id)
+            if deleted:
+                commit_kb_changes(target_kb, f"Delete chat {session_id}")
+            return {"deleted": deleted}
         except Exception as exc:
             raise translate_error(exc) from exc
 

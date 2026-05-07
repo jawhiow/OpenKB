@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,17 @@ from click.testing import CliRunner
 
 from openkb.cli import cli
 from openkb.schema import AGENTS_MD
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
 
 
 def _setup_kb(tmp_path: Path) -> Path:
@@ -225,6 +237,11 @@ class TestListCommand:
         remaining_hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
         assert "abc123" not in remaining_hashes
         assert "def456" in remaining_hashes
+        tracked = set(_git(kb_dir, "ls-files").splitlines())
+        assert "wiki/log.md" in tracked
+        assert "wiki/companies/TSMC.md" not in tracked
+        assert not any(path.startswith("raw/") for path in tracked)
+        assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Delete source paper.pdf"
 
 
 class TestStatusCommand:
