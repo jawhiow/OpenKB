@@ -707,3 +707,30 @@ Use exact accessible names or stable data attributes for UI verification, for ex
 - **Notes**: Re-ran the verification with the explicit `data-action` selector.
 
 ---
+## [ERR-20260506-007] powershell_bulk_replace_unicode_corruption
+
+**Logged**: 2026-05-06T19:45:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: tests
+
+### Summary
+Using PowerShell `Get-Content -Raw` plus `Set-Content -Encoding UTF8` for a bulk test rewrite corrupted an existing non-ASCII string literal and caused test collection to fail.
+
+### Error
+```text
+SyntaxError: unterminated string literal
+```
+
+### Context
+- Operation attempted: bulk replace `timeout=2` with `timeout=10` in `tests/test_client_server.py`.
+- The file contained non-ASCII text, and the rewrite damaged a string near line 883.
+
+### Suggested Fix
+Use `apply_patch` for targeted edits in files with non-ASCII content, or verify encoding and run immediate syntax/test collection checks after any mechanical rewrite.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: tests/test_client_server.py
+
+---

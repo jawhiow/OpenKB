@@ -21,6 +21,7 @@ from openkb.config import (
     save_config,
 )
 from openkb.llm_runtime import model_prefers_responses_api
+from openkb.kb_git import commit_kb_changes, ensure_kb_git
 from openkb.model_pool import model_pool_config
 from openkb.schema import AGENTS_MD
 
@@ -208,6 +209,7 @@ def delete_source_document_data(kb_dir: Path, selector: str) -> dict[str, Any]:
 
     result = delete_source_document(kb_dir, selector)
     result["document"]["type"] = _display_type(str(result["document"].get("type", "unknown")))
+    commit_kb_changes(kb_dir, f"Delete source {result['document'].get('name', selector)}")
     return result
 
 
@@ -262,7 +264,9 @@ def write_wiki_file(kb_dir: Path, relative_path: str, content: str) -> dict[str,
     full_path = _resolve_wiki_path(kb_dir, relative_path)
     full_path.parent.mkdir(parents=True, exist_ok=True)
     full_path.write_text(content, encoding="utf-8")
-    return {"path": full_path.relative_to((Path(kb_dir).resolve() / "wiki").resolve()).as_posix()}
+    relative = full_path.relative_to((Path(kb_dir).resolve() / "wiki").resolve()).as_posix()
+    commit_kb_changes(kb_dir, f"Edit wiki {relative}")
+    return {"path": relative}
 
 
 def _resolve_report_path(kb_dir: Path, report: str | None = None) -> tuple[Path, str]:
@@ -345,6 +349,7 @@ def apply_lint_fix_candidates(kb_dir: Path, candidates: Any) -> dict[str, Any]:
     from openkb.agent.linter import apply_lint_fix_candidates
 
     created = apply_lint_fix_candidates(kb_dir / "wiki", create_candidates)
+    commit_kb_changes(kb_dir, "Apply lint fixes")
     return {"approved": approved, "created": created, "reviewed": reviewed}
 
 
@@ -736,6 +741,7 @@ def save_model_pool_profile(kb_dir: Path, payload: dict[str, Any], profile_id: s
 
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)
+    commit_kb_changes(kb_dir, f"Update model pool profile {target['id']}")
     return {"config": get_config_data(kb_dir), "model_pool": get_model_pool_data(kb_dir)}
 
 
@@ -760,6 +766,7 @@ def delete_model_pool_profile(kb_dir: Path, profile_id: str) -> dict[str, Any]:
             if str(route_key).startswith(f"{profile_id}:"):
                 status["routes"].pop(route_key, None)
     _save_model_pool_status(kb_dir, status)
+    commit_kb_changes(kb_dir, f"Delete model pool profile {profile_id}")
     return {"config": get_config_data(kb_dir), "model_pool": get_model_pool_data(kb_dir)}
 
 
@@ -1279,6 +1286,7 @@ def import_config_data(kb_dir: Path, imported: dict[str, Any]) -> dict[str, Any]
         _write_env_values(kb_dir, env_updates)
     else:
         _sync_legacy_key_from_profile(kb_dir, _find_profile(profiles, active_id) or profiles[0])
+    commit_kb_changes(kb_dir, "Import knowledge base config")
     return get_config_data(kb_dir)
 
 
@@ -1373,6 +1381,7 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
 
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)
+    commit_kb_changes(kb_dir, "Update knowledge base config")
     return get_config_data(kb_dir)
 
 
@@ -1451,6 +1460,8 @@ def init_kb(
 
     if api_key:
         _write_profile_api_key(kb_dir, config["llm_profiles"][0], api_key)
+
+    ensure_kb_git(kb_dir, initial_commit_message="Initialize OpenKB knowledge base")
 
     if make_default:
         register_kb(kb_dir)

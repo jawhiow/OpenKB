@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +10,17 @@ import pytest
 from click.testing import CliRunner
 
 from openkb.cli import _safe_echo, cli
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
 
 
 def _setup_kb(tmp_path: Path) -> Path:
@@ -88,6 +100,11 @@ class TestLintCommand:
         assert "Running structural lint" in result.output
         assert "Running knowledge lint" in result.output
         assert "Report written to" in result.output
+        tracked = set(_git(kb_dir, "ls-files").splitlines())
+        assert "wiki/log.md" in tracked
+        assert any(path.startswith("wiki/reports/lint_") for path in tracked)
+        assert not any(path.startswith("raw/") for path in tracked)
+        assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Run lint"
 
     def test_lint_report_includes_coverage_gap_candidates(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)

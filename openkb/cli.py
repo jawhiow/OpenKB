@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 from openkb.config import DEFAULT_CONFIG, load_config, save_config, load_global_config, register_kb
 from openkb.llm_runtime import configure_runtime, get_base_url, model_prefers_responses_api
 from openkb.converter import convert_document
+from openkb.kb_git import commit_kb_changes, ensure_kb_git
 from openkb.log import append_log
 from openkb.schema import AGENTS_MD
 
@@ -776,6 +777,7 @@ def add_single_file(
         registry.add(result.file_hash, {"name": file_path.name, "type": doc_type})
 
     append_log(kb_dir / "wiki", "ingest", file_path.name)
+    commit_kb_changes(kb_dir, f"Add {file_path.name}")
     _emit_progress(progress_callback, f"Finished: {file_path.name}")
     click.echo(f"  [OK] {file_path.name} added to knowledge base.")
 
@@ -900,6 +902,10 @@ def init():
             env_path.write_text(f"LLM_API_KEY={api_key}\n", encoding="utf-8")
             os.chmod(env_path, 0o600)
             click.echo("Saved LLM API key to .env.")
+
+    git_result = ensure_kb_git(Path.cwd(), initial_commit_message="Initialize OpenKB knowledge base")
+    if not git_result.git_available:
+        click.echo("[WARN] Git not available; knowledge base initialized without Git history.")
 
     # Register this KB in the global config
     register_kb(Path.cwd())
@@ -1030,6 +1036,7 @@ def query(ctx, question, save, raw):
             f"---\nquery: \"{question}\"\n---\n\n{answer}\n", encoding="utf-8"
         )
         click.echo(f"\nSaved to {explore_path}")
+    commit_kb_changes(kb_dir, f"Query {question}")
 
 
 @cli.command()
@@ -1104,6 +1111,7 @@ def chat(ctx, resume, list_sessions_flag, delete_id, no_color, raw):
             click.echo(f"No matching session: {delete_id}")
             return
         if delete_session(kb_dir, resolved):
+            commit_kb_changes(kb_dir, f"Delete chat {resolved}")
             click.echo(f"Deleted session {resolved}")
         else:
             click.echo(f"Could not delete session: {resolved}")
@@ -1286,6 +1294,7 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
         report_content += f"\n{coverage_fix_report}\n"
     report_path.write_text(report_content, encoding="utf-8")
     append_log(kb_dir / "wiki", "lint", f"report → {report_path.name}")
+    commit_kb_changes(kb_dir, "Run lint")
     _safe_echo(f"\nReport written to {report_path}")
     return report_path
 
@@ -1509,6 +1518,7 @@ def delete_source_cmd(ctx, selector, yes):
 
     result = delete_source_document(kb_dir, selector)
     append_log(kb_dir / "wiki", "delete-source", str(result["document"].get("name", selector)))
+    commit_kb_changes(kb_dir, f"Delete source {result['document'].get('name', selector)}")
 
     click.echo(f"Deleted source document: {result['document'].get('name', 'unknown')}")
     click.echo(f"Removed pages: {len(result['removed_pages'])}")

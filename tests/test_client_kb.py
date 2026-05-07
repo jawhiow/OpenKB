@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,17 @@ from openkb.client.kb import (
     write_wiki_file,
 )
 from openkb.pageindex_local.runtime import read_pageindex_local_manifest
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
 
 
 def _make_kb(tmp_path: Path) -> Path:
@@ -156,6 +168,10 @@ def test_source_document_data_and_delete_are_shared_with_client(tmp_path: Path):
     retrieval = (kb_dir / "wiki" / "concepts" / "retrieval.md").read_text(encoding="utf-8")
     assert "summaries/paper.md" not in retrieval
     assert "[[summaries/paper]]" not in retrieval
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert "wiki/companies/TSMC.md" not in tracked
+    assert not any(path.startswith("raw/") for path in tracked)
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Delete source paper.pdf"
 
 
 def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
@@ -178,6 +194,10 @@ def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
 
     write_wiki_file(kb_dir, "concepts/new-page.md", "# New\n")
     assert (kb_dir / "wiki" / "concepts" / "new-page.md").read_text(encoding="utf-8") == "# New\n"
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert "wiki/concepts/new-page.md" in tracked
+    assert not any(path.startswith("raw/") for path in tracked)
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Edit wiki concepts/new-page.md"
 
     with pytest.raises(PathSecurityError):
         read_wiki_file(kb_dir, "../.env")
@@ -388,6 +408,11 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
         },
         profile_id="gateway",
     )
+    source_tracked = set(_git(source, "ls-files").splitlines())
+    assert ".openkb/config.yaml" in source_tracked
+    assert ".env" not in source_tracked
+    assert not any(path.startswith("raw/") for path in source_tracked)
+    assert _git(source, "log", "-1", "--pretty=%s") == "Update model pool profile gateway"
 
     exported = export_config_data(source)
 
@@ -484,6 +509,11 @@ def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Pa
         "python_path": str(runtime_dir / "python.exe"),
         "script_path": str(runtime_dir / "run_pageindex.py"),
     }
+    target_tracked = set(_git(target, "ls-files").splitlines())
+    assert ".openkb/config.yaml" in target_tracked
+    assert ".env" not in target_tracked
+    assert not any(path.startswith("raw/") for path in target_tracked)
+    assert _git(target, "log", "-1", "--pretty=%s") == "Import knowledge base config"
 
 
 def test_init_kb_creates_openkb_layout(tmp_path: Path):
@@ -505,6 +535,8 @@ def test_init_kb_creates_openkb_layout(tmp_path: Path):
     assert (kb_dir / "wiki" / "AGENTS.md").is_file()
     assert (kb_dir / "wiki" / "index.md").is_file()
     assert (kb_dir / ".openkb" / "config.yaml").is_file()
+    assert (kb_dir / ".git").is_dir()
+    assert "/raw/" in (kb_dir / ".gitignore").read_text(encoding="utf-8")
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["base_url"] == "https://gateway.example.com"
     assert saved["model_pool"]["enabled"] is True
@@ -518,6 +550,14 @@ def test_init_kb_creates_openkb_layout(tmp_path: Path):
     env_text = (kb_dir / ".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=sk-test\n" in env_text
     assert "OPENKB_LLM_PROFILE_DEFAULT_API_KEY=sk-test\n" in env_text
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert ".gitignore" in tracked
+    assert ".openkb/config.yaml" in tracked
+    assert ".openkb/hashes.json" in tracked
+    assert "wiki/index.md" in tracked
+    assert ".env" not in tracked
+    assert not any(path.startswith("raw/") for path in tracked)
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Initialize OpenKB knowledge base"
 
 
 def test_model_pool_enabled_can_be_toggled_via_config_update(tmp_path: Path):
@@ -539,6 +579,11 @@ def test_model_pool_enabled_can_be_toggled_via_config_update(tmp_path: Path):
 
     saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
     assert saved["model_pool"]["enabled"] is False
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert ".openkb/config.yaml" in tracked
+    assert ".env" not in tracked
+    assert not any(path.startswith("raw/") for path in tracked)
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Update knowledge base config"
 
     update_config_data(
         kb_dir,

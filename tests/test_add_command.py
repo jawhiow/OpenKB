@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,6 +10,17 @@ import pytest
 from click.testing import CliRunner
 
 from openkb.cli import SUPPORTED_EXTENSIONS, _find_kb_dir, cli
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
 
 
 class TestSupportedExtensions:
@@ -160,6 +172,11 @@ class TestAddCommand:
             result = runner.invoke(cli, ["add", str(doc)])
             mock_compile.assert_awaited_once()
             assert "OK" in result.output
+            tracked = set(_git(kb_dir, "ls-files").splitlines())
+            assert "wiki/sources/test.md" in tracked
+            assert "wiki/log.md" in tracked
+            assert not any(path.startswith("raw/") for path in tracked)
+            assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Add test.md"
 
     def test_add_local_long_pdf_runs_local_compiler_and_registers_type(self, tmp_path):
         kb_dir = self._setup_kb(tmp_path)
