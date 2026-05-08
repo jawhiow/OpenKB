@@ -33,6 +33,8 @@ Use this when the user asks to query or ask the KB, find evidence, compare pages
 5. Separate supported conclusions from gaps: say what the wiki supports, what is missing, and what source/page should be checked next.
 6. End with a short `Read set` listing the wiki pages and page ranges actually used.
 
+For investment-decision questions such as "can I buy/invest", "is valuation reasonable", or "是否值得投资", use the context pack's `investment_decision` contract. Always distinguish business quality from the current buy price, read the suggested method pages, and state that current price/PE/FCF yield or equivalent valuation data is required before making a buy/sell conclusion.
+
 Do not save answers by default. Save only when the user explicitly asks to save, persist, or create an exploration:
 
 ```bash
@@ -59,10 +61,10 @@ python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb .
 
 Default safe auto-fixes are conservative: they may update `index.md` and resolve obvious wikilink targets. Semantic findings such as duplicate concepts, company/concept boundary problems, missing evidence, and missing pages are reported as manual review by default.
 
-Draft pages and TODO scaffolding are opt-in only:
+Draft-page creation is opt-in only:
 
 ```bash
-python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --create-drafts --add-todos --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --create-drafts --json
 ```
 
 Even with opt-in flags, lint must not delete pages, merge pages, rewrite disputed claims, overwrite `sources/`, modify `raw/`, or reveal secrets.

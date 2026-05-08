@@ -1184,7 +1184,11 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
     Async because knowledge lint uses an LLM agent. Usable from CLI
     (via ``asyncio.run``) and directly from the chat REPL.
     """
-    from openkb.lint import run_structural_lint
+    from openkb.lint import (
+        cleanup_legacy_generated_placeholders,
+        format_legacy_placeholder_fixes,
+        run_structural_lint,
+    )
     from openkb.agent.linter import (
         apply_coverage_gap_concept_candidates,
         extract_coverage_gap_concept_candidates,
@@ -1209,6 +1213,12 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
     config = load_config(openkb_dir / "config.yaml")
     profiles = _ordered_llm_profiles(config)
     _setup_llm_key(kb_dir, profiles[0])
+
+    legacy_placeholder_fix_report = ""
+    if fix:
+        cleaned = cleanup_legacy_generated_placeholders(kb_dir / "wiki")
+        legacy_placeholder_fix_report = format_legacy_placeholder_fixes(cleaned)
+        _safe_echo(legacy_placeholder_fix_report)
 
     _safe_echo("Running structural lint...")
     structural_report = run_structural_lint(kb_dir)
@@ -1286,6 +1296,7 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
     report_path = reports_dir / f"lint_{timestamp}.md"
     report_content = (
         f"# Lint Report - {timestamp}\n\n"
+        f"{legacy_placeholder_fix_report}\n\n"
         f"## Structural\n\n{structural_report}\n\n"
         f"## Semantic\n\n{knowledge_report}\n\n"
         f"{coverage_report}\n"

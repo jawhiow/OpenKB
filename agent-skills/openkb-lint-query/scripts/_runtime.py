@@ -358,7 +358,11 @@ def extract_sources_field(text: str) -> list[str]:
 
 
 def draft_page(title: str, page_type: str, reason: str, source_link: str = "") -> str:
-    source_line = f"- [[{source_link}]]: Seed evidence for this draft." if source_link else "TODO: Add source-summary links and exact page references."
+    source_line = (
+        f"- [[{source_link}]]: Seed evidence for this draft."
+        if source_link
+        else "- Source evidence has not been attached yet; keep this page in draft status until citations are added."
+    )
     return (
         "---\n"
         "sources: []\n"
@@ -369,15 +373,15 @@ def draft_page(title: str, page_type: str, reason: str, source_link: str = "") -
         f"# {title}\n\n"
         f"This draft was created from a lint finding: {reason}\n\n"
         "## Why It Matters\n"
-        f"TODO: Explain why this {page_type} matters in the knowledge base.\n\n"
+        f"Draft note: explain why this {page_type} matters in the knowledge base.\n\n"
         "## Source Evidence\n"
         f"{source_line}\n\n"
         "## Key Points To Track\n"
-        "TODO: Add durable claims, metrics, catalysts, mechanisms, or monitoring indicators.\n\n"
+        "Draft note: add durable claims, metrics, catalysts, mechanisms, or monitoring indicators.\n\n"
         "## Risks And Contra-Evidence\n"
-        "TODO: Add evidence that could weaken or contradict the page thesis.\n\n"
+        "Draft note: add evidence that could weaken or contradict the page thesis.\n\n"
         "## Related Pages\n"
-        "TODO: Link related summaries, companies, industries, concepts, or explorations.\n"
+        "Draft note: link related summaries, companies, industries, concepts, or explorations.\n"
     )
 
 

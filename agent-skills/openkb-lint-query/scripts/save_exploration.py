@@ -40,7 +40,7 @@ def save(kb: str, title: str, answer_file: str) -> dict:
         f"# {title}\n\n"
         f"{answer.rstrip()}\n\n"
         "## Read Set\n"
-        "TODO: Keep or update the citations/read-set from the original answer.\n"
+        "Review note: keep or update the citations/read-set from the original answer.\n"
     )
     write_text(path, content)
     ensure_index_entry(wiki, rel, title, "saved exploration")

@@ -20,7 +20,6 @@ Allowed by default:
 Opt-in only:
 
 - Create draft pages in `concepts/`, `companies/`, `industries/`, or `explorations/` with `--create-drafts`.
-- Append `Source Evidence` TODO sections to important pages with `--add-todos`.
 - Create a company draft and add a review note when a concept page clearly looks company-specific with `--create-drafts`.
 
 Manual review only:
@@ -47,10 +46,10 @@ Conservative semantic report without content changes:
 python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --report-only --json
 ```
 
-Opt in to scaffolding only after reviewing the report:
+Opt in to draft-page creation only after reviewing the report:
 
 ```bash
-python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --create-drafts --add-todos --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --create-drafts --json
 ```
 
 Report-only:

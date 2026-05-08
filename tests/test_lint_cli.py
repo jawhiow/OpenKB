@@ -263,6 +263,32 @@ class TestLintCommand:
         report_text = reports[0].read_text(encoding="utf-8")
         assert "## Coverage Gap Fixes" in report_text
 
+    def test_lint_fix_cleans_legacy_generated_placeholders(self, tmp_path):
+        kb_dir = _setup_kb(tmp_path)
+        hashes = {"abc": {"name": "paper.pdf", "type": "pdf"}}
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes))
+        (kb_dir / "wiki" / "companies").mkdir(exist_ok=True)
+        (kb_dir / "wiki" / "companies" / "Tencent.md").write_text(
+            "# Tencent\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/report]]: TODO: add exact supporting claims and page references.\n",
+            encoding="utf-8",
+        )
+        runner = CliRunner()
+
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.cli._setup_llm_key"), \
+             patch("openkb.agent.linter.run_knowledge_lint", return_value="No issues."):
+            result = runner.invoke(cli, ["lint", "--fix"])
+
+        assert result.exit_code == 0
+        company_text = (kb_dir / "wiki" / "companies" / "Tencent.md").read_text(encoding="utf-8")
+        assert "add exact supporting claims" not in company_text
+        assert "Legacy Placeholder Fixes" in result.output
+        reports = list((kb_dir / "wiki" / "reports").glob("lint_*.md"))
+        report_text = reports[0].read_text(encoding="utf-8")
+        assert "companies/Tencent.md" in report_text
+
     def test_lint_fix_help_describes_safe_draft_generation(self):
         runner = CliRunner()
 

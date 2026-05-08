@@ -262,13 +262,7 @@ def create_draft_if_safe(wiki: Path, page_path: str, title: str, reason: str, fi
 
 
 def append_source_evidence_todo(wiki: Path, rel: str, text: str, fixes: list[dict], changes: list[str]) -> str:
-    if "## Source Evidence" in text:
-        return text
-    new_text = text.rstrip() + "\n\n## Source Evidence\nTODO: Add source-summary links and exact page references for the durable claims above.\n"
-    write_text(wiki / rel, new_text)
-    fixes.append(fix("append_source_evidence_todo", rel, reason="Important page lacked a Source Evidence section."))
-    changes.append(rel)
-    return new_text
+    return text
 
 
 def append_review_note(wiki: Path, rel: str, text: str, note: str, fixes: list[dict], changes: list[str]) -> str:
@@ -509,7 +503,7 @@ def format_report(
     lines = [f"# OpenKB Lint Report - {timestamp}", ""]
     lines.append(f"- Mode: {'apply-safe' if apply_safe else 'report-only'}")
     lines.append(f"- Draft creation: {'enabled' if create_drafts else 'disabled'}")
-    lines.append(f"- TODO scaffolding: {'enabled' if add_todos else 'disabled'}")
+    lines.append(f"- Evidence scaffolding: {'deprecated flag ignored' if add_todos else 'disabled'}")
     lines.append(f"- Issues: {len(issues)}")
     lines.append(f"- Safe fixes {'applied' if apply_safe else 'planned'}: {len(fixes)}")
     lines.append(f"- Manual review items: {len(manual_review)}")
@@ -568,7 +562,7 @@ def format_report(
     lines.append("## Guardrails")
     lines.append("- raw/ and sources/ are report-only surfaces; this skill does not overwrite original documents.")
     lines.append("- Draft-page creation is disabled unless --create-drafts is passed.")
-    lines.append("- TODO scaffolding is disabled unless --add-todos is passed.")
+    lines.append("- Source-evidence scaffolding is deprecated; missing evidence is report-only.")
     lines.append("- Deletions, merges, and contradiction rewrites are manual-review only.")
     lines.append("- Secrets are not printed; .env contents are never included.")
     return "\n".join(lines) + "\n"
@@ -580,7 +574,7 @@ def main() -> None:
     parser.add_argument("--apply-safe", dest="apply_safe", action="store_true", default=True, help="Apply conservative structural safe-fixes. Default.")
     parser.add_argument("--report-only", dest="apply_safe", action="store_false", help="Only write lint reports; do not change wiki content pages or log.")
     parser.add_argument("--create-drafts", action="store_true", help="Allow draft-page creation for missing pages and company-like pages.")
-    parser.add_argument("--add-todos", action="store_true", help="Allow appending Source Evidence TODO scaffolding.")
+    parser.add_argument("--add-todos", action="store_true", help="Deprecated no-op; missing source evidence remains report-only.")
     parser.add_argument("--json", action="store_true", help="Emit JSON output.")
     args = parser.parse_args()
 

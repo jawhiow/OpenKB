@@ -7,11 +7,13 @@ import pytest
 
 from openkb.lint import (
     check_index_sync,
+    cleanup_legacy_generated_placeholders,
     find_broken_links,
     find_incomplete_entries,
     find_investment_quality_issues,
     find_missing_entries,
     find_orphans,
+    format_legacy_placeholder_fixes,
     run_structural_lint,
 )
 
@@ -327,6 +329,41 @@ class TestInvestmentQualityIssues:
         assert any("misnamespaced wikilink" in issue for issue in issues)
         assert any("bare wiki namespace reference" in issue for issue in issues)
         assert any("missing page evidence" in issue for issue in issues)
+
+
+class TestCleanupLegacyGeneratedPlaceholders:
+    def test_removes_known_generated_template_only_from_active_pages(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "companies" / "Tencent.md").write_text(
+            "# Tencent\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/report]]: TODO: add exact supporting claims and page references.\n"
+            "TODO: keep this human-authored follow-up.\n",
+            encoding="utf-8",
+        )
+        (wiki / "reports" / "lint_old.md").write_text(
+            "# Report\n\n"
+            "- [[summaries/report]]: TODO: add exact supporting claims and page references.\n",
+            encoding="utf-8",
+        )
+
+        cleaned = cleanup_legacy_generated_placeholders(wiki)
+
+        assert cleaned == [{"path": "companies/Tencent.md", "removed_lines": 1}]
+        company_text = (wiki / "companies" / "Tencent.md").read_text(encoding="utf-8")
+        assert "add exact supporting claims" not in company_text
+        assert "TODO: keep this human-authored follow-up." in company_text
+        report_text = (wiki / "reports" / "lint_old.md").read_text(encoding="utf-8")
+        assert "add exact supporting claims" in report_text
+
+    def test_formats_cleanup_report(self):
+        report = format_legacy_placeholder_fixes([
+            {"path": "companies/Tencent.md", "removed_lines": 2},
+        ])
+
+        assert "Legacy Placeholder Fixes" in report
+        assert "companies/Tencent.md" in report
+        assert "2 line(s)" in report
 
 
 class TestRunStructuralLint:

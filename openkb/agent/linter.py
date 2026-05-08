@@ -225,15 +225,15 @@ def _draft_generic_page(title: str, page_type: str, reason: str) -> str:
         f"# {title}\n\n"
         f"This draft was proposed from a lint report item: {reason}\n\n"
         "## Why It Matters\n"
-        f"TODO: Explain the {purpose}.\n\n"
+        f"Draft note: explain the {purpose} before treating this page as final knowledge.\n\n"
         "## Source Evidence\n"
-        "TODO: Add source-summary links and page references before treating this as final knowledge.\n\n"
+        "Draft note: add source-summary links and page references before treating this as final knowledge.\n\n"
         "## Key Points To Track\n"
-        "TODO: Add the claims, metrics, catalysts, or milestones that make this page useful.\n\n"
+        "Draft note: add the claims, metrics, catalysts, or milestones that make this page useful.\n\n"
         "## Risks And Contra-Evidence\n"
-        "TODO: Add the main ways this view could be wrong, fade, or be mispriced.\n\n"
+        "Draft note: add the main ways this view could be wrong, fade, or be mispriced.\n\n"
         "## Related Pages\n"
-        "TODO: Link related summaries, companies, industries, or concepts.\n"
+        "Draft note: link related summaries, companies, industries, or concepts.\n"
     )
 
 
@@ -701,7 +701,7 @@ def _draft_concept_page(name: str, title: str, evidence: list[dict[str, str]] | 
         for item in evidence
     )
     if not source_lines:
-        source_lines = "TODO: Add links to source summaries and exact page references where available."
+        source_lines = "- Source evidence has not been attached yet; keep this page in draft status until citations are added."
 
     return (
         "---\n"
@@ -712,17 +712,17 @@ def _draft_concept_page(name: str, title: str, evidence: list[dict[str, str]] | 
         "---\n\n"
         f"# {title}\n\n"
         "This draft was created from semantic lint coverage-gap candidates. "
-        "Review it and replace the TODOs with source-backed investment knowledge.\n\n"
+        "Review it before treating it as source-backed investment knowledge.\n\n"
         "## Why It Matters\n"
-        "TODO: Explain why this concept matters for long-term investment research.\n\n"
+        "Draft note: explain why this concept matters for long-term investment research.\n\n"
         "## Source Evidence\n"
         f"{source_lines}\n\n"
         "## Key Metrics To Track\n"
-        "TODO: Add the operating, financial, valuation, or policy indicators that should be monitored.\n\n"
+        "Draft note: add the operating, financial, valuation, or policy indicators that should be monitored.\n\n"
         "## Risks And Contra-Evidence\n"
-        "TODO: Add the main ways this concept could be wrong, fade, or be mispriced.\n\n"
+        "Draft note: add the main ways this concept could be wrong, fade, or be mispriced.\n\n"
         "## Related Concepts\n"
-        "TODO: Link related durable concept pages.\n"
+        "Draft note: link related durable concept pages.\n"
     )
 
 

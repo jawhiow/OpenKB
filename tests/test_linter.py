@@ -9,6 +9,7 @@ import pytest
 
 from openkb.agent.linter import (
     apply_coverage_gap_concept_candidates,
+    apply_lint_fix_candidates,
     build_lint_agent,
     extract_coverage_gap_concept_candidates,
     extract_lint_fix_candidates,
@@ -121,6 +122,7 @@ class TestCoverageGapCandidates:
         assert "status: draft" in ai_cpu
         assert "# AI CPU" in ai_cpu
         assert "## Source Evidence" in ai_cpu
+        assert "TODO" not in ai_cpu
         index = (wiki / "index.md").read_text(encoding="utf-8")
         assert "- [[concepts/AI_CPU]] - AI CPU (coverage-gap draft)" in index
         assert "- [[concepts/AI_GPU]] - AI GPU (coverage-gap draft)" in index
@@ -229,6 +231,34 @@ class TestExtractLintFixCandidates:
         )
 
         assert all(item["name"] != "Seed_industries" for item in candidates)
+
+    def test_apply_lint_fix_candidates_writes_todo_free_draft_pages(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        (wiki / "companies").mkdir(parents=True)
+        (wiki / "index.md").write_text(
+            "# Index\n\n## Companies\n\n## Concepts\n\n## Explorations\n",
+            encoding="utf-8",
+        )
+
+        created = apply_lint_fix_candidates(
+            wiki,
+            [{
+                "name": "Tencent",
+                "title": "Tencent",
+                "path": "companies/Tencent.md",
+                "action": "create",
+            }],
+        )
+
+        assert created == [{
+            "name": "Tencent",
+            "title": "Tencent",
+            "path": "companies/Tencent.md",
+            "action": "created",
+        }]
+        text = (wiki / "companies" / "Tencent.md").read_text(encoding="utf-8")
+        assert "status: draft" in text
+        assert "TODO" not in text
 
 
 class TestRunKnowledgeLint:

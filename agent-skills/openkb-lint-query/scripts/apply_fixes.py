@@ -12,7 +12,6 @@ from _runtime import (
     ensure_index_entry,
     read_text,
     resolve_kb,
-    safe_join,
     safe_markdown_path,
     wiki_root,
     write_text,
@@ -71,21 +70,7 @@ def apply_plan(kb: str, plan: str) -> dict:
             else:
                 skipped.append({**raw_item, "skip_reason": "index already contains link"})
         elif action == "append_source_evidence_todo":
-            try:
-                full = safe_join(wiki, path)
-            except ValueError as exc:
-                skipped.append({**raw_item, "skip_reason": str(exc)})
-                continue
-            if not full.exists() or full.suffix.lower() != ".md":
-                skipped.append({**raw_item, "skip_reason": "missing markdown page"})
-                continue
-            text = read_text(full)
-            if "## Source Evidence" in text:
-                skipped.append({**raw_item, "skip_reason": "section already exists"})
-                continue
-            write_text(full, text.rstrip() + "\n\n## Source Evidence\nTODO: Add source-summary links and exact page references.\n")
-            applied.append(raw_item)
-            changed.append(path)
+            skipped.append({**raw_item, "skip_reason": "deprecated action"})
         else:
             skipped.append({**raw_item, "skip_reason": f"manual action or unsupported action: {action}"})
 

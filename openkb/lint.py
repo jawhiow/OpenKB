@@ -57,6 +57,23 @@ _PLACEHOLDER_RE = re.compile(
     ]),
     re.IGNORECASE,
 )
+_LEGACY_GENERATED_PLACEHOLDER_LINE_PATTERNS = (
+    re.compile(
+        r"^\s*-\s*\[\[summaries/[^\]]+\]\](?:\s*p\.\s*\d+)?\s*:\s*"
+        r"TODO:\s*add exact supporting claims and page references\.?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*TODO:\s*add exact supporting claims and page references\.?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*TODO:\s*Add source-summary links and "
+        r"(?:exact )?page references(?:\s+where available|"
+        r"\s+for the durable claims above)?\.?\s*$",
+        re.IGNORECASE,
+    ),
+)
 
 # Files to exclude from lint scanning (schema, logs, etc.)
 _EXCLUDED_FILES = {"AGENTS.md", "SCHEMA.md", "log.md"}
@@ -418,6 +435,58 @@ def find_investment_quality_issues(
             )
 
     return sorted(issues)
+
+
+def _clean_legacy_generated_placeholder_lines(text: str) -> tuple[str, int]:
+    """Remove old machine-written placeholder lines, preserving user TODOs."""
+    removed = 0
+    lines: list[str] = []
+    for line in text.splitlines():
+        if any(pattern.match(line) for pattern in _LEGACY_GENERATED_PLACEHOLDER_LINE_PATTERNS):
+            removed += 1
+            continue
+        lines.append(line)
+
+    if not removed:
+        return text, 0
+
+    cleaned = "\n".join(lines)
+    if text.endswith("\n") and cleaned:
+        cleaned += "\n"
+    return cleaned, removed
+
+
+def cleanup_legacy_generated_placeholders(wiki: Path) -> list[dict[str, str | int]]:
+    """Delete legacy placeholder lines from active generated wiki pages only."""
+    cleaned_pages: list[dict[str, str | int]] = []
+    for subdir in _ACTIVE_GENERATED_DIRS:
+        pages_dir = wiki / subdir
+        if not pages_dir.exists():
+            continue
+        for md in sorted(pages_dir.glob("*.md")):
+            text = _read_md(md)
+            cleaned, removed = _clean_legacy_generated_placeholder_lines(text)
+            if not removed:
+                continue
+            md.write_text(cleaned, encoding="utf-8")
+            cleaned_pages.append({
+                "path": str(md.relative_to(wiki)).replace("\\", "/"),
+                "removed_lines": removed,
+            })
+    return cleaned_pages
+
+
+def format_legacy_placeholder_fixes(cleaned: list[dict[str, str | int]]) -> str:
+    """Format pages cleaned by ``openkb lint --fix``."""
+    lines = ["## Legacy Placeholder Fixes", ""]
+    if not cleaned:
+        lines.append("No legacy generated placeholder lines found.")
+        return "\n".join(lines)
+
+    lines.append(f"Cleaned {len(cleaned)} file(s).")
+    for item in cleaned:
+        lines.append(f"- {item['path']} - removed {item['removed_lines']} line(s)")
+    return "\n".join(lines)
 
 
 def run_structural_lint(kb_dir: Path) -> str:

@@ -858,6 +858,7 @@ def test_lint_apply_fixes_job_creates_only_explicitly_approved_draft_pages(tmp_p
     ai_cpu = (kb_dir / "wiki" / "concepts" / "AI_CPU.md").read_text(encoding="utf-8")
     assert "status: draft" in ai_cpu
     assert "# AI CPU" in ai_cpu
+    assert "TODO" not in ai_cpu
     assert (kb_dir / "wiki" / "concepts" / "AI_GPU.md").read_text(encoding="utf-8") == "# Existing AI GPU"
     assert not (kb_dir / "wiki" / "concepts" / "Cloud_CAPEX.md").exists()
     tracked = set(_git(kb_dir, "ls-files").splitlines())

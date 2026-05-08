@@ -204,10 +204,10 @@ python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb .
 python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --json
 ```
 
-`lint_kb.py` now keeps semantic findings as reviewable findings by default. It reports duplicate concept groups, such as a short concept page plus a longer filename variant, without deleting or merging pages automatically. Draft-page creation and TODO scaffolding are opt-in:
+`lint_kb.py` now keeps semantic findings as reviewable findings by default. It reports duplicate concept groups, such as a short concept page plus a longer filename variant, without deleting or merging pages automatically. Draft-page creation is opt-in:
 
 ```bash
-python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --create-drafts --add-todos --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --create-drafts --json
 ```
 
 When changing the skill, edit the repo copy under `agent-skills/openkb-lint-query/`, validate it, then run the sync script again. Commit the repo copy, not only the installed user-level copy.

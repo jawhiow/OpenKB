@@ -10,6 +10,7 @@ Use this when answering questions from an OpenKB runtime wiki.
 - Global synthesis: group search results by summaries, companies, industries, concepts, and explorations; read representative pages per group before synthesizing.
 - Deep dive/DRIFT: break a broad question into 3-5 subquestions, search each one, then merge findings.
 - Figure/table: find image paths or source JSON page ranges; inspect images when needed instead of guessing from captions.
+- Investment decision: for buy/invest/valuation/margin-of-safety questions, read the company/source pages plus method anchors such as value investing, margin of safety, intrinsic value, moat, capital allocation, and ROE/DuPont when present.
 
 ## Process
 
@@ -19,6 +20,8 @@ Use this when answering questions from an OpenKB runtime wiki.
 4. Use `evidence_map.json` when exact support is needed.
 5. Answer with citations on each substantive claim.
 6. Include a final `Read set`.
+
+For investment decisions, follow the context pack's framework: key financial facts, moat and business quality, cash flow and capital allocation, contra-evidence and risks, valuation and margin of safety, then a decision grade. Never collapse "good company" into "buy now"; if the KB lacks current price, PE, FCF yield, market cap, or an equivalent valuation input, say that external real-time valuation data is still required.
 
 ## Answer Shape
 

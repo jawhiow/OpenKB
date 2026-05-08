@@ -17,8 +17,54 @@ from _runtime import (
 from search_wiki import search
 
 
+INVESTMENT_DECISION_TERMS = (
+    "invest",
+    "investment",
+    "buy",
+    "worth buying",
+    "worth investing",
+    "valuation",
+    "fair value",
+    "margin of safety",
+    "pe",
+    "fcf yield",
+    "\u53ef\u4ee5\u6295\u8d44",
+    "\u80fd\u4e0d\u80fd\u4e70",
+    "\u662f\u5426\u503c\u5f97\u6295",
+    "\u503c\u5f97\u6295\u8d44",
+    "\u4e70\u5165",
+    "\u4f30\u503c",
+    "\u5b89\u5168\u8fb9\u9645",
+    "\u6295\u8d44\u65b9\u6cd5",
+    "\u662f\u5426\u5408\u7406",
+)
+INVESTMENT_METHOD_ANCHORS = (
+    "concepts/\u4ef7\u503c\u6295\u8d44.md",
+    "concepts/\u5b89\u5168\u8fb9\u9645.md",
+    "concepts/\u5185\u5728\u4ef7\u503c.md",
+    "concepts/\u4f01\u4e1a\u62a4\u57ce\u6cb3.md",
+    "concepts/capital_allocation.md",
+    "concepts/ROE\u4e0e\u675c\u90a6\u5206\u6790.md",
+)
+INVESTMENT_DECISION_FRAMEWORK = [
+    "key_financial_facts",
+    "moat_and_business_quality",
+    "cash_flow_and_capital_allocation",
+    "contra_evidence_and_risks",
+    "valuation_and_margin_of_safety",
+    "decision_grade",
+]
+
+
+def is_investment_decision_question(question: str) -> bool:
+    lower = question.lower()
+    return any(term in lower for term in INVESTMENT_DECISION_TERMS)
+
+
 def classify_question(question: str, result_paths: list[str]) -> str:
     lower = question.lower()
+    if is_investment_decision_question(question):
+        return "investment_decision"
     if any(term in lower for term in ["figure", "chart", "table", "image", "diagram", "图", "表格", "图片"]):
         return "figure_or_table"
     if any(term in lower for term in ["compare", "overview", "summarize", "all", "across", "对比", "总结", "全局", "有哪些", "主要"]):
@@ -34,6 +80,36 @@ def classify_question(question: str, result_paths: list[str]) -> str:
     if any(term in lower for term in ["concept", "risk", "theme", "mechanism", "概念", "风险", "主题", "机制"]):
         return "concept_theme"
     return "fact_lookup"
+
+
+def investment_method_read_set(wiki: Path, warnings: list[str]) -> list[str]:
+    anchors: list[str] = []
+    for rel in INVESTMENT_METHOD_ANCHORS:
+        if (wiki / rel).exists():
+            anchors.append(rel)
+        else:
+            warnings.append(f"Missing investment method anchor page: {rel}")
+    return anchors
+
+
+def answer_contract_for_type(query_type: str) -> dict:
+    contract: dict = {
+        "cite_every_claim": True,
+        "citation_examples": ["[[concepts/example]]", "[[summaries/report]] p.7", "sources/report.json pages 7-8"],
+        "include_read_set": True,
+        "save_policy": "Do not write explorations unless the user explicitly asks to save or persist the answer.",
+    }
+    if query_type == "investment_decision":
+        contract.update({
+            "investment_decision_framework": INVESTMENT_DECISION_FRAMEWORK,
+            "valuation_data_notice": (
+                "Investment decision queries require external real-time valuation data "
+                "(stock price, PE, FCF yield, market cap) when the KB does not already "
+                "contain current valuation inputs; do not make buy/sell conclusions "
+                "from annual-report facts alone."
+            ),
+        })
+    return contract
 
 
 def long_document_hints(wiki: Path, question: str, results: list[dict]) -> list[dict]:
@@ -94,6 +170,10 @@ def build_context(kb: str, question: str, top_k: int = 10) -> dict:
     for path in result_paths[:8]:
         if path not in read_set:
             read_set.append(path)
+    if classification == "investment_decision":
+        for path in investment_method_read_set(wiki, warnings):
+            if path not in read_set:
+                read_set.append(path)
     if evidence_matches and "evidence_map.json" not in read_set:
         read_set.append("evidence_map.json")
 
@@ -109,12 +189,7 @@ def build_context(kb: str, question: str, top_k: int = 10) -> dict:
         "read_set_suggestion": read_set,
         "evidence_matches": evidence_matches,
         "long_document_hints": long_document_hints(wiki, question, results),
-        "answer_contract": {
-            "cite_every_claim": True,
-            "citation_examples": ["[[concepts/example]]", "[[summaries/report]] p.7", "sources/report.json pages 7-8"],
-            "include_read_set": True,
-            "save_policy": "Do not write explorations unless the user explicitly asks to save or persist the answer.",
-        },
+        "answer_contract": answer_contract_for_type(classification),
         "warnings": warnings,
     }
 
@@ -127,6 +202,11 @@ def strategy_for_type(query_type: str) -> list[str]:
         "global_synthesis": ["Group candidate pages by category.", "Read representative pages per group.", "Synthesize across groups and cite each major claim."],
         "deep_dive": ["Break the question into 3-5 subquestions.", "Search each subquestion.", "Merge answers and list remaining uncertainty."],
         "figure_or_table": ["Find source pages or image paths.", "Inspect images when available.", "Do not infer visual details from captions alone."],
+        "investment_decision": [
+            "Read the company and source summary pages first.",
+            "Read the investment-method anchor pages for moat, intrinsic value, and margin-of-safety rules.",
+            "Separate business quality from current buy price; require current valuation data before a buy/sell conclusion.",
+        ],
     }
     return strategies.get(query_type, strategies["fact_lookup"])
 
