@@ -176,6 +176,8 @@ def test_source_document_data_and_delete_are_shared_with_client(tmp_path: Path):
 
 def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
+    (kb_dir / "wiki" / "themes").mkdir()
+    (kb_dir / "wiki" / "themes" / "ai-capex.md").write_text("# AI CAPEX\n", encoding="utf-8")
 
     tree = build_wiki_tree(kb_dir)
     paths = [entry["path"] for entry in tree]
@@ -186,6 +188,7 @@ def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
         "reports/lint.md",
         "summaries/paper.md",
     ]
+    assert "themes/ai-capex.md" not in paths
     summaries_entry = next(entry for entry in tree if entry["path"] == "summaries/paper.md")
     assert summaries_entry["directory"] == "summaries"
     assert summaries_entry["depth"] == 1

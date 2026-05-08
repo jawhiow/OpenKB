@@ -195,6 +195,9 @@ Rules:
   frameworks, policies, technologies, products, monitoring ideas, and
   bear-case/disconfirming signals.
 - Do NOT create a concept that overlaps with an existing one — use "update".
+- If a proposed concept is only a suffix variant of an existing concept name,
+  such as added ratios, person names, or explanatory tails, use "update" on
+  the shorter existing concept instead of creating a duplicate page.
 - Do NOT create concepts that are just the document topic itself.
 - Do NOT create concepts for actual companies or real industries; those belong
   in `companies/` and `industries/` only when they pass the stricter boundary.
@@ -980,6 +983,143 @@ def _canonicalize_concept_item(item: dict) -> dict | None:
     return {"name": _preferred_generated_page_name(name, title), "title": title}
 
 
+def _concept_prefix(value: str) -> str:
+    """Return a shorter base concept name when a suffix variant is obvious."""
+    for separator in ("--", "\u2014", "\uff1a", ":", "\uff0d", "-"):
+        if separator not in value:
+            continue
+        prefix = value.split(separator, 1)[0].strip()
+        if len(prefix) >= 2:
+            return prefix
+    return ""
+
+
+def _concept_page_title(path: Path) -> str:
+    """Read the first H1 from a concept page, falling back to its stem."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return path.stem
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end != -1:
+            text = text[end + 3:].lstrip("\n")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or path.stem
+    return path.stem
+
+
+def _existing_concept_aliases(wiki_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Return alias keys and display titles for existing concept pages."""
+    aliases: dict[str, str] = {}
+    titles: dict[str, str] = {}
+    concepts_dir = wiki_dir / "concepts"
+    if not concepts_dir.exists():
+        return aliases, titles
+
+    for path in sorted(concepts_dir.glob("*.md")):
+        slug = path.stem
+        title = _concept_page_title(path)
+        titles[slug] = title
+        for value in (slug, title):
+            if value:
+                aliases[_concept_alias_key(value)] = slug
+    return aliases, titles
+
+
+def _resolve_duplicate_concept_slug(name: str, title: str, aliases: dict[str, str]) -> str | None:
+    """Resolve a concept proposal to an existing canonical slug when obvious."""
+    candidates = [
+        str(name or "").strip(),
+        str(title or "").strip(),
+        _sanitize_concept_name(str(name or "")),
+        _sanitize_concept_name(str(title or "")),
+    ]
+    for value in candidates:
+        if not value:
+            continue
+        key = _concept_alias_key(value)
+        if key in aliases:
+            return aliases[key]
+        prefix = _concept_prefix(value)
+        if prefix:
+            prefix_key = _concept_alias_key(prefix)
+            if prefix_key in aliases:
+                return aliases[prefix_key]
+    return None
+
+
+def _dedupe_concept_plan(wiki_dir: Path, plan: dict) -> dict:
+    """Collapse obvious duplicate concept variants into one canonical plan."""
+    existing_aliases, existing_titles = _existing_concept_aliases(wiki_dir)
+    aliases = dict(existing_aliases)
+    deduped = {"create": [], "update": [], "related": []}
+    chosen_actions: dict[str, str] = {}
+
+    def register_aliases(slug: str, *values: str) -> None:
+        for value in values:
+            if not value:
+                continue
+            aliases[_concept_alias_key(value)] = slug
+
+    def upsert_page(action: str, slug: str, title: str) -> None:
+        current = chosen_actions.get(slug)
+        item = {"name": slug, "title": title}
+        if current == "update":
+            return
+        if current == "create" and action == "update":
+            deduped["create"] = [entry for entry in deduped["create"] if entry["name"] != slug]
+            deduped["update"].append(item)
+            chosen_actions[slug] = "update"
+            return
+        if current == "related" and action in {"create", "update"}:
+            deduped["related"] = [entry for entry in deduped["related"] if entry != slug]
+        if current is None or current == "related":
+            deduped[action].append(item)
+            chosen_actions[slug] = action
+
+    for action in ("create", "update"):
+        canonical_items = [
+            canonical for item in plan.get(action, [])
+            if isinstance(item, dict)
+            for canonical in [_canonicalize_concept_item(item)]
+            if canonical is not None
+        ]
+        canonical_items.sort(
+            key=lambda item: (
+                len(_sanitize_concept_name(str(item["name"]))),
+                len(str(item.get("title") or "")),
+                _concept_alias_key(str(item["name"])),
+            )
+        )
+        for item in canonical_items:
+            proposed_name = str(item["name"])
+            proposed_title = str(item.get("title") or proposed_name)
+            slug = _resolve_duplicate_concept_slug(proposed_name, proposed_title, aliases)
+            if slug is None:
+                slug = _sanitize_concept_name(proposed_name)
+            resolved_title = existing_titles.get(slug) or proposed_title
+            resolved_action = "update" if slug in existing_titles or slug != _sanitize_concept_name(proposed_name) else action
+            upsert_page(resolved_action, slug, resolved_title)
+            register_aliases(slug, proposed_name, proposed_title, slug, _concept_prefix(proposed_name), _concept_prefix(proposed_title))
+
+    for related in plan.get("related", []):
+        raw = str(related).strip()
+        if not raw:
+            continue
+        slug = _resolve_duplicate_concept_slug(raw, raw, aliases) or _sanitize_concept_name(raw)
+        if not slug or chosen_actions.get(slug) in {"create", "update"}:
+            continue
+        if slug not in deduped["related"]:
+            deduped["related"].append(slug)
+            chosen_actions[slug] = "related"
+        register_aliases(slug, raw, slug, _concept_prefix(raw))
+
+    return deduped
+
+
 def _filter_concept_plan_against_companies(plan: dict, company_keys: set[str]) -> dict:
     """Remove company names from concept plan and canonicalize remaining concepts."""
     filtered = {"create": [], "update": [], "related": []}
@@ -1017,7 +1157,7 @@ def _build_concept_aliases(
     related_items: list[str],
 ) -> dict[str, str]:
     """Map concept titles, names, and existing stems to canonical slugs."""
-    aliases: dict[str, str] = {}
+    aliases, _existing_titles = _existing_concept_aliases(wiki_dir)
 
     concepts_dir = wiki_dir / "concepts"
     if concepts_dir.exists():
@@ -1227,6 +1367,7 @@ def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is
             end = clean.find("---", 3)
             if end != -1:
                 clean = clean[end + 3:].lstrip("\n")
+        clean = _ensure_source_evidence_section(clean, source_file)
         # Replace body with LLM rewrite (prompt asks for full rewrite, not delta)
         if existing.startswith("---"):
             end = existing.find("---", 3)
@@ -1252,6 +1393,7 @@ def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is
             end = content.find("---", 3)
             if end != -1:
                 content = content[end + 3:].lstrip("\n")
+        content = _ensure_source_evidence_section(content, source_file)
         fm_lines = [f"sources: [{source_file}]"]
         if brief:
             fm_lines.append(f"brief: {brief}")
@@ -1289,6 +1431,7 @@ def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is
             end = clean.find("---", 3)
             if end != -1:
                 clean = clean[end + 3:].lstrip("\n")
+        clean = _ensure_source_evidence_section(clean, source_file)
         if existing.startswith("---"):
             end = existing.find("---", 3)
             if end != -1:
@@ -1313,6 +1456,7 @@ def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is
             end = content.find("---", 3)
             if end != -1:
                 content = content[end + 3:].lstrip("\n")
+        content = _ensure_source_evidence_section(content, source_file)
         fm_lines = [f"sources: [{source_file}]"]
         if brief:
             fm_lines.append(f"brief: {brief}")
@@ -1362,6 +1506,7 @@ def _write_investment_page(
             end = clean.find("---", 3)
             if end != -1:
                 clean = clean[end + 3:].lstrip("\n")
+        clean = _ensure_source_evidence_section(clean, source_file)
         if existing.startswith("---"):
             end = existing.find("---", 3)
             if end != -1:
@@ -1386,6 +1531,7 @@ def _write_investment_page(
             end = content.find("---", 3)
             if end != -1:
                 content = content[end + 3:].lstrip("\n")
+        content = _ensure_source_evidence_section(content, source_file)
         fm_lines = [f"sources: [{source_file}]"]
         if brief:
             fm_lines.append(f"brief: {brief}")
@@ -1486,6 +1632,25 @@ def _extract_generated_page_evidence(
         source_link,
         max_items=max_items,
     )
+
+
+def _ensure_source_evidence_section(content: str, source_file: str) -> str:
+    """Ensure generated pages always include a Source Evidence section."""
+    if re.search(r"^## Source Evidence\s*$", content, re.MULTILINE):
+        return content
+
+    source_link = source_file[:-3] if source_file.endswith(".md") else source_file
+    evidence = _extract_generated_page_evidence(content, source_file)
+    if evidence:
+        lines = [
+            f"- [[{item['link']}]] p.{item['page']}: {item['snippet']}"
+            for item in evidence
+        ]
+    else:
+        lines = [
+            f"- [[{source_link}]]: TODO: add exact supporting claims and page references."
+        ]
+    return content.rstrip() + "\n\n## Source Evidence\n" + "\n".join(lines) + "\n"
 
 
 def _record_summary_page_evidence(
@@ -1924,6 +2089,7 @@ async def _compile_concepts(
     summary_concept_targets = _extract_concept_link_targets(summary)
     plan = _filter_concept_plan_against_companies(plan, company_keys)
     plan = _ensure_summary_links_in_plan(wiki_dir, summary, plan)
+    plan = _dedupe_concept_plan(wiki_dir, plan)
     planned_after_filter = _planned_concept_slugs(plan["create"], plan["update"], plan["related"])
     if len(planned_after_filter) < 5 and not summary_concept_targets:
         for item in _extract_concept_candidates_from_summary(summary):

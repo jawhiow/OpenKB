@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+ACTIVE_WIKI_CONTENT_DIRS = ("summaries", "companies", "industries", "concepts", "explorations")
+LEGACY_WIKI_DIRS = ("themes", "metrics", "risks")
+LEGACY_WIKI_GUIDANCE = (
+    "Ignore deprecated legacy directories `themes/`, `metrics/`, and `risks/` "
+    "if they still exist; that content now belongs under `concepts/`."
+)
+
 AGENTS_MD = """\
 # Wiki Schema
 

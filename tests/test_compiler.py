@@ -17,6 +17,7 @@ from openkb.agent.compiler import (
     compile_short_doc,
     compile_progress_callback,
     _compile_concepts,
+    _dedupe_concept_plan,
     _ensure_summary_links_in_plan,
     _normalize_concept_links,
     _normalize_wiki_links,
@@ -80,6 +81,7 @@ def test_generated_page_plan_prompts_request_chinese_filenames():
     assert '"metrics"' not in _INVESTMENT_PAGES_PLAN_USER
     assert '"risks"' not in _INVESTMENT_PAGES_PLAN_USER
     assert "themes, risks, metrics" in _CONCEPTS_PLAN_USER
+    assert "suffix variant" in _CONCEPTS_PLAN_USER
 
 
 def test_generated_page_items_prefer_chinese_title_for_filename():
@@ -92,6 +94,33 @@ def test_generated_page_items_prefer_chinese_title_for_filename():
     assert _canonicalize_concept_item(
         {"name": "advanced-packaging", "title": "先进封装"}
     )["name"] == "先进封装"
+
+
+def test_dedupe_concept_plan_merges_suffix_variant_into_existing_concept(tmp_path):
+    wiki = tmp_path / "wiki"
+    (wiki / "concepts").mkdir(parents=True)
+    (wiki / "concepts" / "价值投资理论来源.md").write_text(
+        "# 价值投资理论来源\n\n既有内容。",
+        encoding="utf-8",
+    )
+
+    deduped = _dedupe_concept_plan(
+        wiki,
+        {
+            "create": [
+                {
+                    "name": "价值投资理论来源--85-格雷厄姆-15-费雪框架",
+                    "title": "价值投资理论来源--85%格雷厄姆-15%费雪框架",
+                }
+            ],
+            "update": [],
+            "related": [],
+        },
+    )
+
+    assert deduped["create"] == []
+    assert deduped["update"] == [{"name": "价值投资理论来源", "title": "价值投资理论来源"}]
+    assert deduped["related"] == []
 
 
 def test_llm_calls_emit_progress_events_for_job_details():
@@ -1518,6 +1547,58 @@ class TestCompileConceptsPlan:
         assert evidence["concepts/HBM.md"][0]["source"] == "summaries/test-doc.md"
         assert evidence["concepts/HBM.md"][0]["page"] == "12"
         assert "HBM supply is a bottleneck" in evidence["concepts/HBM.md"][0]["snippet"]
+
+    @pytest.mark.asyncio
+    async def test_suffix_variant_updates_existing_concept_and_backfills_source_evidence(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path, existing_concepts={
+            "价值投资理论来源": "---\nsources: [summaries/old-doc.md]\n---\n\n# 价值投资理论来源\n\n既有概念内容。",
+        })
+        (wiki / "summaries" / "test-doc.md").write_text(
+            "价值投资理论来源来自格雷厄姆与费雪框架。",
+            encoding="utf-8",
+        )
+
+        company_plan_response = json.dumps({"companies": []})
+        concept_plan_response = json.dumps({
+            "create": [
+                {
+                    "name": "价值投资理论来源--85-格雷厄姆-15-费雪框架",
+                    "title": "价值投资理论来源--85%格雷厄姆-15%费雪框架",
+                }
+            ],
+            "update": [],
+            "related": [],
+        })
+        concept_page_response = json.dumps({
+            "brief": "价值投资方法论来源",
+            "content": "# 价值投资理论来源\n\n来自格雷厄姆与费雪框架，并链接 [[summaries/test-doc]].",
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = "价值投资理论来源来自格雷厄姆与费雪框架。"
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([company_plan_response, concept_plan_response]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_page_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        assert not (wiki / "concepts" / "价值投资理论来源--85-格雷厄姆-15-费雪框架.md").exists()
+        concept_text = (wiki / "concepts" / "价值投资理论来源.md").read_text(encoding="utf-8")
+        assert "summaries/test-doc.md" in concept_text
+        assert "## Source Evidence" in concept_text
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[concepts/价值投资理论来源--85-格雷厄姆-15-费雪框架]]" not in index_text
 
     @pytest.mark.asyncio
     async def test_invalid_company_plan_falls_back_to_summary_companies(self, tmp_path):

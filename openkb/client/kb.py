@@ -23,7 +23,7 @@ from openkb.config import (
 from openkb.llm_runtime import model_prefers_responses_api
 from openkb.kb_git import commit_kb_changes, ensure_kb_git
 from openkb.model_pool import model_pool_config
-from openkb.schema import AGENTS_MD
+from openkb.schema import AGENTS_MD, LEGACY_WIKI_DIRS
 
 
 class ClientError(RuntimeError):
@@ -234,6 +234,8 @@ def build_wiki_tree(kb_dir: Path) -> list[dict[str, Any]]:
             continue
         relative = path.relative_to(root).as_posix()
         parts = relative.split("/")
+        if parts and parts[0] in LEGACY_WIKI_DIRS:
+            continue
         entries.append(
             {
                 "path": relative,

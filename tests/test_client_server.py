@@ -763,7 +763,7 @@ def test_lint_fix_plan_job_matches_prioritized_report_items_and_includes_preview
         "3. **统一 Optical_Engines 为中文** - 保持全站语言一致\n\n"
         "### 🟡 建议修复\n\n"
         "4. **创建缺失的公司页面** - GUC、KYEC、ASE、Winway、MPI、GigaDevice、中芯国际\n"
-        "5. **搭建 industries/themes/metrics/risks 目录** - 至少各创建 1-2 个种子页面\n"
+        "5. **搭建 industries 目录** - 至少各创建 1-2 个种子页面\n"
         "6. **去冗余** - 明确 CoWoS/Advanced_Packaging、CPO/Optical_Engines 的页面边界\n"
         "7. **修复 Aspeed 评级日期** - 标注为首次评级日期\n\n"
         "### 6.1 缺失的高价值概念页\n\n"
@@ -892,7 +892,7 @@ def test_lint_apply_fixes_job_creates_approved_company_and_schema_drafts(tmp_pat
                     "path": "industries/semiconductor-value-chain.md",
                     "action": "create",
                     "approved": True,
-                    "reason": "搭建 industries/themes/metrics/risks 目录",
+                    "reason": "搭建 industries 目录",
                 },
                 {
                     "name": "Optical_Engines",

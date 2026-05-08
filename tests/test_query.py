@@ -50,10 +50,14 @@ class TestBuildQueryAgent:
     def test_instructions_read_active_investment_schema_pages(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
         assert "industries/" in agent.instructions
-        assert "themes/" not in agent.instructions
-        assert "metrics/" not in agent.instructions
-        assert "risks/" not in agent.instructions
+        assert "Read theme pages" not in agent.instructions
+        assert "Read metric pages" not in agent.instructions
+        assert "Read risk pages" not in agent.instructions
         assert "including reusable themes, metrics, risks" in agent.instructions
+
+    def test_instructions_ignore_legacy_investment_schema_pages(self, tmp_path):
+        agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
+        assert "Ignore deprecated legacy directories" in agent.instructions
 
     def test_schema_in_instructions(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")

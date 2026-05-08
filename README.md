@@ -164,6 +164,54 @@ A single source might touch 10-15 wiki pages. Knowledge accumulates: each docume
 
 <!-- | `openkb lint --fix` | Auto-fix what it can | -->
 
+### Codex Runtime Skill
+
+OpenKB also ships a repo-managed Codex skill for working inside an already-created knowledge base:
+
+```text
+agent-skills/openkb-lint-query/
+```
+
+This skill is for runtime KB directories, not for editing the OpenKB source tree. Use it after opening a directory that contains `.openkb/`, `raw/`, and `wiki/`.
+
+Install or refresh the global Codex skill copy:
+
+```bash
+python scripts/sync_openkb_lint_query_skill.py
+```
+
+The sync target defaults to:
+
+```text
+%USERPROFILE%\.codex\skills\openkb-lint-query
+```
+
+In a KB directory, invoke it from Codex with prompts like:
+
+```text
+Use $openkb-lint-query to query this knowledge base: what supports AI CPU demand?
+Use $openkb-lint-query to lint this KB and report duplicate concepts.
+Use $openkb-lint-query to run report-only lint; do not change wiki content.
+Use $openkb-lint-query to summarize the HBM value chain and save it as an exploration.
+```
+
+Useful direct script commands from a KB directory:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\detect_kb.py" --cwd . --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\query_context.py" --kb . --question "What supports AI CPU demand?" --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --report-only --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --json
+```
+
+`lint_kb.py` now keeps semantic findings as reviewable findings by default. It reports duplicate concept groups, such as a short concept page plus a longer filename variant, without deleting or merging pages automatically. Draft-page creation and TODO scaffolding are opt-in:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb . --create-drafts --add-todos --json
+```
+
+When changing the skill, edit the repo copy under `agent-skills/openkb-lint-query/`, validate it, then run the sync script again. Commit the repo copy, not only the installed user-level copy.
+
 ### Interactive Chat
 
 `openkb chat` opens an interactive chat session over your wiki knowledge base. Unlike the one-shot `openkb query`, each turn carries the conversation history, so you can dig into a topic without re-typing context.

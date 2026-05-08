@@ -11,7 +11,7 @@ from openkb.agent.tools import list_wiki_files, read_wiki_file
 from openkb.llm_runtime import build_agent_model_settings, resolve_agent_model
 
 MAX_TURNS = 50
-from openkb.schema import SCHEMA_MD, get_agents_md
+from openkb.schema import LEGACY_WIKI_DIRS, LEGACY_WIKI_GUIDANCE, SCHEMA_MD, get_agents_md
 
 _LINTER_INSTRUCTIONS_TEMPLATE = """\
 You are OpenKB's semantic lint agent. Your job is to audit the wiki
@@ -42,7 +42,8 @@ for quality issues that structural tools cannot detect.
 4. Read industries/ pages to check industry boundaries and missing durable
    sector or value-chain pages.
 5. Read concept pages to check for contradictions and gaps.
-5. Produce a structured Markdown report listing issues found with references
+6. {legacy_wiki_guidance}
+7. Produce a structured Markdown report listing issues found with references
    to the specific pages where each issue occurs.
 
 Be thorough but concise. If the wiki is small or sparse, say so.
@@ -54,6 +55,12 @@ _COVERAGE_GAP_SIGNAL_RE = re.compile(
     r"缺|缺失|缺少|未覆盖|未解释|没有.*(?:概念|页面)",
     re.IGNORECASE,
 )
+_LEGACY_DIRECTORY_MARKERS = tuple(f"{name}/" for name in LEGACY_WIKI_DIRS)
+
+
+def _mentions_legacy_directory_scaffold(text: str) -> bool:
+    lowered = text.casefold()
+    return any(marker in lowered for marker in _LEGACY_DIRECTORY_MARKERS)
 
 
 def _coverage_gap_text(report: str) -> str:
@@ -454,7 +461,7 @@ def extract_lint_fix_candidates(
                     section=section,
                     reason=searchable,
                 )
-            if re.search(r"industries|行业目录|搭建.*目录", searchable, re.IGNORECASE):
+            if re.search(r"industries|行业目录|搭建.*目录", searchable, re.IGNORECASE) and not _mentions_legacy_directory_scaffold(searchable):
                 for page_type, template in _SEED_PAGE_TEMPLATES.items():
                     _add_candidate(
                         raw_candidates,
@@ -930,7 +937,10 @@ def build_lint_agent(wiki_root: str, model: str, language: str = "en") -> Agent:
         Configured :class:`~agents.Agent` instance.
     """
     schema_md = get_agents_md(Path(wiki_root))
-    instructions = _LINTER_INSTRUCTIONS_TEMPLATE.format(schema_md=schema_md)
+    instructions = _LINTER_INSTRUCTIONS_TEMPLATE.format(
+        schema_md=schema_md,
+        legacy_wiki_guidance=LEGACY_WIKI_GUIDANCE,
+    )
     instructions += f"\n\nIMPORTANT: Write the lint report in {language} language."
 
     @function_tool

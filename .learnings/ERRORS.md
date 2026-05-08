@@ -708,6 +708,33 @@ For this MCP wrapper, avoid `page.setCacheEnabled`. Use a fresh local server por
 - **Notes**: Verified the updated UI on a fresh `8766` server and cache-busted the stylesheet URL before taking the final screenshot.
 
 ---
+## [ERR-20260508-001] rg_access_denied_in_workspace
+
+**Logged**: 2026-05-08T09:55:00+08:00
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+Running `rg` from PowerShell failed with `Access is denied`, so repository searches needed to fall back to PowerShell `Get-ChildItem` plus `Select-String`.
+
+### Error
+```text
+Program 'rg.exe' failed to run: Access is denied
+```
+
+### Context
+- Operation attempted: search OpenKB repository and runtime KB for pageindex, wikilink, and evidence quality code paths.
+- Environment: Windows PowerShell in `D:\workspace\codex\jt-ai-tz\OpenKB` and `D:\知识库\llm-investment-kb`.
+
+### Suggested Fix
+Use `Get-ChildItem -Recurse -File | Select-String` as a fallback when `rg` is blocked, or verify the resolved `rg.exe` path and execution policy before relying on it.
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+---
 ## [ERR-20260506-003] playwright_strict_role_selector_ambiguity
 
 **Logged**: 2026-05-06T08:51:00+08:00

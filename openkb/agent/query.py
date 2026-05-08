@@ -17,7 +17,7 @@ from openkb.llm_usage import llm_usage_context
 from openkb.llm_runtime import build_agent_model_settings, resolve_agent_model
 
 MAX_TURNS = 50
-from openkb.schema import get_agents_md
+from openkb.schema import LEGACY_WIKI_GUIDANCE, get_agents_md
 
 _QUERY_INSTRUCTIONS_TEMPLATE = """\
 You are OpenKB, a knowledge-base Q&A agent. You answer questions by searching the wiki.
@@ -37,6 +37,7 @@ You are OpenKB, a knowledge-base Q&A agent. You answer questions by searching th
 5. Read concept pages (concepts/) for general cross-document synthesis,
    including reusable themes, metrics, risks, mechanisms, monitored
    indicators, and bear-case evidence.
+   {legacy_wiki_guidance}
 6. If `evidence_map.json` exists, read it when answering questions that need
    exact source support. It maps wiki pages to source summaries, page numbers,
    and short evidence snippets.
@@ -129,7 +130,10 @@ def build_query_agent(
 ) -> Agent:
     """Build and return the Q&A agent."""
     schema_md = get_agents_md(Path(wiki_root))
-    instructions = _QUERY_INSTRUCTIONS_TEMPLATE.format(schema_md=schema_md)
+    instructions = _QUERY_INSTRUCTIONS_TEMPLATE.format(
+        schema_md=schema_md,
+        legacy_wiki_guidance=LEGACY_WIKI_GUIDANCE,
+    )
     instructions += f"\n\nIMPORTANT: Answer in {language} language."
 
     @function_tool

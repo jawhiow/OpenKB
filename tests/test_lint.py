@@ -215,6 +215,24 @@ class TestCheckIndexSync:
 
         assert any("unlisted" in issue for issue in result)
 
+    def test_broken_links_ignore_legacy_investment_schema_pages(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "themes").mkdir()
+        (wiki / "themes" / "ai-capex.md").write_text("See [[concepts/missing]]")
+
+        result = find_broken_links(wiki)
+
+        assert result == []
+
+    def test_orphans_ignore_legacy_investment_schema_pages(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "themes").mkdir()
+        (wiki / "themes" / "ai-capex.md").write_text("# AI CAPEX")
+
+        result = find_orphans(wiki)
+
+        assert "themes/ai-capex" not in result
+
     def test_company_page_not_in_index(self, tmp_path):
         wiki = _make_wiki(tmp_path)
         (wiki / "companies" / "tsmc.md").write_text("# TSMC")

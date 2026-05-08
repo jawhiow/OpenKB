@@ -11,6 +11,7 @@ from openkb.agent.linter import (
     apply_coverage_gap_concept_candidates,
     build_lint_agent,
     extract_coverage_gap_concept_candidates,
+    extract_lint_fix_candidates,
     format_coverage_gap_concept_candidates,
     run_knowledge_lint,
 )
@@ -61,6 +62,10 @@ class TestBuildLintAgent:
         agent = build_lint_agent(str(tmp_path), "gpt-4o-mini")
         assert "Company boundary" in agent.instructions
         assert "companies/" in agent.instructions
+
+    def test_instructions_ignore_legacy_investment_schema_pages(self, tmp_path):
+        agent = build_lint_agent(str(tmp_path), "gpt-4o-mini")
+        assert "Ignore deprecated legacy directories" in agent.instructions
 
 
 class TestCoverageGapCandidates:
@@ -211,6 +216,19 @@ class TestCoverageGapCandidates:
 
         assert created == []
         assert (wiki / "concepts" / "AI_CPU.md").read_text(encoding="utf-8") == "# Existing AI CPU"
+
+
+class TestExtractLintFixCandidates:
+    def test_ignores_deprecated_directory_scaffold_items(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+
+        candidates = extract_lint_fix_candidates(
+            wiki,
+            "## Recommended\n- 搭建 industries/themes/metrics/risks 目录 - 至少各创建 1-2 个种子页面\n",
+        )
+
+        assert all(item["name"] != "Seed_industries" for item in candidates)
 
 
 class TestRunKnowledgeLint:

@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from openkb.schema import LEGACY_WIKI_DIRS
+
 # Matches [[wikilink]] or [[subdir/link]]
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _SOURCE_LIST_RE = re.compile(r"^sources:\s*\[([^\]]*)\]\s*$", re.MULTILINE)
@@ -26,6 +28,7 @@ _COMPANY_DESCRIPTOR_RE = re.compile(
 
 # Files to exclude from lint scanning (schema, logs, etc.)
 _EXCLUDED_FILES = {"AGENTS.md", "SCHEMA.md", "log.md"}
+_IGNORED_LINT_TOP_LEVEL_DIRS = {"reports", "sources", *LEGACY_WIKI_DIRS}
 
 
 def _read_md(path: Path) -> str:
@@ -36,6 +39,11 @@ def _read_md(path: Path) -> str:
         return ""
 
 
+def _should_skip_lint_page(wiki: Path, path: Path) -> bool:
+    rel_parts = path.relative_to(wiki).parts
+    return bool(rel_parts and rel_parts[0] in _IGNORED_LINT_TOP_LEVEL_DIRS)
+
+
 def _all_wiki_pages(wiki: Path) -> dict[str, Path]:
     """Return a mapping of stem/relative-path → absolute Path for all .md files.
 
@@ -43,6 +51,8 @@ def _all_wiki_pages(wiki: Path) -> dict[str, Path]:
     """
     pages: dict[str, Path] = {}
     for md in wiki.rglob("*.md"):
+        if md.name in _EXCLUDED_FILES or _should_skip_lint_page(wiki, md):
+            continue
         rel = md.relative_to(wiki)
         # Store both the full relative path without extension and the stem
         key = str(rel.with_suffix("")).replace("\\", "/")
@@ -106,11 +116,7 @@ def find_broken_links(wiki: Path) -> list[str]:
     errors: list[str] = []
 
     for md in wiki.rglob("*.md"):
-        if md.name in _EXCLUDED_FILES:
-            continue
-        # Skip reports/ and sources/ — auto-generated, not wiki content
-        rel_parts = md.relative_to(wiki).parts
-        if rel_parts and rel_parts[0] in ("reports", "sources"):
+        if md.name in _EXCLUDED_FILES or _should_skip_lint_page(wiki, md):
             continue
         text = _read_md(md)
         for target in _extract_wikilinks(text):
@@ -143,7 +149,7 @@ def find_orphans(wiki: Path) -> list[str]:
     all_mds = [
         p for p in wiki.rglob("*.md")
         if p.name not in {"index.md", *_EXCLUDED_FILES}
-        and not (set(p.relative_to(wiki).parts) & {"sources", "reports"})
+        and not _should_skip_lint_page(wiki, p)
     ]
     if not all_mds:
         return []
