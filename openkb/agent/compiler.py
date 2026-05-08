@@ -1526,7 +1526,136 @@ def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is
         path.write_text(frontmatter + content, encoding="utf-8")
 
 
-def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is_update: bool, brief: str = "") -> None:
+def _source_link_for_file(source_file: str) -> str:
+    return source_file[:-3] if source_file.endswith(".md") else source_file
+
+
+def _extract_frontmatter_brief(text: str) -> str:
+    if not text.startswith("---"):
+        return ""
+    end = text.find("---", 3)
+    if end == -1:
+        return ""
+    frontmatter = text[:end + 3]
+    match = re.search(r"^brief:\s*(.*?)\s*$", frontmatter, re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def _set_frontmatter_sources_and_brief(
+    text: str,
+    sources: list[str],
+    brief: str = "",
+    *,
+    update_brief: bool = False,
+) -> str:
+    if not text.startswith("---"):
+        fm_lines = [f"sources: [{', '.join(sources)}]"]
+        if brief and update_brief:
+            fm_lines.append(f"brief: {brief}")
+        return "---\n" + "\n".join(fm_lines) + "\n---\n\n" + text.lstrip()
+
+    end = text.find("---", 3)
+    if end == -1:
+        fm_lines = [f"sources: [{', '.join(sources)}]"]
+        if brief and update_brief:
+            fm_lines.append(f"brief: {brief}")
+        return "---\n" + "\n".join(fm_lines) + "\n---\n\n" + text
+
+    fm = text[:end + 3]
+    body = text[end + 3:]
+    source_line = f"sources: [{', '.join(sources)}]"
+    if re.search(r"^sources:\s*\[.*?\]\s*$", fm, re.MULTILINE):
+        fm = re.sub(r"^sources:\s*\[.*?\]\s*$", source_line, fm, count=1, flags=re.MULTILINE)
+    else:
+        fm = fm.replace("---\n", f"---\n{source_line}\n", 1)
+    if update_brief and brief:
+        if re.search(r"^brief:.*$", fm, re.MULTILINE):
+            fm = re.sub(r"^brief:.*$", f"brief: {brief}", fm, count=1, flags=re.MULTILINE)
+        else:
+            fm = fm.replace("---\n", f"---\nbrief: {brief}\n", 1)
+    return fm + body
+
+
+def _extract_year(value: str) -> int | None:
+    match = re.search(r"(20\d{2})", value)
+    return int(match.group(1)) if match else None
+
+
+def _should_update_brief_for_source(existing_sources: list[str], source_file: str, existing_text: str) -> bool:
+    if not _extract_frontmatter_brief(existing_text):
+        return True
+    new_year = _extract_year(source_file)
+    old_years = [year for source in existing_sources if (year := _extract_year(source)) is not None]
+    if new_year is None or not old_years:
+        return True
+    return new_year >= max(old_years)
+
+
+def _strip_leading_h1(content: str) -> str:
+    lines = content.lstrip().splitlines()
+    if lines and re.match(r"^#(?!#)\s+", lines[0]):
+        return "\n".join(lines[1:]).lstrip()
+    return content.strip()
+
+
+def _extract_leading_h1(content: str) -> str:
+    lines = content.lstrip().splitlines()
+    if lines and re.match(r"^#(?!#)\s+", lines[0]):
+        return lines[0].strip()
+    return ""
+
+
+def _source_update_section(source_file: str, content: str) -> str:
+    source_link = _source_link_for_file(source_file)
+    body = _strip_leading_h1(content).strip()
+    if not body:
+        body = f"- [[{source_link}]]"
+    return f"## Source Update: [[{source_link}]]\n\n{body.rstrip()}\n"
+
+
+def _has_source_update_sections(content: str) -> bool:
+    return bool(re.search(r"^## Source Update: \[\[[^\]]+\]\]\s*$", content, re.MULTILINE))
+
+
+def _replace_or_append_source_update_section(content: str, source_file: str, section: str) -> str:
+    source_link = re.escape(_source_link_for_file(source_file))
+    pattern = re.compile(
+        rf"^## Source Update: \[\[{source_link}\]\]\s*\n.*?(?=^## Source Update: \[\[|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    replacement = section.rstrip() + "\n\n"
+    if pattern.search(content):
+        return pattern.sub(replacement, content).rstrip() + "\n"
+    return content.rstrip() + "\n\n" + section.rstrip() + "\n"
+
+
+def _merge_multisource_company_content(
+    existing_text: str,
+    existing_sources: list[str],
+    source_file: str,
+    clean_content: str,
+) -> str:
+    if existing_text.startswith("---"):
+        end = existing_text.find("---", 3)
+        existing_body = existing_text[end + 3:].lstrip("\r\n") if end != -1 else existing_text
+    else:
+        existing_body = existing_text
+
+    title = _extract_leading_h1(existing_body) or _extract_leading_h1(clean_content)
+    body = _strip_leading_h1(existing_body)
+    if not _has_source_update_sections(body) and len(existing_sources) == 1:
+        body = _source_update_section(existing_sources[0], body)
+    body = _replace_or_append_source_update_section(
+        body,
+        source_file,
+        _source_update_section(source_file, clean_content),
+    )
+    if title:
+        return title + "\n\n" + body.rstrip() + "\n"
+    return body.rstrip() + "\n"
+
+
+def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is_update: bool, brief: str = "") -> str | None:
     """Write or update a company page, managing the sources frontmatter."""
     companies_dir = wiki_dir / "companies"
     companies_dir.mkdir(parents=True, exist_ok=True)
@@ -1534,48 +1663,59 @@ def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is
     path = (companies_dir / f"{safe_name}.md").resolve()
     if not path.is_relative_to(companies_dir.resolve()):
         logger.warning("Company name escapes companies dir: %s", name)
-        return
+        return None
 
     if is_update and path.exists():
         existing = path.read_text(encoding="utf-8")
-        if source_file not in existing:
-            if existing.startswith("---"):
-                end = existing.find("---", 3)
-                if end != -1:
-                    fm = existing[:end + 3]
-                    body = existing[end + 3:]
-                    if "sources:" in fm:
-                        fm = fm.replace("sources: [", f"sources: [{source_file}, ")
-                    else:
-                        fm = fm.replace("---\n", f"---\nsources: [{source_file}]\n", 1)
-                    existing = fm + body
-            else:
-                existing = f"---\nsources: [{source_file}]\n---\n\n" + existing
+        existing_sources = _frontmatter_source_entries(existing)
+        if not existing_sources:
+            existing_sources = [source_file] if source_file in existing else []
+        sources = list(existing_sources)
+        if source_file not in sources:
+            sources.append(source_file)
         clean = content
         if clean.startswith("---"):
             end = clean.find("---", 3)
             if end != -1:
                 clean = clean[end + 3:].lstrip("\n")
         clean = _ensure_source_evidence_section(clean, source_file)
-        if existing.startswith("---"):
-            end = existing.find("---", 3)
-            if end != -1:
-                existing = existing[:end + 3] + "\n\n" + clean
+        multi_source_update = bool(existing_sources) and (len(sources) > 1 or len(existing_sources) > 1)
+        if multi_source_update:
+            body = _merge_multisource_company_content(existing, existing_sources, source_file, clean)
+            update_brief = bool(brief) and _should_update_brief_for_source(existing_sources, source_file, existing)
+            existing = _set_frontmatter_sources_and_brief(
+                existing,
+                sources,
+                brief,
+                update_brief=update_brief,
+            )
+            if existing.startswith("---"):
+                end = existing.find("---", 3)
+                if end != -1:
+                    existing = existing[:end + 3] + "\n\n" + body
+                else:
+                    existing = body
+            else:
+                existing = body
+        else:
+            existing = _set_frontmatter_sources_and_brief(
+                existing,
+                sources or [source_file],
+                brief,
+                update_brief=bool(brief),
+            )
+            if existing.startswith("---"):
+                end = existing.find("---", 3)
+                if end != -1:
+                    existing = existing[:end + 3] + "\n\n" + clean
+                else:
+                    existing = clean
             else:
                 existing = clean
-        else:
-            existing = clean
-        if brief and existing.startswith("---"):
-            end = existing.find("---", 3)
-            if end != -1:
-                fm = existing[:end + 3]
-                body = existing[end + 3:]
-                if "brief:" in fm:
-                    fm = re.sub(r"brief:.*", f"brief: {brief}", fm)
-                else:
-                    fm = fm.replace("---\n", f"---\nbrief: {brief}\n", 1)
-                existing = fm + body
         path.write_text(existing, encoding="utf-8")
+        if brief and (not multi_source_update or update_brief):
+            return brief
+        return None
     else:
         if content.startswith("---"):
             end = content.find("---", 3)
@@ -1587,6 +1727,7 @@ def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is
             fm_lines.append(f"brief: {brief}")
         frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n"
         path.write_text(frontmatter + content, encoding="utf-8")
+        return brief or None
 
 
 def _write_investment_page(
@@ -1825,9 +1966,11 @@ def _record_generated_page_evidence(
     page_path: str,
     content: str,
     source_file: str,
+    *,
+    merge_sources: bool = False,
 ) -> None:
     evidence = _extract_generated_page_evidence(content, source_file)
-    update_evidence_map(wiki_dir, page_path, evidence)
+    update_evidence_map(wiki_dir, page_path, evidence, merge_sources=merge_sources)
 
 
 def _remove_index_entries(wiki_dir: Path, page_ids: set[str]) -> None:
@@ -2411,7 +2554,9 @@ async def _compile_concepts(
             update_instruction = (
                 "Current content of this company page:\n"
                 f"{existing_content}\n\n"
-                "Integrate the new document evidence naturally; do not just append."
+                "Use the existing content only as context. Focus the returned "
+                "content on the new document's company-specific evidence; "
+                "OpenKB will merge it without deleting prior source evidence."
             )
         else:
             update_instruction = ""
@@ -2569,11 +2714,11 @@ async def _compile_concepts(
             if _should_skip_generated_page("company", name, page_content):
                 _clean_existing_generated_page("company", name)
                 continue
-            _write_company(wiki_dir, name, page_content, source_file, is_update, brief=brief)
+            index_brief = _write_company(wiki_dir, name, page_content, source_file, is_update, brief=brief)
             safe_name = _sanitize_concept_name(name)
             company_names.append(safe_name)
-            if brief:
-                company_briefs_map[safe_name] = brief
+            if index_brief:
+                company_briefs_map[safe_name] = index_brief
 
     if investment_page_tasks:
         total = len(investment_page_tasks)
@@ -2672,6 +2817,7 @@ async def _compile_concepts(
             f"concepts/{slug}.md",
             text,
             source_file,
+            merge_sources=True,
         )
     for slug in company_names:
         company_path = wiki_dir / "companies" / f"{slug}.md"
@@ -2692,6 +2838,7 @@ async def _compile_concepts(
             f"companies/{slug}.md",
             text,
             source_file,
+            merge_sources=True,
         )
     for subdir, names in investment_page_names.items():
         for slug in names:
@@ -2713,6 +2860,7 @@ async def _compile_concepts(
                 f"{subdir}/{slug}.md",
                 text,
                 source_file,
+                merge_sources=True,
             )
 
     all_concept_slugs = concept_names + sanitized_related

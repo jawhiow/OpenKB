@@ -418,6 +418,45 @@ class TestWriteConcept:
         assert "paper1.pdf" in text
         assert "New info from paper2." in text
 
+    def test_multisource_update_preserves_existing_concept_evidence(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        concepts = wiki / "concepts"
+        concepts.mkdir(parents=True)
+        (concepts / "value-investing.md").write_text(
+            "---\n"
+            "sources: [summaries/book-a.md]\n"
+            "brief: Invest with a margin of safety\n"
+            "---\n\n"
+            "# Value Investing\n\n"
+            "Book A frames value investing around intrinsic value.\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/book-a]] p.12: Intrinsic value anchors the process.\n",
+            encoding="utf-8",
+        )
+
+        _write_concept(
+            wiki,
+            "value-investing",
+            (
+                "# Value Investing\n\n"
+                "Book B emphasizes owner earnings and durable moats.\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/book-b]] p.8: Owner earnings matter.\n"
+            ),
+            "summaries/book-b.md",
+            True,
+            brief="Owner earnings and durable moats",
+        )
+
+        text = (concepts / "value-investing.md").read_text(encoding="utf-8")
+        assert "summaries/book-a.md" in text
+        assert "summaries/book-b.md" in text
+        assert "brief: Invest with a margin of safety" in text
+        assert "Book A frames value investing around intrinsic value" in text
+        assert "Book B emphasizes owner earnings and durable moats" in text
+        assert "## Source Update: [[summaries/book-a]]" in text
+        assert "## Source Update: [[summaries/book-b]]" in text
+
 
 class TestWriteCompany:
     def test_new_company_with_brief(self, tmp_path):
@@ -437,6 +476,45 @@ class TestWriteCompany:
         assert "sources: [summaries/report.md]" in text
         assert "brief: AI foundry bellwether" in text
         assert "# TSMC" in text
+
+    def test_multisource_update_preserves_existing_company_evidence(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        companies = wiki / "companies"
+        companies.mkdir(parents=True)
+        (companies / "Tencent.md").write_text(
+            "---\n"
+            "sources: [summaries/tencent-2025.md]\n"
+            "brief: 2025 growth and cash generation\n"
+            "---\n\n"
+            "# Tencent\n\n"
+            "2025 revenue was RMB 751.8 billion.\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/tencent-2025]] p.4: Revenue was RMB 751.8 billion.\n",
+            encoding="utf-8",
+        )
+
+        _write_company(
+            wiki,
+            "Tencent",
+            (
+                "# Tencent\n\n"
+                "2024 revenue was RMB 660.3 billion.\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/tencent-2024]] p.4: Revenue was RMB 660.3 billion.\n"
+            ),
+            "summaries/tencent-2024.md",
+            True,
+            brief="2024 steady growth",
+        )
+
+        text = (companies / "Tencent.md").read_text(encoding="utf-8")
+        assert "summaries/tencent-2025.md" in text
+        assert "summaries/tencent-2024.md" in text
+        assert "brief: 2025 growth and cash generation" in text
+        assert "2025 revenue was RMB 751.8 billion" in text
+        assert "2024 revenue was RMB 660.3 billion" in text
+        assert "## Source Update: [[summaries/tencent-2025]]" in text
+        assert "## Source Update: [[summaries/tencent-2024]]" in text
 
 
 class TestUpdateIndex:
@@ -1648,6 +1726,101 @@ class TestCompileConceptsPlan:
         assert evidence["concepts/HBM.md"][0]["source"] == "summaries/test-doc.md"
         assert evidence["concepts/HBM.md"][0]["page"] == "12"
         assert "HBM supply is a bottleneck" in evidence["concepts/HBM.md"][0]["snippet"]
+
+    @pytest.mark.asyncio
+    async def test_company_update_preserves_prior_annual_report_page(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "tencent-2024.md").write_text(
+            "# Tencent 2024\n\n[[companies/Tencent]]",
+            encoding="utf-8",
+        )
+        (wiki / "companies" / "Tencent.md").write_text(
+            "---\n"
+            "sources: [summaries/tencent-2025.md]\n"
+            "brief: 2025 growth and cash generation\n"
+            "---\n\n"
+            "# Tencent\n\n"
+            "2025 revenue was RMB 751.8 billion.\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/tencent-2025]] p.4: Revenue was RMB 751.8 billion.\n",
+            encoding="utf-8",
+        )
+        (wiki / "evidence_map.json").write_text(
+            json.dumps({
+                "companies/Tencent.md": [
+                    {
+                        "source": "summaries/tencent-2025.md",
+                        "summary": "summaries/tencent-2025",
+                        "page": "4",
+                        "snippet": "Revenue was RMB 751.8 billion.",
+                    }
+                ]
+            }),
+            encoding="utf-8",
+        )
+        (wiki / "index.md").write_text(
+            "# Index\n\n"
+            "## Documents\n"
+            "- [[summaries/tencent-2025]] (pageindex) - Tencent 2025 annual report\n\n"
+            "## Companies\n"
+            "- [[companies/Tencent]] - 2025 growth and cash generation\n\n"
+            "## Concepts\n",
+            encoding="utf-8",
+        )
+
+        company_plan_response = json.dumps({
+            "companies": [
+                {"name": "Tencent", "title": "Tencent", "action": "update"},
+            ],
+        })
+        empty_investment_plan = json.dumps({})
+        empty_concept_plan = json.dumps({"create": [], "update": [], "related": []})
+        company_page_response = json.dumps({
+            "brief": "2024 steady growth",
+            "content": (
+                "# Tencent\n\n"
+                "2024 revenue was RMB 660.3 billion.\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/tencent-2024]] p.4: Revenue was RMB 660.3 billion."
+            ),
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Tencent 2024 annual report."}
+        summary = "Tencent 2024 annual report cites [[companies/Tencent]]."
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    company_plan_response,
+                    empty_investment_plan,
+                    empty_concept_plan,
+                ]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([company_page_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "tencent-2024", 5, doc_type="pageindex",
+            )
+
+        company_text = (wiki / "companies" / "Tencent.md").read_text(encoding="utf-8")
+        assert "2025 revenue was RMB 751.8 billion" in company_text
+        assert "2024 revenue was RMB 660.3 billion" in company_text
+        assert "summaries/tencent-2025.md" in company_text
+        assert "summaries/tencent-2024.md" in company_text
+
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "- [[companies/Tencent]] - 2025 growth and cash generation" in index_text
+        assert "2024 steady growth" not in index_text
+
+        evidence = json.loads((wiki / "evidence_map.json").read_text(encoding="utf-8"))
+        company_sources = {entry["source"] for entry in evidence["companies/Tencent.md"]}
+        assert company_sources == {"summaries/tencent-2025.md", "summaries/tencent-2024.md"}
 
     @pytest.mark.asyncio
     async def test_suffix_variant_updates_existing_concept_and_backfills_source_evidence(self, tmp_path):
