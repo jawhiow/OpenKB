@@ -16,6 +16,7 @@ from openkb.schema import LEGACY_WIKI_DIRS
 # Matches [[wikilink]] or [[subdir/link]]
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _SOURCE_LIST_RE = re.compile(r"^sources:\s*\[([^\]]*)\]\s*$", re.MULTILINE)
+_DOC_TYPE_RE = re.compile(r"^doc_type:\s*([^\s]+)\s*$", re.MULTILINE)
 _TICKER_RE = re.compile(r"\b\d{4,6}\.(?:TW|TWO|HK|SS|SZ|KS|KQ)\b", re.IGNORECASE)
 _RATING_RE = re.compile(
     r"(目标价|评级|超配|低配|等权|持股观望|Overweight|Equal-weight|Underweight|\bOW\b|\bEW\b|\bUW\b)",
@@ -23,6 +24,37 @@ _RATING_RE = re.compile(
 )
 _COMPANY_DESCRIPTOR_RE = re.compile(
     r"(公司|厂商|供应商|制造商|代工厂|设计服务|龙头|semiconductor company|foundry|supplier)",
+    re.IGNORECASE,
+)
+
+_ACTIVE_GENERATED_DIRS = ("companies", "industries", "concepts")
+_PAGE_REF_RE = re.compile(r"\bp\.\s*\d+\b", re.IGNORECASE)
+_WIKI_NAMESPACE_PATH_RE = re.compile(
+    r"(?<![\[\w:/.-])(?P<namespace>concepts|themes|metrics|risks|companies|industries)/"
+    r"(?P<slug>[^\s\]\)>.,;:，。；：、（）()「」『』【】*]+)"
+)
+_MISNAMESPACED_CONCEPT_PREFIXES = (
+    "themes-",
+    "risks-",
+    "metrics-",
+    "companies-",
+    "industries-",
+)
+_PLACEHOLDER_RE = re.compile(
+    "|".join([
+        r"\bTODO\b",
+        r"add exact supporting claims",
+        r"numbers need to be extracted",
+        r"key financial numbers need",
+        r"\u9700\u67e5\u9605\u62a5\u8868",
+        r"\u9700\u67e5\u95b1\u5831\u8868",
+        r"\u9700\u4ece\u62a5\u8868\u4e2d\u63d0\u53d6",
+        r"\u9700\u5f9e\u5831\u8868\u4e2d\u63d0\u53d6",
+        r"\u5173\u952e\u6570\u5b57\u9700",
+        r"\u95dc\u9375\u6578\u5b57\u9700",
+        r"\u5177\u4f53\u6570\u503c\u9700",
+        r"\u5177\u9ad4\u6578\u503c\u9700",
+    ]),
     re.IGNORECASE,
 )
 
@@ -83,6 +115,24 @@ def _frontmatter_sources(text: str) -> list[str]:
     ]
 
 
+def _frontmatter_doc_type(text: str) -> str:
+    """Extract the summary doc_type from simple frontmatter."""
+    match = _DOC_TYPE_RE.search(text)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+def _summary_doc_types(wiki: Path) -> dict[str, str]:
+    summaries_dir = wiki / "summaries"
+    if not summaries_dir.exists():
+        return {}
+    return {
+        f"summaries/{path.name}": _frontmatter_doc_type(_read_md(path))
+        for path in summaries_dir.glob("*.md")
+    }
+
+
 def _strip_frontmatter(text: str) -> str:
     """Remove leading YAML-style frontmatter when present."""
     if not text.startswith("---"):
@@ -101,6 +151,14 @@ def _looks_like_company_concept(stem: str, text: str) -> bool:
     has_company_descriptor = bool(_COMPANY_DESCRIPTOR_RE.search(intro))
     title_repeats_stem = stem in intro[:300]
     return has_rating_or_ticker and has_company_descriptor and title_repeats_stem
+
+
+def _is_misnamespaced_concept_target(target: str) -> bool:
+    target_norm = target.strip().strip("/")
+    if not target_norm.startswith("concepts/"):
+        return False
+    slug = target_norm[len("concepts/"):].casefold()
+    return any(slug.startswith(prefix) for prefix in _MISNAMESPACED_CONCEPT_PREFIXES)
 
 
 def find_broken_links(wiki: Path) -> list[str]:
@@ -293,22 +351,63 @@ def find_investment_quality_issues(
     routed into ``concepts/`` and a single report spawning too many concepts.
     """
     issues: list[str] = []
-    concepts_dir = wiki / "concepts"
-    if not concepts_dir.exists():
-        return issues
-
     concepts_by_summary: dict[str, list[str]] = {}
-    for md in sorted(concepts_dir.glob("*.md")):
-        text = _read_md(md)
-        rel = str(md.relative_to(wiki)).replace("\\", "/")
-        if _looks_like_company_concept(md.stem, text):
-            issues.append(
-                f"company-like concept page: {rel} appears to describe a company; "
-                "route this content to companies/ when the investment schema is enabled."
-            )
-        for source in _frontmatter_sources(text):
-            if source.startswith("summaries/"):
-                concepts_by_summary.setdefault(source, []).append(rel)
+    summary_doc_types = _summary_doc_types(wiki)
+
+    concepts_dir = wiki / "concepts"
+    if concepts_dir.exists():
+        for md in sorted(concepts_dir.glob("*.md")):
+            text = _read_md(md)
+            rel = str(md.relative_to(wiki)).replace("\\", "/")
+            if _looks_like_company_concept(md.stem, text):
+                issues.append(
+                    f"company-like concept page: {rel} appears to describe a company; "
+                    "route this content to companies/ when the investment schema is enabled."
+                )
+            for source in _frontmatter_sources(text):
+                if source.startswith("summaries/"):
+                    concepts_by_summary.setdefault(source, []).append(rel)
+
+    for subdir in _ACTIVE_GENERATED_DIRS:
+        pages_dir = wiki / subdir
+        if not pages_dir.exists():
+            continue
+        for md in sorted(pages_dir.glob("*.md")):
+            text = _read_md(md)
+            rel = str(md.relative_to(wiki)).replace("\\", "/")
+            body = _strip_frontmatter(text)
+
+            if _PLACEHOLDER_RE.search(body):
+                issues.append(
+                    f"placeholder generated content: {rel} contains TODO or extraction placeholder text."
+                )
+
+            for target in _extract_wikilinks(body):
+                if _is_misnamespaced_concept_target(target):
+                    issues.append(
+                        f"misnamespaced wikilink: {rel} links [[{target}]]; "
+                        "use a valid active wiki page or plain text."
+                    )
+
+            body_without_links = _WIKILINK_RE.sub("", body)
+            for match in _WIKI_NAMESPACE_PATH_RE.finditer(body_without_links):
+                namespace = match.group("namespace")
+                slug = match.group("slug").rstrip(".,;:")
+                issues.append(
+                    f"bare wiki namespace reference: {rel} contains {namespace}/{slug}; "
+                    "use a valid wikilink or plain text."
+                )
+
+            sources = _frontmatter_sources(text)
+            if (
+                subdir == "companies"
+                and any(summary_doc_types.get(source) == "pageindex" for source in sources)
+                and not _PAGE_REF_RE.search(body)
+            ):
+                issues.append(
+                    f"missing page evidence: {rel} is sourced from a PageIndex summary "
+                    "but has no p.N page references."
+                )
 
     for source, pages in sorted(concepts_by_summary.items()):
         if len(pages) > max_concepts_per_summary:

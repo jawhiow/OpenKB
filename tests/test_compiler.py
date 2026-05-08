@@ -16,6 +16,7 @@ from openkb.agent.compiler import (
     compile_local_long_doc,
     compile_short_doc,
     compile_progress_callback,
+    _build_pageindex_financial_evidence_pack,
     _compile_concepts,
     _dedupe_concept_plan,
     _ensure_summary_links_in_plan,
@@ -176,6 +177,35 @@ class TestParseConceptsPlan:
         assert parsed["create"] == []
 
 
+def test_pageindex_financial_evidence_pack_selects_source_json_pages(tmp_path):
+    wiki = tmp_path / "wiki"
+    (wiki / "sources").mkdir(parents=True)
+    (wiki / "sources" / "annual-report.json").write_text(
+        json.dumps([
+            {"page": 1, "content": "Corporate profile only."},
+            {
+                "page": 4,
+                "content": (
+                    "Revenue increased while gross profit and gross margin improved. "
+                    "Dividend and share repurchase plans are disclosed."
+                ),
+            },
+        ]),
+        encoding="utf-8",
+    )
+
+    pack = _build_pageindex_financial_evidence_pack(
+        wiki,
+        "annual-report",
+        "Annual report summary",
+    )
+
+    assert "annual/financial report synthesis" in pack
+    assert "p.4: Revenue increased" in pack
+    assert "p.1:" not in pack
+    assert "Do not write placeholders" in pack
+
+
 class TestConceptLinkNormalization:
     def test_bare_unknown_wiki_links_are_unlinked(self):
         aliases = {
@@ -229,6 +259,28 @@ class TestConceptLinkNormalization:
         assert "HBM高带宽内存" in normalized
         assert "[[concepts/HBM高带宽内存]]" not in normalized
         assert "[[summaries/report]]" in normalized
+
+
+    def test_normalizes_misnamespaced_and_bare_namespace_references(self):
+        text = (
+            "See [[concepts/themes-Corporate-Governance]], "
+            "concepts/AI-risk, and risks/capital-controls."
+        )
+
+        normalized = _normalize_wiki_links(
+            text,
+            aliases={},
+            allowed_slugs=set(),
+            valid_pages=set(),
+        )
+
+        assert "[[concepts/themes-Corporate-Governance]]" not in normalized
+        assert "concepts/themes-Corporate-Governance" not in normalized
+        assert "concepts/AI-risk" not in normalized
+        assert "risks/capital-controls" not in normalized
+        assert "Corporate-Governance" in normalized
+        assert "AI-risk" in normalized
+        assert "capital-controls" in normalized
 
 
 class TestParseBriefContent:
@@ -715,7 +767,10 @@ class TestCleanupGeneratedPagesForSource:
             encoding="utf-8",
         )
         (wiki / "concepts" / "Shared.md").write_text(
-            "---\nsources: [summaries/other.md, summaries/report.md]\n---\n\n# Shared",
+            "---\nsources: [summaries/other.md, summaries/report.md]\n---\n\n"
+            "# Shared\n\nSee concepts/stale-path.\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/report]]: TODO: add exact supporting claims and page references.\n",
             encoding="utf-8",
         )
 
@@ -736,6 +791,11 @@ class TestCleanupGeneratedPagesForSource:
         assert not (wiki / "metrics" / "hbm-supply.md").exists()
         assert not (wiki / "risks" / "export-controls.md").exists()
         assert (wiki / "concepts" / "Shared.md").exists()
+        shared_text = (wiki / "concepts" / "Shared.md").read_text(encoding="utf-8")
+        assert "TODO" not in shared_text
+        assert "add exact supporting claims" not in shared_text
+        assert "concepts/stale-path" not in shared_text
+        assert "stale-path" in shared_text
         index_text = (wiki / "index.md").read_text(encoding="utf-8")
         assert "[[companies/TSMC]]" not in index_text
         assert "[[concepts/HBM]]" not in index_text
@@ -913,6 +973,26 @@ class TestBacklinkConcepts:
         # Should not raise
         _backlink_concepts(wiki, "paper", ["nonexistent"])
 
+    def test_cleans_existing_placeholder_artifacts_when_linking(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        concepts = wiki / "concepts"
+        concepts.mkdir(parents=True)
+        (concepts / "attention.md").write_text(
+            "# Attention\n\nSee concepts/old-path.\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/old-paper]]: TODO: add exact supporting claims and page references.\n",
+            encoding="utf-8",
+        )
+
+        _backlink_concepts(wiki, "paper", ["attention"])
+
+        text = (concepts / "attention.md").read_text(encoding="utf-8")
+        assert "TODO" not in text
+        assert "add exact supporting claims" not in text
+        assert "concepts/old-path" not in text
+        assert "old-path" in text
+        assert "[[summaries/paper]]" in text
+
 
 class TestAddRelatedLink:
     def test_adds_see_also_link(self, tmp_path):
@@ -945,6 +1025,27 @@ class TestAddRelatedLink:
         wiki.mkdir()
         # Should not raise
         _add_related_link(wiki, "nonexistent", "doc", "file.pdf")
+
+    def test_cleans_existing_placeholder_artifacts_when_adding_related_link(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        concepts = wiki / "concepts"
+        concepts.mkdir(parents=True)
+        (concepts / "attention.md").write_text(
+            "---\nsources: [paper1.pdf]\n---\n\n"
+            "# Attention\n\nUse risks/old-risk as context.\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/old-paper]]: TODO: add exact supporting claims and page references.\n",
+            encoding="utf-8",
+        )
+
+        _add_related_link(wiki, "attention", "new-doc", "paper2.pdf")
+
+        text = (concepts / "attention.md").read_text(encoding="utf-8")
+        assert "TODO" not in text
+        assert "add exact supporting claims" not in text
+        assert "risks/old-risk" not in text
+        assert "old-risk" in text
+        assert "[[summaries/new-doc]]" in text
 
 
 def _mock_completion(responses: list[str]):
@@ -1174,7 +1275,7 @@ class TestCompileLongDoc:
         })
         concept_page_response = json.dumps({
             "brief": "Subfield of ML using neural networks",
-            "content": "# Deep Learning\n\nA subfield of ML.",
+            "content": "# Deep Learning\n\nA subfield of ML with source evidence on p.1.",
         })
 
         with (
@@ -1777,6 +1878,110 @@ class TestCompileConceptsPlan:
         assert mock_acompletion.await_count == 2
         assert (wiki / "companies" / "台积电.md").exists()
         assert (wiki / "companies" / "Alchip.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_pageindex_company_placeholder_page_is_not_written(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "test-doc.md").write_text(
+            "---\ndoc_type: pageindex\nfull_text: sources/test-doc.json\n---\n\n"
+            "# Test Doc\n\n[[companies/Tencent]]",
+            encoding="utf-8",
+        )
+
+        company_plan_response = json.dumps({
+            "companies": [
+                {"name": "Tencent", "title": "Tencent", "action": "create"},
+            ],
+        })
+        empty_investment_plan = json.dumps({})
+        empty_concept_plan = json.dumps({"create": [], "update": [], "related": []})
+        company_page_response = json.dumps({
+            "brief": "Generated from a weak annual-report synthesis",
+            "content": (
+                "# Tencent\n\n"
+                "Key financial numbers need to be extracted from the report.\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/test-doc]]: TODO: add exact supporting claims and page references."
+            ),
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "PageIndex annual report."}
+        summary = "Tencent annual report overview without page evidence."
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    company_plan_response,
+                    empty_investment_plan,
+                    empty_concept_plan,
+                ]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([company_page_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="pageindex",
+            )
+
+        assert not (wiki / "companies" / "Tencent.md").exists()
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[companies/Tencent]]" not in index_text
+
+    @pytest.mark.asyncio
+    async def test_skipped_existing_concept_update_cleans_stale_placeholders(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path, existing_concepts={
+            "margin": (
+                "# Margin\n\nSee concepts/old-metric.\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/old]]: TODO: add exact supporting claims and page references.\n"
+            ),
+        })
+
+        empty_company_plan = json.dumps({"companies": []})
+        empty_investment_plan = json.dumps({})
+        concept_plan_response = json.dumps({
+            "create": [],
+            "update": [{"name": "margin", "title": "Margin"}],
+            "related": [],
+        })
+        placeholder_update_response = json.dumps({
+            "brief": "Placeholder update",
+            "content": "# Margin\n\nTODO: add exact supporting claims and page references.",
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Document content."}
+        summary = "Summary."
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    empty_company_plan,
+                    empty_investment_plan,
+                    concept_plan_response,
+                ]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([placeholder_update_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "test-doc", 5, doc_type="local-long",
+            )
+
+        text = (wiki / "concepts" / "margin.md").read_text(encoding="utf-8")
+        assert "TODO" not in text
+        assert "add exact supporting claims" not in text
+        assert "concepts/old-metric" not in text
+        assert "old-metric" in text
 
     @pytest.mark.asyncio
     async def test_related_adds_link_no_llm(self, tmp_path):

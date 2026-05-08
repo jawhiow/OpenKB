@@ -304,6 +304,30 @@ class TestInvestmentQualityIssues:
         assert any("concept explosion" in issue for issue in issues)
         assert any("summaries/report.md" in issue for issue in issues)
 
+    def test_detects_generated_page_placeholder_and_namespace_issues(self, tmp_path):
+        wiki = _make_wiki(tmp_path)
+        (wiki / "summaries" / "report.md").write_text(
+            "---\ndoc_type: pageindex\nfull_text: sources/report.json\n---\n\n# Report",
+            encoding="utf-8",
+        )
+        (wiki / "companies" / "Tencent.md").write_text(
+            "---\nsources: [summaries/report.md]\n---\n\n"
+            "# Tencent\n\n"
+            "Key financial numbers need to be extracted from the report.\n\n"
+            "See [[concepts/themes-Corporate-Governance]], concepts/AI-risk, "
+            "and risks/capital-controls.\n\n"
+            "## Source Evidence\n"
+            "- [[summaries/report]]: TODO: add exact supporting claims and page references.",
+            encoding="utf-8",
+        )
+
+        issues = find_investment_quality_issues(wiki)
+
+        assert any("placeholder generated content" in issue for issue in issues)
+        assert any("misnamespaced wikilink" in issue for issue in issues)
+        assert any("bare wiki namespace reference" in issue for issue in issues)
+        assert any("missing page evidence" in issue for issue in issues)
+
 
 class TestRunStructuralLint:
     def test_returns_markdown_report(self, tmp_path):

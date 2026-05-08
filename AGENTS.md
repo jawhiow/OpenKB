@@ -37,6 +37,15 @@ openkb lint
 openkb status
 ```
 
+## Windows Search Note
+- In this workspace, `rg` may fail with `Access is denied`. If that happens,
+  stop retrying `rg` for the task and use a scoped PowerShell search instead,
+  for example:
+  `Get-ChildItem -Recurse -File -Include *.py | Select-String -Pattern 'needle'`.
+- Keep the search scoped to the relevant directories or extensions, and avoid
+  scanning generated caches such as `__pycache__/` unless they are explicitly
+  relevant.
+
 When the local client extra is installed:
 ```bash
 pip install -e ".[client]"

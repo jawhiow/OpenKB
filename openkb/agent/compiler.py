@@ -240,6 +240,14 @@ exposure, forecasts and key numbers, catalysts, risks / bear-case evidence,
 monitoring indicators, source evidence, related concepts, and
 [[summaries/{doc_name}]].
 
+For annual reports or financial reports, extract concrete financial and
+capital-allocation facts from the source context: revenue, profit, margins,
+cash flow, cash/debt, dividends, buybacks, major segment metrics, governance
+or VIE notes, and material risks when available. Attach page references such
+as "p.12" to key claims. Do not write placeholders such as TODO or "numbers
+need to be extracted from the report"; omit claims that are not supported by
+the provided context.
+
 Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) describing this company's
   investment relevance in this document
@@ -295,6 +303,10 @@ This is a PageIndex summary for long document "{doc_name}" (doc_id: {doc_id}):
 
 Based on this structured summary, write a concise overview that captures \
 the key themes and findings. This will be used to generate concept pages.
+If this is an annual report or financial report, preserve concrete financial
+metrics, capital-allocation actions, segment details, governance notes, major
+risks, and page references such as "p.12" whenever available. Do not write
+TODOs or placeholders saying that numbers still need to be extracted.
 
 Return ONLY the Markdown content (no frontmatter, no code fences).
 """
@@ -682,6 +694,91 @@ _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
 _CONCEPT_WIKILINK_RE = re.compile(r"\[\[concepts/([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
 DEFAULT_SUMMARY_LINK_FALLBACK_LIMIT = 8
+_WIKI_NAMESPACE_PATH_RE = re.compile(
+    r"(?<![\[\w:/.-])(?P<namespace>concepts|themes|metrics|risks|companies|industries)/"
+    r"(?P<slug>[^\s\]\)>.,;:，。；：、（）()「」『』【】*]+)"
+)
+_MISNAMESPACED_CONCEPT_PREFIXES = (
+    "themes-",
+    "risks-",
+    "metrics-",
+    "companies-",
+    "industries-",
+)
+_GENERATED_PAGE_PLACEHOLDER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("TODO", re.compile(r"\bTODO\b", re.IGNORECASE)),
+    (
+        "source-evidence TODO",
+        re.compile(r"add exact supporting claims", re.IGNORECASE),
+    ),
+    (
+        "needs report extraction",
+        re.compile(
+            "|".join([
+                r"numbers need to be extracted",
+                r"key financial numbers need",
+                r"\u9700\u67e5\u9605\u62a5\u8868",
+                r"\u9700\u67e5\u95b1\u5831\u8868",
+                r"\u9700\u4ece\u62a5\u8868\u4e2d\u63d0\u53d6",
+                r"\u9700\u5f9e\u5831\u8868\u4e2d\u63d0\u53d6",
+                r"\u5173\u952e\u6570\u5b57\u9700",
+                r"\u95dc\u9375\u6578\u5b57\u9700",
+                r"\u5177\u4f53\u6570\u503c\u9700",
+                r"\u5177\u9ad4\u6578\u503c\u9700",
+            ]),
+            re.IGNORECASE,
+        ),
+    ),
+)
+_FINANCIAL_REPORT_DOC_HINTS = (
+    "annual report",
+    "financial report",
+    "\u5e74\u62a5",
+    "\u5e74\u5831",
+    "\u5e74\u5ea6\u62a5\u544a",
+    "\u5e74\u5ea6\u5831\u544a",
+)
+_FINANCIAL_REPORT_PAGE_KEYWORDS = (
+    "revenue",
+    "gross profit",
+    "gross margin",
+    "operating profit",
+    "profit attributable",
+    "non-ifrs",
+    "cash flow",
+    "dividend",
+    "buyback",
+    "share repurchase",
+    "restricted cash",
+    "structured entities",
+    "vie",
+    "consolidated income statement",
+    "consolidated statement of cash flows",
+    "\u6536\u5165",
+    "\u6bdb\u5229",
+    "\u6bdb\u5229\u7387",
+    "\u7d93\u71df\u6ea2\u5229",
+    "\u7ecf\u8425\u5229\u6da6",
+    "\u671f\u5185\u6ea2\u5229",
+    "\u671f\u5185\u5229\u6da6",
+    "\u6b0a\u76ca\u6301\u6709\u4eba\u61c9\u4f54\u76c8\u5229",
+    "\u6743\u76ca\u6301\u6709\u4eba\u5e94\u5360\u76c8\u5229",
+    "\u73fe\u91d1\u6d41",
+    "\u73b0\u91d1\u6d41",
+    "\u73fe\u91d1\u53ca\u73fe\u91d1\u7b49\u50f9\u7269",
+    "\u73b0\u91d1\u53ca\u73b0\u91d1\u7b49\u4ef7\u7269",
+    "\u80a1\u606f",
+    "\u56de\u8cfc",
+    "\u56de\u8d2d",
+    "\u53d7\u9650\u5236\u73fe\u91d1",
+    "\u53d7\u9650\u5236\u73b0\u91d1",
+    "\u67b6\u69cb\u5408\u7d04",
+    "\u67b6\u6784\u5408\u7ea6",
+    "\u7d50\u69cb\u6027\u5be6\u9ad4",
+    "\u7ed3\u6784\u6027\u5b9e\u4f53",
+    "\u6e1b\u503c",
+    "\u51cf\u503c",
+)
 _INVESTMENT_PAGE_TYPES: tuple[dict[str, str], ...] = (
     {
         "subdir": "industries",
@@ -727,6 +824,31 @@ def _concept_alias_key(value: str) -> str:
     if value.endswith(".md"):
         value = value[:-3]
     return re.sub(r"[\s_\-]+", "", value).casefold()
+
+
+def _wiki_path_display_label(namespace: str, slug: str) -> str:
+    """Return readable text for invalid or bare wiki namespace references."""
+    cleaned = slug.replace("\\", "/").strip().strip("/")
+    if namespace == "concepts":
+        folded = cleaned.casefold()
+        for prefix in _MISNAMESPACED_CONCEPT_PREFIXES:
+            if folded.startswith(prefix):
+                return cleaned[len(prefix):] or cleaned
+    return cleaned
+
+
+def _unlink_bare_wiki_paths(text: str) -> str:
+    """Render bare namespace paths as plain text unless they are valid links."""
+    def replace(match: re.Match) -> str:
+        namespace = match.group("namespace")
+        slug = match.group("slug")
+        trailing = ""
+        while slug and slug[-1] in ".,;:":
+            trailing = slug[-1] + trailing
+            slug = slug[:-1]
+        return _wiki_path_display_label(namespace, slug) + trailing
+
+    return _WIKI_NAMESPACE_PATH_RE.sub(replace, text)
 
 
 _COMPANY_FALLBACK_SIGNAL_RE = re.compile(
@@ -1247,10 +1369,13 @@ def _normalize_wiki_links(
             return f"[[concepts/{slug}]]"
 
         if raw_target.startswith("concepts/"):
-            candidate = _sanitize_concept_name(raw_target[len("concepts/"):])
+            concept_target = raw_target[len("concepts/"):]
+            candidate = _sanitize_concept_name(concept_target)
             if candidate in allowed_slugs:
                 return f"[[concepts/{candidate}]]"
-            return label
+            if match.group(2):
+                return label
+            return _wiki_path_display_label("concepts", concept_target)
 
         if raw_target in valid_pages:
             if match.group(2):
@@ -1259,7 +1384,7 @@ def _normalize_wiki_links(
 
         return label
 
-    return _WIKILINK_RE.sub(replace, text)
+    return _unlink_bare_wiki_paths(_WIKILINK_RE.sub(replace, text))
 
 
 def _ensure_summary_links_in_plan(
@@ -1634,6 +1759,36 @@ def _extract_generated_page_evidence(
     )
 
 
+def _generated_page_quality_issues(
+    content: str,
+    source_file: str,
+    *,
+    require_page_evidence: bool = False,
+) -> list[str]:
+    """Return quality issues that should prevent writing generated pages."""
+    issues: list[str] = []
+    for label, pattern in _GENERATED_PAGE_PLACEHOLDER_PATTERNS:
+        if pattern.search(content):
+            issues.append(f"placeholder generated content ({label})")
+            break
+    if require_page_evidence and not _extract_generated_page_evidence(content, source_file):
+        issues.append("missing page evidence")
+    return issues
+
+
+def _clean_existing_generated_page_artifacts(text: str) -> str:
+    """Remove stale generated placeholders and bare namespace paths from old pages."""
+    cleaned = _unlink_bare_wiki_paths(text)
+    lines = [
+        line
+        for line in cleaned.splitlines()
+        if not any(pattern.search(line) for _, pattern in _GENERATED_PAGE_PLACEHOLDER_PATTERNS)
+    ]
+    cleaned = "\n".join(lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).rstrip()
+    return cleaned + "\n"
+
+
 def _ensure_source_evidence_section(content: str, source_file: str) -> str:
     """Ensure generated pages always include a Source Evidence section."""
     if re.search(r"^## Source Evidence\s*$", content, re.MULTILINE):
@@ -1647,9 +1802,7 @@ def _ensure_source_evidence_section(content: str, source_file: str) -> str:
             for item in evidence
         ]
     else:
-        lines = [
-            f"- [[{source_link}]]: TODO: add exact supporting claims and page references."
-        ]
+        lines = [f"- [[{source_link}]]"]
     return content.rstrip() + "\n\n## Source Evidence\n" + "\n".join(lines) + "\n"
 
 
@@ -1708,11 +1861,16 @@ def cleanup_generated_pages_for_source(wiki_dir: Path, doc_name: str) -> list[st
         if not pages_dir.exists():
             continue
         for path in sorted(pages_dir.glob("*.md")):
-            sources = _frontmatter_source_entries(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            sources = _frontmatter_source_entries(text)
             if sources == [source_file]:
                 page_id = f"{subdir}/{path.stem}"
                 path.unlink()
                 removed.append(page_id)
+            elif source_file in sources:
+                cleaned = _clean_existing_generated_page_artifacts(text)
+                if cleaned != text:
+                    path.write_text(cleaned, encoding="utf-8")
 
     _remove_index_entries(wiki_dir, set(removed))
     return removed
@@ -1725,9 +1883,10 @@ def _add_related_link(wiki_dir: Path, concept_slug: str, doc_name: str, source_f
     if not path.exists():
         return
 
-    text = path.read_text(encoding="utf-8")
+    text = _clean_existing_generated_page_artifacts(path.read_text(encoding="utf-8"))
     link = f"[[summaries/{doc_name}]]"
     if link in text:
+        path.write_text(text, encoding="utf-8")
         return
 
     # Update sources in frontmatter
@@ -1745,7 +1904,7 @@ def _add_related_link(wiki_dir: Path, concept_slug: str, doc_name: str, source_f
         else:
             text = f"---\nsources: [{source_file}]\n---\n\n" + text
 
-    text += f"\n\nSee also: {link}"
+    text = text.rstrip() + f"\n\nSee also: {link}"
     path.write_text(text, encoding="utf-8")
 
 
@@ -1793,13 +1952,14 @@ def _backlink_concepts(wiki_dir: Path, doc_name: str, concept_slugs: list[str]) 
         path = concepts_dir / f"{slug}.md"
         if not path.exists():
             continue
-        text = path.read_text(encoding="utf-8")
+        text = _clean_existing_generated_page_artifacts(path.read_text(encoding="utf-8"))
         if link in text:
+            path.write_text(text, encoding="utf-8")
             continue
         if "## Related Documents" in text:
             text = text.replace("## Related Documents\n", f"## Related Documents\n- {link}\n", 1)
         else:
-            text += f"\n\n## Related Documents\n- {link}\n"
+            text = text.rstrip() + f"\n\n## Related Documents\n- {link}\n"
         path.write_text(text, encoding="utf-8")
 
 def _update_index(
@@ -1973,6 +2133,73 @@ def _build_local_long_doc_context(
     return "\n".join(parts)
 
 
+def _pageindex_page_text(page: object) -> tuple[str, str]:
+    """Return page number and text from a PageIndex source JSON entry."""
+    if not isinstance(page, dict):
+        return "?", ""
+    page_num = str(page.get("page") or page.get("page_num") or page.get("number") or "?")
+    for key in ("content", "text", "markdown"):
+        value = page.get(key)
+        if isinstance(value, str) and value.strip():
+            return page_num, value.strip()
+    return page_num, ""
+
+
+def _build_pageindex_financial_evidence_pack(
+    wiki_dir: Path,
+    doc_name: str,
+    summary_content: str,
+    *,
+    max_pages: int = 12,
+    page_chars: int = 1400,
+) -> str:
+    """Select high-signal source pages for annual/financial report synthesis."""
+    hint = f"{doc_name}\n{summary_content[:4000]}".casefold()
+    if not any(keyword.casefold() in hint for keyword in _FINANCIAL_REPORT_DOC_HINTS):
+        return ""
+
+    source_path = wiki_dir / "sources" / f"{doc_name}.json"
+    if not source_path.exists():
+        return ""
+    try:
+        pages = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to read PageIndex source JSON for %s: %s", doc_name, exc)
+        return ""
+    if not isinstance(pages, list):
+        return ""
+
+    scored: list[tuple[int, int, str, str]] = []
+    for order, page in enumerate(pages):
+        page_num, text = _pageindex_page_text(page)
+        if not text:
+            continue
+        haystack = text.casefold()
+        score = sum(
+            haystack.count(keyword.casefold())
+            for keyword in _FINANCIAL_REPORT_PAGE_KEYWORDS
+        )
+        if score <= 0:
+            continue
+        scored.append((score, order, page_num, text))
+
+    if not scored:
+        return ""
+
+    selected = sorted(scored, key=lambda item: (-item[0], item[1]))[:max_pages]
+    selected.sort(key=lambda item: item[1])
+    lines = [
+        "Additional source page context for annual/financial report synthesis:",
+        "Use these pages for exact metrics and cite them as p.N. Do not write placeholders.",
+    ]
+    for _, _, page_num, text in selected:
+        snippet = re.sub(r"\s+", " ", text).strip()
+        if len(snippet) > page_chars:
+            snippet = snippet[:page_chars].rstrip() + " [truncated]"
+        lines.append(f"p.{page_num}: {snippet}")
+    return "\n\n" + "\n".join(lines)
+
+
 async def _compile_concepts(
     wiki_dir: Path,
     kb_dir: Path,
@@ -2132,6 +2359,40 @@ async def _compile_concepts(
 
     # --- Step 3: Generate/update company and concept pages concurrently (A cached) ---
     semaphore = asyncio.Semaphore(max_concurrency)
+    require_page_evidence = doc_type == "pageindex"
+
+    def _should_skip_generated_page(page_kind: str, name: str, content: str) -> bool:
+        issues = _generated_page_quality_issues(
+            content,
+            source_file,
+            require_page_evidence=require_page_evidence,
+        )
+        if not issues:
+            return False
+        logger.warning(
+            "Skipping generated %s page %s for %s: %s",
+            page_kind,
+            name,
+            doc_name,
+            "; ".join(issues),
+        )
+        return True
+
+    def _clean_existing_generated_page(page_kind: str, name: str) -> None:
+        if page_kind == "company":
+            path = wiki_dir / "companies" / f"{_sanitize_concept_name(name)}.md"
+        elif page_kind == "concept":
+            path = wiki_dir / "concepts" / f"{_sanitize_concept_name(name)}.md"
+        elif page_kind in _INVESTMENT_PAGE_SUBDIRS:
+            path = wiki_dir / page_kind / f"{_sanitize_concept_name(name)}.md"
+        else:
+            return
+        if not path.exists():
+            return
+        text = path.read_text(encoding="utf-8")
+        cleaned = _clean_existing_generated_page_artifacts(text)
+        if cleaned != text:
+            path.write_text(cleaned, encoding="utf-8")
 
     async def _gen_company(company: dict) -> tuple[str, str, bool, str]:
         name = str(company["name"]).strip()
@@ -2305,6 +2566,9 @@ async def _compile_concepts(
                 allowed_concept_slugs,
                 valid_pages,
             )
+            if _should_skip_generated_page("company", name, page_content):
+                _clean_existing_generated_page("company", name)
+                continue
             _write_company(wiki_dir, name, page_content, source_file, is_update, brief=brief)
             safe_name = _sanitize_concept_name(name)
             company_names.append(safe_name)
@@ -2328,6 +2592,9 @@ async def _compile_concepts(
                 allowed_concept_slugs,
                 valid_pages,
             )
+            if _should_skip_generated_page(subdir, name, page_content):
+                _clean_existing_generated_page(subdir, name)
+                continue
             _write_investment_page(wiki_dir, subdir, name, page_content, source_file, is_update, brief=brief)
             safe_name = _sanitize_concept_name(name)
             investment_page_names[subdir].append(safe_name)
@@ -2357,6 +2624,9 @@ async def _compile_concepts(
                 allowed_concept_slugs,
                 valid_pages,
             )
+            if _should_skip_generated_page("concept", name, page_content):
+                _clean_existing_generated_page("concept", name)
+                continue
             _write_concept(wiki_dir, name, page_content, source_file, is_update, brief=brief)
             safe_name = _sanitize_concept_name(name)
             concept_names.append(safe_name)
@@ -2636,13 +2906,18 @@ async def _compile_long_doc_to_wiki(
     except ValueError:
         staged_summary_path = summary_path
     summary_content = staged_summary_path.read_text(encoding="utf-8")
+    long_doc_context = summary_content + _build_pageindex_financial_evidence_pack(
+        wiki_dir,
+        doc_name,
+        summary_content,
+    )
 
     # Base context A
     system_msg = {"role": "system", "content": _SYSTEM_TEMPLATE.format(
         schema_md=schema_md, language=language,
     )}
     doc_msg = {"role": "user", "content": _LONG_DOC_SUMMARY_USER.format(
-        doc_name=doc_name, doc_id=doc_id, content=summary_content,
+        doc_name=doc_name, doc_id=doc_id, content=long_doc_context,
     )}
 
     # --- Step 1: Generate overview ---
