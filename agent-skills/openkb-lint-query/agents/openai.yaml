@@ -1,4 +1,4 @@
 interface:
-  display_name: "OpenKB Lint Query"
-  short_description: "Query and lint OpenKB runtime wikis."
-  default_prompt: "Use $openkb-lint-query in an OpenKB knowledge base directory to query, cite, lint, and safely repair the wiki."
+  display_name: "OpenKB KB Workflows"
+  short_description: "Query, lint, add, and delete OpenKB knowledge bases."
+  default_prompt: "Use $openkb-lint-query in an OpenKB knowledge base directory to query, cite, lint, safely repair, add documents to, and delete indexed source documents from the wiki."

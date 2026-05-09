@@ -5,6 +5,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPTS_DIR = (
@@ -13,6 +14,7 @@ SCRIPTS_DIR = (
     / "openkb-lint-query"
     / "scripts"
 )
+SKILL_DIR = SCRIPTS_DIR.parent
 
 
 def _load_script(name: str):
@@ -166,3 +168,106 @@ def test_query_context_warns_when_investment_method_anchor_missing(tmp_path):
     assert "companies/Tencent.md" in data["read_set_suggestion"]
     assert not any(path.startswith("concepts/") for path in data["read_set_suggestion"])
     assert any("Missing investment method anchor page" in warning for warning in data["warnings"])
+
+
+def test_skill_metadata_mentions_add_and_delete_workflows():
+    skill_text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    openai_text = (SKILL_DIR / "agents" / "openai.yaml").read_text(encoding="utf-8")
+
+    assert "add_documents.py" in skill_text
+    assert "delete_source.py" in skill_text
+    assert "新增" in skill_text or "add" in skill_text.lower()
+    assert "删除" in skill_text or "delete" in skill_text.lower()
+    assert "Add" in openai_text or "add" in openai_text
+    assert "delete" in openai_text.lower()
+
+
+def test_add_documents_rejects_unsupported_extension(tmp_path):
+    add_documents = _load_script("add_documents")
+    kb = _make_skill_kb(tmp_path)
+    source = tmp_path / "ignore.xyz"
+    source.write_text("skip", encoding="utf-8")
+
+    result = add_documents.add_documents(str(kb), str(source))
+
+    assert result["ok"] is False
+    assert "Unsupported file type" in result["error"]
+    assert result["added"] == []
+
+
+def test_add_documents_adds_supported_directory_files_with_openkb_helper(tmp_path):
+    add_documents = _load_script("add_documents")
+    kb = _make_skill_kb(tmp_path)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    first = docs / "a.md"
+    second = docs / "b.txt"
+    skipped = docs / "c.xyz"
+    first.write_text("# A", encoding="utf-8")
+    second.write_text("B", encoding="utf-8")
+    skipped.write_text("C", encoding="utf-8")
+
+    calls: list[tuple[Path, Path, bool]] = []
+
+    def fake_add_single_file(file_path, kb_dir, *, force=False, strict=False):
+        calls.append((Path(file_path), Path(kb_dir), force))
+
+    with patch.object(add_documents, "add_single_file", side_effect=fake_add_single_file):
+        result = add_documents.add_documents(str(kb), str(docs), force=True)
+
+    assert result["ok"] is True
+    assert result["added"] == [str(first), str(second)]
+    assert result["skipped"] == [str(skipped)]
+    assert calls == [(first, kb, True), (second, kb, True)]
+
+
+def test_delete_source_defaults_to_dry_run_without_mutating(tmp_path):
+    delete_source = _load_script("delete_source")
+    kb = _make_skill_kb(tmp_path)
+    raw = kb / "raw"
+    raw.mkdir()
+    (kb / ".openkb").mkdir()
+    (kb / ".openkb" / "hashes.json").write_text(
+        json.dumps({"hash-a": {"name": "paper.pdf", "type": "pdf"}}),
+        encoding="utf-8",
+    )
+    (raw / "paper.pdf").write_bytes(b"%PDF")
+    summary = kb / "wiki" / "summaries" / "paper.md"
+    summary.write_text("# Paper\n", encoding="utf-8")
+
+    result = delete_source.delete_source(str(kb), "paper")
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["document"]["name"] == "paper.pdf"
+    assert result["would_remove_pages"] == ["summaries/paper.md"]
+    assert summary.exists()
+    assert (raw / "paper.pdf").exists()
+
+
+def test_delete_source_requires_yes_to_mutate(tmp_path):
+    delete_source = _load_script("delete_source")
+    kb = _make_skill_kb(tmp_path)
+    raw = kb / "raw"
+    raw.mkdir()
+    (kb / ".openkb").mkdir()
+    (kb / ".openkb" / "hashes.json").write_text(
+        json.dumps({"hash-a": {"name": "paper.pdf", "type": "pdf"}}),
+        encoding="utf-8",
+    )
+    (raw / "paper.pdf").write_bytes(b"%PDF")
+    (kb / "wiki" / "sources").mkdir()
+    (kb / "wiki" / "sources" / "paper.md").write_text("# Full", encoding="utf-8")
+    summary = kb / "wiki" / "summaries" / "paper.md"
+    summary.write_text("# Paper\n", encoding="utf-8")
+
+    result = delete_source.delete_source(str(kb), "paper", yes=True)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is False
+    assert result["removed_pages"] == ["summaries/paper.md"]
+    assert "raw/paper.pdf" in result["removed_files"]
+    assert result["commit"]["message"] in {"Delete source paper.pdf", ""}
+    assert "delete-source | paper.pdf" in (kb / "wiki" / "log.md").read_text(encoding="utf-8")
+    assert not summary.exists()
+    assert not (raw / "paper.pdf").exists()

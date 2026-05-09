@@ -793,3 +793,31 @@ Use `apply_patch` for targeted edits in files with non-ASCII content, or verify 
 - Related Files: tests/test_client_server.py
 
 ---
+## [ERR-20260509-001] apply_patch_and_text_replacement
+
+**Logged**: 2026-05-09T12:00:00Z
+**Priority**: medium
+**Status**: pending
+**Area**: frontend
+
+### Summary
+Patch application via `apply_patch` failed in this PowerShell environment, and early text replacement attempts were too broad.
+
+### Error
+```text
+Access is denied.
+```
+
+### Context
+- Attempted to use `apply_patch` against client static files and tests.
+- The reliable workaround was to use small, function-boundary edits and verify the diff immediately.
+
+### Suggested Fix
+When `apply_patch` is unavailable, prefer narrowly scoped replacements and inspect the diff before continuing.
+
+### Metadata
+- Reproducible: yes
+- Related Files: openkb/client/static/app.js, openkb/client/static/index.html, tests/test_client_static.py
+- See Also: none
+
+---

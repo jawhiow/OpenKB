@@ -240,7 +240,7 @@ class TestLintCommand:
         assert status["routes"]["primary:bad-model"]["health"] == "offline"
         assert status["routes"]["backup:good-model"]["health"] == "healthy"
 
-    def test_lint_fix_creates_coverage_gap_draft_pages(self, tmp_path):
+    def test_lint_fix_skips_coverage_gap_drafts_without_source_evidence(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)
         hashes = {"abc": {"name": "paper.pdf", "type": "pdf"}}
         (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes))
@@ -254,6 +254,34 @@ class TestLintCommand:
 
         assert result.exit_code == 0
         assert "not yet implemented" not in result.output
+        assert "Created coverage-gap draft concept page(s)" not in result.output
+        assert not (kb_dir / "wiki" / "concepts" / "AI_CPU.md").exists()
+        assert not (kb_dir / "wiki" / "concepts" / "AI_GPU.md").exists()
+        index = (kb_dir / "wiki" / "index.md").read_text(encoding="utf-8")
+        assert "[[concepts/AI_CPU]]" not in index
+        reports = list((kb_dir / "wiki" / "reports").glob("lint_*.md"))
+        report_text = reports[0].read_text(encoding="utf-8")
+        assert "## Coverage Gap Fixes" in report_text
+
+    def test_lint_fix_creates_coverage_gap_draft_pages_with_source_evidence(self, tmp_path):
+        kb_dir = _setup_kb(tmp_path)
+        hashes = {"abc": {"name": "paper.pdf", "type": "pdf"}}
+        (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes))
+        (kb_dir / "wiki" / "summaries" / "report.md").write_text(
+            "---\ndoc_type: local-long\n---\n\n"
+            "# Report\n\n"
+            "AI CPU roadmaps and global AI GPU demand are both discussed in this source.",
+            encoding="utf-8",
+        )
+        runner = CliRunner()
+        semantic_report = "## Gaps\n- Missing concept page for AI CPU and global AI GPU."
+
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.cli._setup_llm_key"), \
+             patch("openkb.agent.linter.run_knowledge_lint", return_value=semantic_report):
+            result = runner.invoke(cli, ["lint", "--fix"])
+
+        assert result.exit_code == 0
         assert "Created coverage-gap draft concept page(s): 2" in result.output
         assert (kb_dir / "wiki" / "concepts" / "AI_CPU.md").exists()
         assert (kb_dir / "wiki" / "concepts" / "AI_GPU.md").exists()

@@ -101,7 +101,7 @@ class TestCoverageGapCandidates:
         assert "[[concepts/AI_CPU]]" in report
         assert "AI CPU" in report
 
-    def test_apply_writes_draft_pages_and_index_entries(self, tmp_path):
+    def test_apply_skips_coverage_drafts_without_source_evidence(self, tmp_path):
         wiki = tmp_path / "wiki"
         (wiki / "concepts").mkdir(parents=True)
         (wiki / "index.md").write_text(
@@ -117,15 +117,11 @@ class TestCoverageGapCandidates:
             ],
         )
 
-        assert [item["name"] for item in created] == ["AI_CPU", "AI_GPU"]
-        ai_cpu = (wiki / "concepts" / "AI_CPU.md").read_text(encoding="utf-8")
-        assert "status: draft" in ai_cpu
-        assert "# AI CPU" in ai_cpu
-        assert "## Source Evidence" in ai_cpu
-        assert "TODO" not in ai_cpu
+        assert created == []
+        assert not (wiki / "concepts" / "AI_CPU.md").exists()
+        assert not (wiki / "concepts" / "AI_GPU.md").exists()
         index = (wiki / "index.md").read_text(encoding="utf-8")
-        assert "- [[concepts/AI_CPU]] - AI CPU (coverage-gap draft)" in index
-        assert "- [[concepts/AI_GPU]] - AI GPU (coverage-gap draft)" in index
+        assert "coverage-gap draft" not in index
 
     def test_apply_seeds_drafts_with_matching_summary_evidence(self, tmp_path):
         wiki = tmp_path / "wiki"
@@ -145,9 +141,15 @@ class TestCoverageGapCandidates:
         )
 
         ai_cpu = (wiki / "concepts" / "AI_CPU.md").read_text(encoding="utf-8")
+        assert "status: draft" in ai_cpu
+        assert "# AI CPU" in ai_cpu
+        assert "## Source Evidence" in ai_cpu
+        assert "TODO" not in ai_cpu
         assert "sources: [summaries/report.md]" in ai_cpu
         assert "- [[summaries/report]]" in ai_cpu
         assert "NVIDIA Grace CPU" in ai_cpu
+        index = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "- [[concepts/AI_CPU]] - AI CPU (coverage-gap draft)" in index
 
     def test_apply_prefers_page_level_evidence_for_local_long_sources(self, tmp_path):
         wiki = tmp_path / "wiki"

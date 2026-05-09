@@ -55,6 +55,8 @@ def test_client_job_details_preserves_log_scroll_during_refresh():
 
 def test_client_ask_persists_and_reopens_chat_sessions():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
 
     assert "activeChatSessionId: null" in script
     assert "activeChatSession: null" in script
@@ -66,7 +68,13 @@ def test_client_ask_persists_and_reopens_chat_sessions():
     assert 'data-open-chat="${escapeHTML(session.id)}"' in script
     assert 'data-action="open-chat"' in script
     assert '`/api/chats/${encodeURIComponent(sessionId)}`' in script
-    assert "Continue in Assistant" in script
+    assert "session-workspace" in script
+    assert "sessionThread" in script
+    assert "function renderMarkdownSafe" in script
+    assert 'https://cdn.jsdelivr.net/npm/marked@13.0.2/marked.min.js' not in html
+    assert 'https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js' not in html
+    assert 'body.sessions-mode .session-workspace {' in styles
+    assert 'grid-template-columns: 264px minmax(0, 1fr) 280px;' in styles
 
 
 def test_client_ask_streams_answers_and_renders_references():
@@ -81,6 +89,35 @@ def test_client_ask_streams_answers_and_renders_references():
     assert "function renderQueryReferences" in script
     assert "state.activeQueryReferences" in script
     assert "Referenced files" in script
+    assert 'state.streamingAssistantText = next;' in script
+    assert 'if (state.view === "sessions") renderSessionThread();' in script
+
+
+def test_client_uses_local_safe_markdown_renderer_for_chat_messages():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "function renderMarkdownSafe" in script
+    assert "function renderMarkdown" in script
+    assert 'renderMarkdownSafe(message.content || "")' in script
+
+
+def test_client_startup_defers_noncritical_knowledge_data():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "async function loadStartupKnowledgeData" in script
+    assert "async function loadDeferredKnowledgeData" in script
+    assert "await loadStartupKnowledgeData();" in script
+    assert "loadDeferredKnowledgeData().then" in script
+
+
+def test_client_input_handlers_preserve_ime_composition():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "function isComposingInput" in script
+    assert "event?.isComposing" in script
+    assert "event?.keyCode === 229" in script
+    assert script.count("if (isComposingInput(event)) return;") >= 4
+    assert script.count('&& !isComposingInput(event)') >= 2
 
 
 def test_client_script_has_bounded_rendering_and_selective_refresh():

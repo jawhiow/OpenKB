@@ -121,6 +121,35 @@ def test_query_save_commits_changed_wiki_files(tmp_path):
     assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Query What changed?"
 
 
+def test_query_save_persists_read_set(tmp_path):
+    kb_dir = tmp_path / "kb"
+    (kb_dir / ".openkb").mkdir(parents=True)
+    (kb_dir / "wiki").mkdir()
+    (kb_dir / "wiki" / "log.md").write_text("# Operations Log\n\n", encoding="utf-8")
+    (kb_dir / ".openkb" / "config.yaml").write_text("model: gpt-5.4-mini\n", encoding="utf-8")
+
+    async def fake_run_query(_question, _kb_dir, _model, **kwargs):
+        tracker = kwargs["reference_tracker"]
+        tracker.add({"type": "wiki_file", "path": "summaries/report.md"})
+        tracker.add({"type": "source_pages", "path": "sources/report.json", "pages": "2-3"})
+        return "Answer with citations."
+
+    runner = CliRunner()
+    with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+         patch("openkb.cli._ensure_wiki_schema"), \
+         patch("openkb.cli._setup_llm_key"), \
+         patch("openkb.agent.query.run_query", new_callable=AsyncMock, side_effect=fake_run_query):
+        result = runner.invoke(cli, ["query", "What changed?", "--save"])
+
+    assert result.exit_code == 0
+    exploration = next((kb_dir / "wiki" / "explorations").glob("*.md"))
+    text = exploration.read_text(encoding="utf-8")
+    assert "Answer with citations." in text
+    assert "## Read Set" in text
+    assert "- [[summaries/report]]" in text
+    assert "- sources/report.json pages 2-3" in text
+
+
 def test_init_already_exists(tmp_path):
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path), \

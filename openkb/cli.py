@@ -1030,7 +1030,7 @@ def query(ctx, question, save, raw):
         return
     _ensure_wiki_schema(kb_dir)
 
-    from openkb.agent.query import run_query
+    from openkb.agent.query import QueryReferenceTracker, format_query_exploration, run_query
 
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
@@ -1038,8 +1038,18 @@ def query(ctx, question, save, raw):
     _setup_llm_key(kb_dir, profiles[0])
     model = profiles[0]["model"]
 
+    reference_tracker = QueryReferenceTracker() if save else None
     try:
-        answer = asyncio.run(run_query(question, kb_dir, model, stream=True, raw=raw))
+        answer = asyncio.run(
+            run_query(
+                question,
+                kb_dir,
+                model,
+                stream=True,
+                raw=raw,
+                reference_tracker=reference_tracker,
+            )
+        )
     except Exception as exc:
         click.echo(f"[ERROR] Query failed: {exc}")
         return
@@ -1053,7 +1063,12 @@ def query(ctx, question, save, raw):
         explore_dir.mkdir(parents=True, exist_ok=True)
         explore_path = explore_dir / f"{slug}.md"
         explore_path.write_text(
-            f"---\nquery: \"{question}\"\n---\n\n{answer}\n", encoding="utf-8"
+            format_query_exploration(
+                question,
+                answer,
+                reference_tracker.references() if reference_tracker is not None else [],
+            ),
+            encoding="utf-8",
         )
         click.echo(f"\nSaved to {explore_path}")
     commit_kb_changes(kb_dir, f"Query {question}")

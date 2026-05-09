@@ -150,17 +150,24 @@ def _source_path_from_summary(kb_dir: Path, stem: str) -> str | None:
         return None
 
 
-def _build_source_document(kb_dir: Path, file_hash: str, meta: dict[str, Any]) -> dict[str, Any]:
+def _build_related_page_index(kb_dir: Path) -> tuple[dict[str, dict[str, list[dict[str, Any]]]], dict[str, str | None]]:
     kb_dir = Path(kb_dir)
     wiki_dir = kb_dir / "wiki"
-    name = _safe_doc_name(meta.get("name"))
-    stem = Path(name).stem
-    source_summary = f"summaries/{stem}.md"
-    related_pages = _empty_related_pages()
+    related_pages_index: dict[str, dict[str, list[dict[str, Any]]]] = {
+        group: {} for group in RELATED_PAGE_GROUPS
+    }
+    summary_source_texts: dict[str, str | None] = {}
 
-    summary_path = wiki_dir / "summaries" / f"{stem}.md"
-    if summary_path.exists():
-        related_pages["summaries"].append(_page_entry(summary_path, wiki_dir))
+    summary_dir = wiki_dir / "summaries"
+    if summary_dir.exists():
+        for path in sorted(summary_dir.glob("*.md")):
+            stem = path.stem
+            source_summary = f"summaries/{stem}.md"
+            try:
+                summary_source_texts[stem] = _frontmatter_full_text(path.read_text(encoding="utf-8"))
+            except OSError:
+                summary_source_texts[stem] = None
+            related_pages_index["summaries"][source_summary] = [_page_entry(path, wiki_dir)]
 
     for subdir in GENERATED_PAGE_DIRS:
         pages_dir = wiki_dir / subdir
@@ -171,13 +178,84 @@ def _build_source_document(kb_dir: Path, file_hash: str, meta: dict[str, Any]) -
                 sources = _frontmatter_source_entries(path.read_text(encoding="utf-8"))
             except OSError:
                 continue
-            if source_summary in sources:
-                related_pages[subdir].append(_page_entry(path, wiki_dir, sources))
+            if not sources:
+                continue
+            entry = _page_entry(path, wiki_dir, sources)
+            for source_summary in sources:
+                related_pages_index[subdir].setdefault(source_summary, []).append(entry)
 
-    source_text_path = _source_path_from_summary(kb_dir, stem)
-    if source_text_path is None:
-        existing_source = next((path for path in _source_candidates(kb_dir, stem) if path.exists()), None)
-        source_text_path = existing_source.relative_to(wiki_dir).as_posix() if existing_source else None
+    return related_pages_index, summary_source_texts
+
+
+def _resolve_source_document_meta(kb_dir: Path, selector: str) -> tuple[str, dict[str, Any]]:
+    hashes = _read_hashes(kb_dir)
+    needle = str(selector or "").strip()
+    if not needle:
+        raise ValueError("Source document selector is required.")
+
+    exact = hashes.get(needle)
+    if exact is not None:
+        return needle, exact
+
+    needle_fold = needle.casefold()
+    matches = [
+        (file_hash, meta)
+        for file_hash, meta in hashes.items()
+        if file_hash.startswith(needle)
+        or str(meta.get("name", "")).casefold() == needle_fold
+        or str(Path(str(meta.get("name", "")).strip() or "").stem).casefold() == needle_fold
+    ]
+    if not matches:
+        raise ValueError(f"No indexed source document matches: {selector}")
+    if len(matches) > 1:
+        names = ", ".join(sorted(_safe_doc_name(meta.get("name")) for _hash, meta in matches))
+        raise ValueError(f"Ambiguous source document selector {selector!r}: {names}")
+    return matches[0]
+
+
+def _build_source_document(
+    kb_dir: Path,
+    file_hash: str,
+    meta: dict[str, Any],
+    *,
+    related_pages_index: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
+    summary_source_texts: dict[str, str | None] | None = None,
+) -> dict[str, Any]:
+    kb_dir = Path(kb_dir)
+    wiki_dir = kb_dir / "wiki"
+    name = _safe_doc_name(meta.get("name"))
+    stem = Path(name).stem
+    source_summary = f"summaries/{stem}.md"
+
+    related_pages = _empty_related_pages()
+    if related_pages_index is not None:
+        for group in RELATED_PAGE_GROUPS:
+            related_pages[group] = list(related_pages_index.get(group, {}).get(source_summary, []))
+    else:
+        summary_path = wiki_dir / "summaries" / f"{stem}.md"
+        if summary_path.exists():
+            related_pages["summaries"].append(_page_entry(summary_path, wiki_dir))
+        for subdir in GENERATED_PAGE_DIRS:
+            pages_dir = wiki_dir / subdir
+            if not pages_dir.exists():
+                continue
+            for path in sorted(pages_dir.glob("*.md")):
+                try:
+                    sources = _frontmatter_source_entries(path.read_text(encoding="utf-8"))
+                except OSError:
+                    continue
+                if source_summary in sources:
+                    related_pages[subdir].append(_page_entry(path, wiki_dir, sources))
+
+    if summary_source_texts is not None and stem in summary_source_texts:
+        source_text_path = summary_source_texts.get(stem)
+    else:
+        summary_path = wiki_dir / "summaries" / f"{stem}.md"
+        if summary_path.exists():
+            source_text_path = _frontmatter_full_text(summary_path.read_text(encoding="utf-8"))
+        else:
+            existing_source = next((path for path in _source_candidates(kb_dir, stem) if path.exists()), None)
+            source_text_path = existing_source.relative_to(wiki_dir).as_posix() if existing_source else None
 
     related_count = sum(len(items) for items in related_pages.values())
     raw_path = kb_dir / "raw" / name
@@ -191,7 +269,7 @@ def _build_source_document(kb_dir: Path, file_hash: str, meta: dict[str, Any]) -
         "raw_exists": raw_path.exists(),
         "source_path": source_text_path,
         "source_summary": source_summary,
-        "summary_exists": summary_path.exists(),
+        "summary_exists": (wiki_dir / "summaries" / f"{stem}.md").exists(),
         "related_count": related_count,
         "related_pages": related_pages,
     }
@@ -199,38 +277,33 @@ def _build_source_document(kb_dir: Path, file_hash: str, meta: dict[str, Any]) -
 
 def get_source_documents(kb_dir: Path) -> list[dict[str, Any]]:
     """Return indexed source documents with their generated wiki pages."""
+    kb_dir = Path(kb_dir)
     hashes = _read_hashes(kb_dir)
+    related_pages_index, summary_source_texts = _build_related_page_index(kb_dir)
     return [
-        _build_source_document(Path(kb_dir), file_hash, meta)
+        _build_source_document(
+            kb_dir,
+            file_hash,
+            meta,
+            related_pages_index=related_pages_index,
+            summary_source_texts=summary_source_texts,
+        )
         for file_hash, meta in hashes.items()
     ]
 
 
 def resolve_source_document(kb_dir: Path, selector: str) -> dict[str, Any]:
     """Resolve a source document by hash, hash prefix, file name, or stem."""
-    needle = str(selector or "").strip()
-    if not needle:
-        raise ValueError("Source document selector is required.")
-
-    documents = get_source_documents(kb_dir)
-    exact = [doc for doc in documents if doc["hash"] == needle]
-    if exact:
-        return exact[0]
-
-    needle_fold = needle.casefold()
-    matches = [
-        doc for doc in documents
-        if doc["hash"].startswith(needle)
-        or doc["name"].casefold() == needle_fold
-        or doc["stem"].casefold() == needle_fold
-    ]
-    unique: dict[str, dict[str, Any]] = {doc["hash"]: doc for doc in matches}
-    if not unique:
-        raise ValueError(f"No indexed source document matches: {selector}")
-    if len(unique) > 1:
-        names = ", ".join(sorted(doc["name"] for doc in unique.values()))
-        raise ValueError(f"Ambiguous source document selector {selector!r}: {names}")
-    return next(iter(unique.values()))
+    kb_dir = Path(kb_dir)
+    file_hash, meta = _resolve_source_document_meta(kb_dir, selector)
+    related_pages_index, summary_source_texts = _build_related_page_index(kb_dir)
+    return _build_source_document(
+        kb_dir,
+        file_hash,
+        meta,
+        related_pages_index=related_pages_index,
+        summary_source_texts=summary_source_texts,
+    )
 
 
 def get_source_document_detail(kb_dir: Path, selector: str) -> dict[str, Any]:

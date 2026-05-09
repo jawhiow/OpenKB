@@ -1,6 +1,6 @@
 ---
 name: openkb-lint-query
-description: Query, cite, lint, and safely repair an OpenKB runtime knowledge base from the knowledge base directory. Use when Codex is inside or near an OpenKB KB containing wiki/, .openkb/, or raw/ and the user asks to query the KB, ask questions over the wiki, compare, summarize, find evidence, save an exploration, run lint, inspect wiki health, fix broken links, create missing draft concept/company/industry pages, or improve query usability. Do not use for editing the OpenKB source code repository unless the user explicitly asks to change OpenKB itself.
+description: Query, cite, lint, safely repair, add documents to, and delete indexed source documents from an OpenKB runtime knowledge base. Use when Codex is inside or near an OpenKB KB containing wiki/, .openkb/, or raw/ and the user asks to query the KB, ask questions over the wiki, compare, summarize, find evidence, save an exploration, run lint, inspect wiki health, fix broken links, create missing draft concept/company/industry pages, add/new/import files or documents, delete/remove a source document, or improve query usability. Do not use for editing the OpenKB source code repository unless the user explicitly asks to change OpenKB itself.
 ---
 
 # OpenKB Lint Query
@@ -42,6 +42,42 @@ python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\save_exploration.p
 ```
 
 For more detail, read `references/query-playbook.md`.
+
+## Add Document Workflow
+
+Use this when the user asks to add, 新增, import, ingest, or compile files into the active KB. This operates on user-provided source files and uses OpenKB's normal conversion/compilation path.
+
+Preview/detect the KB first, then add a file or directory:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --json
+```
+
+Force recompilation only when the user asks to re-add/rebuild/overwrite an already indexed document:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --force --json
+```
+
+The script skips unsupported extensions in directories and reports them in JSON. For a single unsupported file it returns an error. Adding may call the configured LLM/indexing pipeline, so report any conversion or compilation failures instead of inventing wiki pages manually.
+
+## Delete Source Workflow
+
+Use this when the user asks to delete, 删除, remove, or purge an indexed source document. Prefer deleting by source document selector (hash, hash prefix, file name, or stem), not by manually deleting generated wiki pages.
+
+Start with dry-run preview, which is the default:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\delete_source.py" --kb . --selector "document-name-or-hash" --json
+```
+
+Only perform deletion after the user has clearly confirmed the exact source document:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\delete_source.py" --kb . --selector "document-name-or-hash" --yes --json
+```
+
+Deletion removes generated pages that belong only to that source, updates shared generated pages, removes matching raw/source/image artifacts through OpenKB's safe source-relations logic, and updates `.openkb/hashes.json`. Never delete arbitrary `raw/`, `wiki/sources/`, or generated wiki files by hand for source removal.
 
 ## Lint Workflow
 

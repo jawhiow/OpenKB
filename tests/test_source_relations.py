@@ -131,6 +131,46 @@ def test_get_source_document_detail_returns_one_document(tmp_path: Path):
     assert detail["source_summary"] == "summaries/paper.md"
 
 
+def test_get_source_documents_scans_related_pages_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    kb_dir = _make_kb(tmp_path)
+    hashes = {
+        f"hash-{index}": {"name": f"doc-{index}.pdf", "type": "pdf"}
+        for index in range(8)
+    }
+    (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes), encoding="utf-8")
+    for index in range(8):
+        (kb_dir / "wiki" / "summaries" / f"doc-{index}.md").write_text(
+            f"---\nfull_text: sources/doc-{index}.md\n---\n\n# Doc {index}\n",
+            encoding="utf-8",
+        )
+    for index in range(12):
+        target = index % 8
+        (kb_dir / "wiki" / "concepts" / f"Concept-{index}.md").write_text(
+            f"---\nsources: [summaries/doc-{target}.md]\n---\n\n# Concept {index}\n",
+            encoding="utf-8",
+        )
+
+    read_counts: dict[str, int] = {}
+    original_read_text = Path.read_text
+
+    def counting_read_text(self: Path, *args, **kwargs):
+        try:
+            rel = self.relative_to(kb_dir / "wiki").as_posix()
+        except ValueError:
+            rel = ""
+        if rel.startswith(("summaries/", "companies/", "industries/", "concepts/")):
+            read_counts[rel] = read_counts.get(rel, 0) + 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    documents = get_source_documents(kb_dir)
+
+    assert len(documents) == 8
+    assert max(read_counts.values()) == 1
+    assert documents[0]["related_pages"]["concepts"][0]["path"] == "concepts/Concept-0.md"
+
+
 def test_delete_source_document_removes_owned_artifacts_and_keeps_shared_pages(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
 

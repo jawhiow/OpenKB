@@ -35,6 +35,8 @@ const state = {
   activeChatSessionId: null,
   activeChatSession: null,
   activeQueryReferences: [],
+  pendingUserQuestion: "",
+  streamingAssistantText: "",
   jobStatuses: {},
   loadingAll: false,
   ui: {
@@ -43,6 +45,8 @@ const state = {
     jobFilter: "all",
     wikiMode: "preview",
     settingsTab: "model-pool",
+    sessionSearch: "",
+    sessionDetailsOpen: true,
     pagination: {},
   },
 };
@@ -152,6 +156,10 @@ function resultSummary(job) {
   return job.message || lastLogMessage(job) || job.id;
 }
 
+function isComposingInput(event) {
+  return Boolean(event?.isComposing || event?.keyCode === 229);
+}
+
 function notify(message, type = "info") {
   const host = $("#toastHost");
   if (!host || !message) return;
@@ -224,26 +232,37 @@ function setError(message) {
   notify(message, "error");
 }
 
-async function loadKnowledgeData() {
+async function loadStartupKnowledgeData() {
   if (!state.kbDir) return;
-  const [status, documents, tree, chats, config, ocrCache, pageindexLocalStatus, modelPool] = await Promise.all([
+  const [status, documents, tree, chats, config] = await Promise.all([
     api(withKb("/api/status")),
     api(withKb("/api/documents")),
     api(withKb("/api/wiki/tree")),
     api(withKb("/api/chats")),
     api(withKb("/api/config")),
-    api(withKb("/api/ocr/cache")),
-    api(withKb("/api/pageindex-local/status")),
-    api(withKb("/api/model-pool")),
   ]);
   state.status = status;
   state.documents = documents;
   state.wikiTree = tree.files || [];
   state.chats = chats.sessions || [];
   state.config = config;
+}
+
+async function loadDeferredKnowledgeData() {
+  if (!state.kbDir) return;
+  const [ocrCache, pageindexLocalStatus, modelPool] = await Promise.all([
+    api(withKb("/api/ocr/cache")),
+    api(withKb("/api/pageindex-local/status")),
+    api(withKb("/api/model-pool")),
+  ]);
   state.ocrCache = ocrCache;
   state.pageindexLocalStatus = pageindexLocalStatus;
   state.modelPool = modelPool;
+}
+
+async function loadKnowledgeData() {
+  await loadStartupKnowledgeData();
+  await loadDeferredKnowledgeData();
 }
 
 async function loadModelPool() {
@@ -300,10 +319,14 @@ async function loadAll(event) {
     $("#kbLabel").textContent = state.kbDir || "No KB selected";
 
     if (state.kbDir) {
-      await loadKnowledgeData();
+      await loadStartupKnowledgeData();
       if (state.view === "usage") {
         await loadLlmUsage();
       }
+      render();
+      loadDeferredKnowledgeData().then(() => {
+        if (state.view !== "sessions") render();
+      }).catch(() => {});
     } else {
       state.status = null;
       state.documents = null;
@@ -314,6 +337,7 @@ async function loadAll(event) {
       state.wikiTree = [];
       state.chats = [];
       state.config = null;
+      render();
     }
     await loadJobs();
     render();
@@ -498,7 +522,10 @@ function renderAssistantAnswer(text = "", references = state.activeQueryReferenc
 function setActiveChatSession(session) {
   state.activeChatSession = session || null;
   state.activeChatSessionId = session?.id || null;
+  state.pendingUserQuestion = "";
+  state.streamingAssistantText = "";
   if ($("#answerBox")) renderAssistantAnswer();
+  if (state.view === "sessions" && $(".session-workspace")) renderSessions();
 }
 
 async function openChatSession(sessionId) {
@@ -509,7 +536,6 @@ async function openChatSession(sessionId) {
     state.ui.utilityTab = "assistant";
     renderUtilityPanel();
     switchView("sessions");
-    notify("Continue in Assistant", "success");
   } catch (error) {
     setError(error.message);
   }
@@ -529,7 +555,9 @@ function handleQueryJob() {
       if (state.view === "sessions") renderSessions();
     }).catch(() => {});
   } else if (job.status === "failed" || job.status === "stopped") {
-    $("#answerBox").textContent = job.error || "Query failed";
+    const message = job.error || "Query failed";
+    if ($("#answerBox")) $("#answerBox").textContent = message;
+    if ($("#sessionThread")) renderSessionThread([{ role: "assistant", content: message }]);
     state.queryJobId = null;
   } else {
     renderQueryProgress(job);
@@ -752,6 +780,7 @@ function renderUtilityPanel() {
 }
 
 function render() {
+  document.body.classList.toggle("sessions-mode", state.view === "sessions");
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.toggle("active", item.dataset.view === state.view);
   });
@@ -1193,6 +1222,7 @@ function renderSources() {
     </div>
   `;
   mainView.querySelector("[data-source-search]")?.addEventListener("input", (event) => {
+    if (isComposingInput(event)) return;
     state.sourceSearch = event.target.value;
     resetPage("sources");
     renderSources();
@@ -1566,7 +1596,8 @@ function renderMarkdown(markdown) {
       continue;
     }
     if (inCode) {
-      html.push(`${escapeHTML(line)}\n`);
+      html.push(`${escapeHTML(line)}
+`);
       continue;
     }
     if (!trimmed) {
@@ -1633,6 +1664,10 @@ function renderMarkdown(markdown) {
   closeList();
   if (inCode) html.push("</code></pre>");
   return html.join("");
+}
+
+function renderMarkdownSafe(markdown) {
+  return renderMarkdown(markdown);
 }
 
 function updateWikiDocumentPanes(path = state.selectedWikiPath) {
@@ -1807,34 +1842,210 @@ async function saveWikiFile(event) {
   }
 }
 
-function renderSessions() {
+
+function filteredChatSessions() {
+  const query = String(state.ui.sessionSearch || "").trim().toLowerCase();
   const sessions = state.chats || [];
-  const page = paginatedItems(sessions, "sessions", 50);
-  mainView.innerHTML = `
-    <section class="section">
-      <header><h3>Chat Sessions</h3></header>
-      <div class="section-body">
-        ${
-          sessions.length
-            ? `<div class="data-table-shell">
-                <div class="data-grid-table sessions-table">
-                  <table><thead><tr><th>ID</th><th>Turns</th><th>Updated</th><th>Title</th><th>Actions</th></tr></thead><tbody>
-                    ${page.items.map((session) => `<tr><td>${escapeHTML(session.id)}</td><td>${escapeHTML(session.turn_count)}</td><td>${escapeHTML(session.updated_at)}</td><td>${escapeHTML(session.title || "")}</td><td class="source-actions"><button type="button" data-action="open-chat" data-open-chat="${escapeHTML(session.id)}">Open</button><button class="danger" type="button" data-delete-chat="${escapeHTML(session.id)}">Delete</button></td></tr>`).join("")}
-                  </tbody></table>
-                </div>
-                ${renderPager(page.meta, "sessions")}
-              </div>`
-            : `<div class="empty">No sessions</div>`
-        }
+  if (!query) return sessions;
+  return sessions.filter((session) => {
+    const haystack = [session.id, session.title, session.updated_at]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function sessionDisplayTitle(session) {
+  return String(session?.title || session?.id || "Untitled session").trim();
+}
+
+function sessionPreview(session) {
+  const turns = session?.user_turns || [];
+  const last = turns[turns.length - 1] || session?.id || "Open conversation";
+  return String(last).replace(/\s+/g, " ").trim();
+}
+
+function chatMessagesFromSession(session = state.activeChatSession) {
+  const messages = [];
+  const turns = session?.user_turns || [];
+  const answers = session?.assistant_texts || [];
+  turns.forEach((question, index) => {
+    messages.push({ role: "user", content: question });
+    if (answers[index]) messages.push({ role: "assistant", content: answers[index] });
+  });
+  if (state.pendingUserQuestion) {
+    messages.push({ role: "user", content: state.pendingUserQuestion, pending: true });
+  }
+  if (state.streamingAssistantText) {
+    messages.push({ role: "assistant", content: state.streamingAssistantText, pending: true });
+  }
+  return messages;
+}
+
+function renderChatMessage(message, index) {
+  const role = message.role === "user" ? "user" : "assistant";
+  const avatar = role === "user" ? "You" : "OK";
+  const title = role === "user" ? "You" : "OpenKB";
+  const pending = message.pending ? " pending" : "";
+  return `
+    <article class="chat-message ${role}${pending}" data-message-index="${escapeHTML(index)}">
+      <div class="chat-avatar" aria-hidden="true">${escapeHTML(avatar)}</div>
+      <div class="chat-message-body">
+        <div class="chat-message-meta">
+          <strong>${escapeHTML(title)}</strong>
+          ${message.pending ? `<span>Streaming</span>` : ""}
+        </div>
+        <div class="chat-markdown markdown-body">${renderMarkdownSafe(message.content || "")}</div>
       </div>
+    </article>
+  `;
+}
+
+function renderSessionThread(messages = chatMessagesFromSession()) {
+  const thread = $("#sessionThread");
+  if (!thread) return;
+  thread.innerHTML = messages.length
+    ? messages.map((message, index) => renderChatMessage(message, index)).join("")
+    : `<div class="session-empty-state">
+        <h3>Select a session or ask a question</h3>
+        <p>Use the composer below to query this knowledge base. Answers will render Markdown, tables, lists, quotes, and code blocks.</p>
+      </div>`;
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function renderSessionReferences(references = state.activeQueryReferences) {
+  const items = Array.isArray(references) ? references : [];
+  if (!items.length) return `<div class="empty compact">No references for the latest answer.</div>`;
+  return `
+    <div class="session-reference-list">
+      ${items.map((reference) => `<div class="session-reference-item">${escapeHTML(referenceLabel(reference))}</div>`).join("")}
+    </div>
+  `;
+}
+
+function renderSessionListItem(session) {
+  const active = session.id === state.activeChatSessionId ? " active" : "";
+  return `
+    <button class="session-list-item${active}" type="button" data-action="open-chat" data-open-chat="${escapeHTML(session.id)}">
+      <span class="session-list-title">${escapeHTML(sessionDisplayTitle(session))}</span>
+      <span class="session-list-preview">${escapeHTML(sessionPreview(session))}</span>
+      <span class="session-list-meta">
+        <span>${escapeHTML(session.turn_count || 0)} turns</span>
+        <span>${escapeHTML(formatDateTime(session.updated_at))}</span>
+      </span>
+    </button>
+  `;
+}
+
+function renderSessions() {
+  const sessions = filteredChatSessions();
+  const active = state.activeChatSession;
+  const detailsOpen = state.ui.sessionDetailsOpen !== false;
+  const hasActive = Boolean(active);
+  mainView.innerHTML = `
+    <section class="session-workspace${detailsOpen ? "" : " details-collapsed"}">
+      <aside class="session-sidebar" aria-label="Chat sessions">
+        <div class="session-sidebar-head">
+          <div>
+            <h3>Sessions</h3>
+            <span>${escapeHTML((state.chats || []).length)} conversations</span>
+          </div>
+          <button type="button" data-action="session-new">New</button>
+        </div>
+        <input class="session-search" data-action="session-search" type="search" placeholder="Search sessions" value="${escapeHTML(state.ui.sessionSearch || "")}" />
+        <div class="session-list">
+          ${
+            sessions.length
+              ? sessions.map(renderSessionListItem).join("")
+              : `<div class="empty compact">No sessions match.</div>`
+          }
+        </div>
+      </aside>
+
+      <section class="session-chat" aria-label="Conversation">
+        <header class="session-chat-header">
+          <div>
+            <h3>${escapeHTML(hasActive ? sessionDisplayTitle(active) : "Knowledge chat")}</h3>
+            <span>${escapeHTML(hasActive ? `${active.turn_count || (active.user_turns || []).length || 0} turns` : "Ask the knowledge base or reopen a previous session")}</span>
+          </div>
+          <div class="row-actions">
+            ${hasActive ? `<button type="button" data-action="session-copy">Copy</button>` : ""}
+            <button type="button" data-action="session-toggle-details">${detailsOpen ? "Hide details" : "Details"}</button>
+          </div>
+        </header>
+        <div id="sessionThread" class="session-thread markdown-body" aria-live="polite"></div>
+        <form id="sessionComposer" class="session-composer">
+          <textarea id="sessionQuestionInput" rows="1" placeholder="Ask this knowledge base"></textarea>
+          <div class="session-composer-actions">
+            <label class="checkline">
+              <input id="sessionSaveQueryInput" type="checkbox" />
+              Save
+            </label>
+            <button id="sessionAskBtn" class="primary" type="submit">Send</button>
+          </div>
+        </form>
+      </section>
+
+      <aside class="session-details" aria-label="Session details">
+        <div class="session-detail-block">
+          <h3>Details</h3>
+          ${
+            hasActive
+              ? `<dl class="session-detail-grid">
+                  <dt>ID</dt><dd>${escapeHTML(active.id)}</dd>
+                  <dt>Updated</dt><dd>${escapeHTML(formatDateTime(active.updated_at))}</dd>
+                  <dt>Turns</dt><dd>${escapeHTML(active.turn_count || (active.user_turns || []).length || 0)}</dd>
+                </dl>
+                <button class="danger" type="button" data-delete-chat="${escapeHTML(active.id)}">Delete session</button>`
+              : `<div class="empty compact">No active session selected.</div>`
+          }
+        </div>
+        <div class="session-detail-block">
+          <h3>References</h3>
+          ${renderSessionReferences()}
+        </div>
+      </aside>
     </section>
   `;
+  renderSessionThread();
+  const search = mainView.querySelector('[data-action="session-search"]');
+  if (search) {
+    search.addEventListener("input", (event) => {
+      if (isComposingInput(event)) return;
+      state.ui.sessionSearch = event.target.value;
+      renderSessions();
+      const input = mainView.querySelector('[data-action="session-search"]');
+      if (input) {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    });
+  }
+  const form = mainView.querySelector("#sessionComposer");
+  if (form) {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      askQuestion({ currentTarget: mainView.querySelector("#sessionAskBtn") });
+    });
+  }
+  const input = mainView.querySelector("#sessionQuestionInput");
+  if (input) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !isComposingInput(event)) {
+        event.preventDefault();
+        askQuestion({ currentTarget: mainView.querySelector("#sessionAskBtn") });
+      }
+    });
+  }
   mainView.querySelectorAll("[data-delete-chat]").forEach((button) => {
     button.addEventListener("click", async () => {
       setButtonBusy(button, true, "Deleting...");
       try {
         await api(withKb(`/api/chats/${encodeURIComponent(button.dataset.deleteChat)}`), { method: "DELETE" });
         if (button.dataset.deleteChat === state.activeChatSessionId) {
+          state.pendingUserQuestion = "";
+          state.streamingAssistantText = "";
           setActiveChatSession(null);
         }
         notify("Session deleted", "success");
@@ -1848,6 +2059,7 @@ function renderSessions() {
     });
   });
 }
+
 
 function renderLlmUsage() {
   const usage = state.llmUsage;
@@ -1924,6 +2136,7 @@ function renderLlmUsage() {
     </section>
   `;
   $("#llmUsageSearchInput")?.addEventListener("input", async (event) => {
+    if (isComposingInput(event)) return;
     state.llmUsageSearch = event.target.value;
     setPage("usage", 1);
     try {
@@ -2278,6 +2491,21 @@ function handleAppClick(event) {
     openChatSession(target.dataset.openChat);
     return;
   }
+  if (action === "session-new") {
+    setActiveChatSession(null);
+    state.activeQueryReferences = [];
+    if (state.view === "sessions") renderSessions();
+    return;
+  }
+  if (action === "session-toggle-details") {
+    state.ui.sessionDetailsOpen = state.ui.sessionDetailsOpen === false;
+    renderSessions();
+    return;
+  }
+  if (action === "session-copy") {
+    navigator.clipboard?.writeText(renderChatTranscript()).then(() => notify("Session copied", "success")).catch(() => notify("Copy failed", "error"));
+    return;
+  }
   if (action === "reports-page") {
     setPage("reports", target.dataset.page);
     renderReports();
@@ -2330,6 +2558,7 @@ function handleAppClick(event) {
 }
 
 function handleAppInput(event) {
+  if (isComposingInput(event)) return;
   const target = event.target;
   if (target?.dataset?.action === "wiki-search") {
     state.wikiSearch = target.value;
@@ -3267,9 +3496,12 @@ function handleQueryStreamEvent(event, payload, liveText) {
   switch (event) {
     case "session":
       state.activeChatSessionId = payload.session_id || state.activeChatSessionId;
+      if (state.view === "sessions") renderSessions();
       return liveText;
     case "delta": {
       const next = liveText + (payload.text || "");
+      state.streamingAssistantText = next;
+      if (state.view === "sessions") renderSessionThread();
       renderAssistantAnswer(next, state.activeQueryReferences);
       return next;
     }
@@ -3277,12 +3509,18 @@ function handleQueryStreamEvent(event, payload, liveText) {
       state.activeChatSessionId = payload.session_id || state.activeChatSessionId;
       state.activeChatSession = payload.session || state.activeChatSession;
       state.activeQueryReferences = payload.references || [];
-      renderAssistantAnswer(renderChatTranscript() || payload.answer || "", state.activeQueryReferences);
+      state.pendingUserQuestion = "";
+      state.streamingAssistantText = "";
+      if (state.view === "sessions") renderSessions();
+      renderAssistantAnswer(payload.answer || renderChatTranscript(), state.activeQueryReferences);
       loadKnowledgeData().then(() => {
         if (state.view === "sessions") renderSessions();
       }).catch(() => {});
       return payload.answer || liveText;
     case "error":
+      state.pendingUserQuestion = "";
+      state.streamingAssistantText = "";
+      if (state.view === "sessions") renderSessions();
       throw new Error(payload.message || "Query failed");
     default:
       return liveText;
@@ -3318,29 +3556,40 @@ async function streamQuery(payload, onEvent) {
 }
 
 async function askQuestion(event) {
-  const button = event?.currentTarget || $("#askBtn");
-  const question = $("#questionInput").value.trim();
+  const button = event?.currentTarget || $("#askBtn") || $("#sessionAskBtn");
+  const input = $("#sessionQuestionInput") || $("#questionInput");
+  const saveInput = $("#sessionSaveQueryInput") || $("#saveQueryInput");
+  const question = input?.value.trim() || "";
   if (!question || !state.kbDir) {
     notify(state.kbDir ? "Enter a question first." : "Select a knowledge base first.", "warning");
     return;
   }
+  state.pendingUserQuestion = question;
+  state.streamingAssistantText = "";
   state.activeQueryReferences = [];
-  $("#answerBox").textContent = "";
+  if (input) input.value = "";
+  if ($("#answerBox")) $("#answerBox").textContent = "";
+  if (state.view === "sessions") renderSessions();
   setButtonBusy(button, true, "Asking...");
   try {
-    state.ui.utilityTab = "assistant";
-    renderUtilityPanel();
+    if (state.view !== "sessions") {
+      state.ui.utilityTab = "assistant";
+      renderUtilityPanel();
+    }
     await streamQuery(
       {
         kb_dir: state.kbDir,
         question,
         session_id: state.activeChatSessionId,
-        save: $("#saveQueryInput").checked,
+        save: Boolean(saveInput?.checked),
       },
       handleQueryStreamEvent,
     );
   } catch (error) {
-    $("#answerBox").textContent = error.message;
+    state.pendingUserQuestion = "";
+    state.streamingAssistantText = "";
+    if (state.view === "sessions") renderSessions();
+    if ($("#answerBox")) $("#answerBox").textContent = error.message;
     notify(error.message, "error");
   } finally {
     setButtonBusy(button, false);
@@ -3357,7 +3606,7 @@ document.addEventListener("input", handleAppInput);
 $("#refreshBtn").addEventListener("click", loadAll);
 $("#askBtn").addEventListener("click", askQuestion);
 $("#questionInput").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !isComposingInput(event)) {
     event.preventDefault();
     askQuestion();
   }

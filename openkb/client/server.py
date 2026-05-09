@@ -581,7 +581,7 @@ def create_app(registry: JobRegistry | None = None):
 
         def run(_job):
             from openkb.agent.chat_session import ChatSession, load_session
-            from openkb.agent.query import run_query_session
+            from openkb.agent.query import format_query_exploration, run_query_session
             from openkb.cli import _setup_llm_key
 
             _job.raise_if_stopped()
@@ -649,7 +649,7 @@ def create_app(registry: JobRegistry | None = None):
                 explore_dir.mkdir(parents=True, exist_ok=True)
                 explore_path = explore_dir / f"{slug}.md"
                 explore_path.write_text(
-                    f"---\nquery: \"{question}\"\n---\n\n{answer}\n",
+                    format_query_exploration(question, answer, query_result["references"]),
                     encoding="utf-8",
                 )
                 _job.add_log(f"Saved exploration: {explore_path.name}")
@@ -677,7 +677,7 @@ def create_app(registry: JobRegistry | None = None):
         async def events() -> AsyncIterator[str]:
             try:
                 from openkb.agent.chat_session import ChatSession, load_session
-                from openkb.agent.query import run_query_session_stream
+                from openkb.agent.query import format_query_exploration, run_query_session_stream
                 from openkb.cli import _setup_llm_key
 
                 config = load_config(target_kb / ".openkb" / "config.yaml")
@@ -752,7 +752,7 @@ def create_app(registry: JobRegistry | None = None):
                             explore_dir.mkdir(parents=True, exist_ok=True)
                             explore_path = explore_dir / f"{slug}.md"
                             explore_path.write_text(
-                                f"---\nquery: \"{question}\"\n---\n\n{answer}\n",
+                                format_query_exploration(question, answer, result["references"]),
                                 encoding="utf-8",
                             )
                         commit_kb_changes(target_kb, f"Query {question}")

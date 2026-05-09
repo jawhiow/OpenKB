@@ -824,6 +824,8 @@ def apply_coverage_gap_concept_candidates(
             continue
 
         evidence = _candidate_summary_evidence(wiki_root, name, title)
+        if not evidence:
+            continue
         path.write_text(_draft_concept_page(name, title, evidence), encoding="utf-8")
         page_path = f"concepts/{name}.md"
         created_item = {

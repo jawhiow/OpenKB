@@ -80,6 +80,73 @@ class QueryReferenceTracker:
         return list(self._references)
 
 
+def _format_query_reference(reference: dict[str, Any]) -> str | None:
+    ref_type = str(reference.get("type") or "").strip()
+    if ref_type == "wiki_file":
+        path = str(reference.get("path") or "").strip().replace("\\", "/")
+        if not path:
+            return None
+        link_target = path[:-3] if path.endswith(".md") else path
+        return f"- [[{link_target}]]"
+    if ref_type == "source_pages":
+        path = str(reference.get("path") or "").strip().replace("\\", "/")
+        pages = str(reference.get("pages") or "").strip()
+        if path and pages:
+            return f"- {path} pages {pages}"
+        if path:
+            return f"- {path}"
+        return None
+    if ref_type == "long_document_search":
+        query = str(reference.get("query") or "").strip()
+        doc_name = str(reference.get("doc_name") or "").strip()
+        top_k = reference.get("top_k")
+        parts = []
+        if query:
+            parts.append(f'query="{query}"')
+        if doc_name:
+            parts.append(f'doc_name="{doc_name}"')
+        if top_k not in (None, "", 5):
+            parts.append(f"top_k={top_k}")
+        return f"- search_long_documents({', '.join(parts)})" if parts else "- search_long_documents"
+    if ref_type == "image":
+        image_path = str(reference.get("path") or "").strip().replace("\\", "/")
+        return f"- {image_path}" if image_path else None
+    path = str(reference.get("path") or "").strip().replace("\\", "/")
+    return f"- {path}" if path else None
+
+
+def format_query_exploration(question: str, answer: str, references: list[dict[str, Any]]) -> str:
+    """Format a saved query exploration with a read set."""
+    lines = [
+        "---",
+        f'query: "{question}"',
+        "generated_by: openkb query",
+        "---",
+        "",
+        f"# Query: {question}",
+        "",
+        answer.rstrip(),
+        "",
+        "## Read Set",
+    ]
+
+    formatted_references = [
+        line
+        for line in (
+            _format_query_reference(reference)
+            for reference in references
+        )
+        if line
+    ]
+    if formatted_references:
+        lines.extend(formatted_references)
+    else:
+        lines.append("No tracked references were captured for this answer.")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 async def run_with_query_model_pool(
     kb_dir: Path,
     model: str,
@@ -223,6 +290,7 @@ async def run_query(
     stream: bool = False,
     *,
     raw: bool = False,
+    reference_tracker: QueryReferenceTracker | None = None,
 ) -> str:
     """Run a Q&A query against the knowledge base.
 
@@ -250,7 +318,12 @@ async def run_query(
 
     if not stream:
         async def _run_once(effective_model: str, _route: Any) -> str:
-            agent = build_query_agent(wiki_root, effective_model, language=language)
+            agent = build_query_agent(
+                wiki_root,
+                effective_model,
+                language=language,
+                reference_tracker=reference_tracker,
+            )
             with llm_usage_context(kb_dir, "query"):
                 result = await Runner.run(agent, question, max_turns=MAX_TURNS)
             return result.final_output or ""
@@ -285,7 +358,12 @@ async def run_query(
         return lv
 
     async def _run_stream_once(effective_model: str, _route: Any) -> str:
-        agent = build_query_agent(wiki_root, effective_model, language=language)
+        agent = build_query_agent(
+            wiki_root,
+            effective_model,
+            language=language,
+            reference_tracker=reference_tracker,
+        )
         live: Live | None = None
         last_was_text = False
         need_blank_before_text = False
