@@ -285,13 +285,13 @@ Current content of this page:
 {existing_content}
 
 New information from document "{doc_name}" (summarized above) should be \
-integrated into this page. Rewrite the full page incorporating the new \
-information naturally — do not just append. Maintain existing \
-[[wikilinks]] and add new ones where appropriate.
+captured as source-backed evidence for this concept. Use the existing content \
+only as context. Focus the returned content on the new document's additions; \
+OpenKB will merge it without deleting prior source evidence.
 
 Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) defining this concept (may differ from before)
-- "content": The rewritten full concept page in Markdown
+- "content": The concept evidence from this document in Markdown
 
 Return ONLY valid JSON, no fences.
 """
@@ -1461,7 +1461,7 @@ def _rewrite_summary_links(
         summary_path.write_text(normalized, encoding="utf-8")
 
 
-def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is_update: bool, brief: str = "") -> None:
+def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is_update: bool, brief: str = "") -> str | None:
     """Write or update a concept page, managing the sources frontmatter."""
     concepts_dir = wiki_dir / "concepts"
     concepts_dir.mkdir(parents=True, exist_ok=True)
@@ -1469,50 +1469,59 @@ def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is
     path = (concepts_dir / f"{safe_name}.md").resolve()
     if not path.is_relative_to(concepts_dir.resolve()):
         logger.warning("Concept name escapes concepts dir: %s", name)
-        return
+        return None
 
     if is_update and path.exists():
         existing = path.read_text(encoding="utf-8")
-        if source_file not in existing:
-            if existing.startswith("---"):
-                end = existing.find("---", 3)
-                if end != -1:
-                    fm = existing[:end + 3]
-                    body = existing[end + 3:]
-                    if "sources:" in fm:
-                        fm = fm.replace("sources: [", f"sources: [{source_file}, ")
-                    else:
-                        fm = fm.replace("---\n", f"---\nsources: [{source_file}]\n", 1)
-                    existing = fm + body
-            else:
-                existing = f"---\nsources: [{source_file}]\n---\n\n" + existing
-        # Strip frontmatter from LLM content to avoid duplicate blocks
+        existing_sources = _frontmatter_source_entries(existing)
+        if not existing_sources:
+            existing_sources = [source_file] if source_file in existing else []
+        sources = list(existing_sources)
+        if source_file not in sources:
+            sources.append(source_file)
         clean = content
         if clean.startswith("---"):
             end = clean.find("---", 3)
             if end != -1:
                 clean = clean[end + 3:].lstrip("\n")
         clean = _ensure_source_evidence_section(clean, source_file)
-        # Replace body with LLM rewrite (prompt asks for full rewrite, not delta)
-        if existing.startswith("---"):
-            end = existing.find("---", 3)
-            if end != -1:
-                existing = existing[:end + 3] + "\n\n" + clean
+        multi_source_update = bool(existing_sources) and (len(sources) > 1 or len(existing_sources) > 1)
+        if multi_source_update:
+            body = _merge_multisource_generated_content(existing, existing_sources, source_file, clean)
+            update_brief = bool(brief)
+            existing = _set_frontmatter_sources_and_brief(
+                existing,
+                sources,
+                brief,
+                update_brief=update_brief,
+            )
+            if existing.startswith("---"):
+                end = existing.find("---", 3)
+                if end != -1:
+                    existing = existing[:end + 3] + "\n\n" + body
+                else:
+                    existing = body
+            else:
+                existing = body
+        else:
+            existing = _set_frontmatter_sources_and_brief(
+                existing,
+                sources or [source_file],
+                brief,
+                update_brief=bool(brief),
+            )
+            if existing.startswith("---"):
+                end = existing.find("---", 3)
+                if end != -1:
+                    existing = existing[:end + 3] + "\n\n" + clean
+                else:
+                    existing = clean
             else:
                 existing = clean
-        else:
-            existing = clean
-        if brief and existing.startswith("---"):
-            end = existing.find("---", 3)
-            if end != -1:
-                fm = existing[:end + 3]
-                body = existing[end + 3:]
-                if "brief:" in fm:
-                    fm = re.sub(r"brief:.*", f"brief: {brief}", fm)
-                else:
-                    fm = fm.replace("---\n", f"---\nbrief: {brief}\n", 1)
-                existing = fm + body
         path.write_text(existing, encoding="utf-8")
+        if brief and (not multi_source_update or update_brief):
+            return brief
+        return None
     else:
         if content.startswith("---"):
             end = content.find("---", 3)
@@ -1524,6 +1533,7 @@ def _write_concept(wiki_dir: Path, name: str, content: str, source_file: str, is
             fm_lines.append(f"brief: {brief}")
         frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n"
         path.write_text(frontmatter + content, encoding="utf-8")
+        return brief or None
 
 
 def _source_link_for_file(source_file: str) -> str:
@@ -1629,7 +1639,7 @@ def _replace_or_append_source_update_section(content: str, source_file: str, sec
     return content.rstrip() + "\n\n" + section.rstrip() + "\n"
 
 
-def _merge_multisource_company_content(
+def _merge_multisource_generated_content(
     existing_text: str,
     existing_sources: list[str],
     source_file: str,
@@ -1681,7 +1691,7 @@ def _write_company(wiki_dir: Path, name: str, content: str, source_file: str, is
         clean = _ensure_source_evidence_section(clean, source_file)
         multi_source_update = bool(existing_sources) and (len(sources) > 1 or len(existing_sources) > 1)
         if multi_source_update:
-            body = _merge_multisource_company_content(existing, existing_sources, source_file, clean)
+            body = _merge_multisource_generated_content(existing, existing_sources, source_file, clean)
             update_brief = bool(brief) and _should_update_brief_for_source(existing_sources, source_file, existing)
             existing = _set_frontmatter_sources_and_brief(
                 existing,
@@ -2772,11 +2782,11 @@ async def _compile_concepts(
             if _should_skip_generated_page("concept", name, page_content):
                 _clean_existing_generated_page("concept", name)
                 continue
-            _write_concept(wiki_dir, name, page_content, source_file, is_update, brief=brief)
+            index_brief = _write_concept(wiki_dir, name, page_content, source_file, is_update, brief=brief)
             safe_name = _sanitize_concept_name(name)
             concept_names.append(safe_name)
-            if brief:
-                concept_briefs_map[safe_name] = brief
+            if index_brief:
+                concept_briefs_map[safe_name] = index_brief
 
     # --- Step 3b: Process related items (code only, no LLM) ---
     sanitized_related = [_sanitize_concept_name(s) for s in related_items]

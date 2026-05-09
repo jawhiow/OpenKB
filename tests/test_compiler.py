@@ -451,7 +451,7 @@ class TestWriteConcept:
         text = (concepts / "value-investing.md").read_text(encoding="utf-8")
         assert "summaries/book-a.md" in text
         assert "summaries/book-b.md" in text
-        assert "brief: Invest with a margin of safety" in text
+        assert "brief: Owner earnings and durable moats" in text
         assert "Book A frames value investing around intrinsic value" in text
         assert "Book B emphasizes owner earnings and durable moats" in text
         assert "## Source Update: [[summaries/book-a]]" in text
@@ -1821,6 +1821,100 @@ class TestCompileConceptsPlan:
         evidence = json.loads((wiki / "evidence_map.json").read_text(encoding="utf-8"))
         company_sources = {entry["source"] for entry in evidence["companies/Tencent.md"]}
         assert company_sources == {"summaries/tencent-2025.md", "summaries/tencent-2024.md"}
+
+    @pytest.mark.asyncio
+    async def test_concept_update_preserves_prior_source_page(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path, existing_concepts={
+            "value-investing": (
+                "---\n"
+                "sources: [summaries/book-a.md]\n"
+                "brief: Invest with a margin of safety\n"
+                "---\n\n"
+                "# Value Investing\n\n"
+                "Book A frames value investing around intrinsic value.\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/book-a]] p.12: Intrinsic value anchors the process.\n"
+            ),
+        })
+        (wiki / "summaries" / "book-b.md").write_text(
+            "# Book B\n\n[[concepts/value-investing]]",
+            encoding="utf-8",
+        )
+        (wiki / "evidence_map.json").write_text(
+            json.dumps({
+                "concepts/value-investing.md": [
+                    {
+                        "source": "summaries/book-a.md",
+                        "summary": "summaries/book-a",
+                        "page": "12",
+                        "snippet": "Intrinsic value anchors the process.",
+                    }
+                ]
+            }),
+            encoding="utf-8",
+        )
+        (wiki / "index.md").write_text(
+            "# Index\n\n"
+            "## Documents\n"
+            "- [[summaries/book-a]] (short) - Book A\n\n"
+            "## Companies\n\n"
+            "## Concepts\n"
+            "- [[concepts/value-investing]] - Invest with a margin of safety\n",
+            encoding="utf-8",
+        )
+
+        empty_company_plan = json.dumps({"companies": []})
+        empty_investment_plan = json.dumps({})
+        concept_plan_response = json.dumps({
+            "create": [],
+            "update": [{"name": "value-investing", "title": "Value Investing"}],
+            "related": [],
+        })
+        concept_page_response = json.dumps({
+            "brief": "Owner earnings and durable moats",
+            "content": (
+                "# Value Investing\n\n"
+                "Book B emphasizes owner earnings and durable moats.\n\n"
+                "## Source Evidence\n"
+                "- [[summaries/book-b]] p.8: Owner earnings matter."
+            ),
+        })
+
+        system_msg = {"role": "system", "content": "You are a wiki agent."}
+        doc_msg = {"role": "user", "content": "Book B excerpt."}
+        summary = "Book B adds to [[concepts/value-investing]]."
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    empty_company_plan,
+                    empty_investment_plan,
+                    concept_plan_response,
+                ]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([concept_page_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki, tmp_path, "gpt-4o-mini", system_msg, doc_msg,
+                summary, "book-b", 5, doc_type="short",
+            )
+
+        concept_text = (wiki / "concepts" / "value-investing.md").read_text(encoding="utf-8")
+        assert "Book A frames value investing around intrinsic value" in concept_text
+        assert "Book B emphasizes owner earnings and durable moats" in concept_text
+        assert "summaries/book-a.md" in concept_text
+        assert "summaries/book-b.md" in concept_text
+
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "- [[concepts/value-investing]] - Owner earnings and durable moats" in index_text
+
+        evidence = json.loads((wiki / "evidence_map.json").read_text(encoding="utf-8"))
+        concept_sources = {entry["source"] for entry in evidence["concepts/value-investing.md"]}
+        assert concept_sources == {"summaries/book-a.md", "summaries/book-b.md"}
 
     @pytest.mark.asyncio
     async def test_suffix_variant_updates_existing_concept_and_backfills_source_evidence(self, tmp_path):
