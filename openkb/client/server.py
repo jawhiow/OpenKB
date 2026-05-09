@@ -86,6 +86,9 @@ def _route_profile_payload(route: Any) -> dict[str, str]:
         "model": str(getattr(route, "model", "") or ""),
         "wire_api": str(getattr(route, "wire_api", "") or ""),
         "base_url": str(getattr(route, "base_url", "") or ""),
+        "provider": str(getattr(route, "provider", "") or ""),
+        "reasoning_effort": str(getattr(route, "reasoning_effort", "") or ""),
+        "thinking_enabled": bool(getattr(route, "thinking_enabled", False)),
         "api_key_env": str(getattr(route, "api_key_env", "") or ""),
     }
 
@@ -99,6 +102,9 @@ _RUNTIME_ENV_KEYS = (
     "OPENAI_API_BASE",
     "OPENKB_WIRE_API",
     "OPENAI_WIRE_API",
+    "OPENKB_MODEL_PROVIDER",
+    "OPENKB_MODEL_REASONING_EFFORT",
+    "OPENKB_DEEPSEEK_THINKING_ENABLED",
 )
 
 
@@ -153,6 +159,9 @@ def _test_llm_config(payload: dict[str, Any]) -> dict[str, Any]:
         model = model.split("/", 1)[1]
     else:
         model = normalize_model_name(model)
+    provider = str(payload.get("provider") or "generic").strip().lower()
+    reasoning_effort = str(payload.get("reasoning_effort") or "").strip().lower()
+    thinking_enabled = bool(payload.get("thinking_enabled", False))
     api_key = str(payload.get("api_key") or "").strip()
     request_info = _effective_llm_request_info(model=model, wire_api=wire_api, base_url=base_url)
 
@@ -166,6 +175,18 @@ def _test_llm_config(payload: dict[str, Any]) -> dict[str, Any]:
 
         if wire_api:
             os.environ["OPENKB_WIRE_API"] = wire_api
+        if provider:
+            os.environ["OPENKB_MODEL_PROVIDER"] = provider
+        else:
+            os.environ.pop("OPENKB_MODEL_PROVIDER", None)
+        if reasoning_effort:
+            os.environ["OPENKB_MODEL_REASONING_EFFORT"] = reasoning_effort
+        else:
+            os.environ.pop("OPENKB_MODEL_REASONING_EFFORT", None)
+        if thinking_enabled:
+            os.environ["OPENKB_DEEPSEEK_THINKING_ENABLED"] = "true"
+        else:
+            os.environ.pop("OPENKB_DEEPSEEK_THINKING_ENABLED", None)
 
         if "base_url" in payload:
             if base_url:

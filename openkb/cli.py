@@ -50,6 +50,9 @@ _RUNTIME_ENV_KEYS = (
     "OPENAI_API_BASE",
     "OPENKB_WIRE_API",
     "OPENAI_WIRE_API",
+    "OPENKB_MODEL_PROVIDER",
+    "OPENKB_MODEL_REASONING_EFFORT",
+    "OPENKB_DEEPSEEK_THINKING_ENABLED",
 )
 _INITIAL_RUNTIME_ENV = {key: os.environ.get(key) for key in _RUNTIME_ENV_KEYS}
 
@@ -70,6 +73,9 @@ def _normalized_llm_profile(raw: dict, fallback_id: str, config: dict) -> dict[s
         "model": str(raw.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip(),
         "wire_api": str(raw.get("wire_api") or config.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
         "base_url": str(raw.get("base_url") or config.get("base_url") or DEFAULT_CONFIG.get("base_url", "")).strip().rstrip("/"),
+        "provider": str(raw.get("provider") or "generic").strip().lower(),
+        "reasoning_effort": str(raw.get("reasoning_effort") or "").strip().lower(),
+        "thinking_enabled": bool(raw.get("thinking_enabled", False)),
         "api_key_env": str(raw.get("api_key_env") or "").strip(),
     }
 
@@ -160,6 +166,20 @@ def _setup_llm_key(kb_dir: Path | None = None, profile_config: dict[str, str] | 
             if base_url:
                 os.environ["OPENAI_BASE_URL"] = base_url
                 os.environ["OPENAI_API_BASE"] = base_url
+            provider = str(selected_profile.get("provider", "") or "").strip().lower()
+            if provider:
+                os.environ["OPENKB_MODEL_PROVIDER"] = provider
+            else:
+                os.environ.pop("OPENKB_MODEL_PROVIDER", None)
+            reasoning_effort = str(selected_profile.get("reasoning_effort", "") or "").strip().lower()
+            if reasoning_effort:
+                os.environ["OPENKB_MODEL_REASONING_EFFORT"] = reasoning_effort
+            else:
+                os.environ.pop("OPENKB_MODEL_REASONING_EFFORT", None)
+            if selected_profile.get("thinking_enabled"):
+                os.environ["OPENKB_DEEPSEEK_THINKING_ENABLED"] = "true"
+            else:
+                os.environ.pop("OPENKB_DEEPSEEK_THINKING_ENABLED", None)
             profile_env = str(selected_profile.get("api_key_env", "")).strip()
             if profile_env and os.environ.get(profile_env):
                 os.environ["LLM_API_KEY"] = os.environ[profile_env]

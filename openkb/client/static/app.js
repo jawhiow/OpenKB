@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   view: "overview",
   kbDir: null,
   status: null,
@@ -249,21 +249,6 @@ async function loadKnowledgeData() {
 async function loadModelPool() {
   if (!state.kbDir) return;
   state.modelPool = await api(withKb("/api/model-pool"));
-}
-
-async function autoProbeModelPool() {
-  if (!state.kbDir || !state.modelPool?.profiles?.length) return;
-  const interval = Math.max(Number(state.modelPool.probe_interval_seconds || 600), 60) * 1000;
-  if (Date.now() - lastModelPoolAutoProbeAt < interval) return;
-  lastModelPoolAutoProbeAt = Date.now();
-  try {
-    await api("/api/model-pool/probe", {
-      method: "POST",
-      body: JSON.stringify({ kb_dir: state.kbDir }),
-    });
-  } catch (_) {
-    // Automatic probes stay quiet; explicit probes surface errors via notifications.
-  }
 }
 
 async function loadOcrData() {
@@ -2540,6 +2525,9 @@ function renderModelProfileDialog() {
   if (!dialog) return "";
   const profile = dialog.profileId ? poolProfileById(dialog.profileId) : {};
   const title = dialog.profileId ? "Edit Model Endpoint" : "Add Model Endpoint";
+  const provider = profile?.provider || "generic";
+  const reasoningEffort = profile?.reasoning_effort || "";
+  const thinkingEnabled = Boolean(profile?.thinking_enabled);
   return `
     <div class="model-dialog-backdrop" data-action="model-profile-close">
       <section class="model-profile-dialog" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}">
@@ -2556,6 +2544,13 @@ function renderModelProfileDialog() {
             <input id="modelProfileNameInput" type="text" value="${escapeHTML(profile?.name || "")}" placeholder="Gateway" />
           </div>
           <div class="field">
+            <label for="modelProfileProviderInput">Provider</label>
+            <select id="modelProfileProviderInput">
+              <option value="generic">Generic</option>
+              <option value="deepseek">DeepSeek</option>
+            </select>
+          </div>
+          <div class="field">
             <label for="modelProfileWireApiInput">Wire API</label>
             <select id="modelProfileWireApiInput">
               <option value="responses">responses</option>
@@ -2570,6 +2565,19 @@ function renderModelProfileDialog() {
             <label for="modelProfileModelsInput">Models</label>
             <textarea id="modelProfileModelsInput" spellcheck="false" placeholder="gpt-4o-mini, 100&#10;gpt-5.4-mini, 50">${escapeHTML(modelRowsText(profile))}</textarea>
           </div>
+          <div class="field">
+            <label for="modelProfileReasoningEffortInput">Reasoning Effort</label>
+            <select id="modelProfileReasoningEffortInput">
+              <option value="">default</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </div>
+          <label class="checkline">
+            <input id="modelProfileThinkingEnabledInput" type="checkbox" ${thinkingEnabled ? "checked" : ""} />
+            Enable Thinking
+          </label>
           <div class="field full">
             <label for="apiKeyInput">API Key</label>
             <div class="key-input-row">
@@ -2765,7 +2773,9 @@ function renderSettings() {
     </div>
   `;
   const dialogProfile = state.modelProfileDialog?.profileId ? poolProfileById(state.modelProfileDialog.profileId) : null;
+  if ($("#modelProfileProviderInput")) $("#modelProfileProviderInput").value = dialogProfile?.provider || "generic";
   if ($("#modelProfileWireApiInput")) $("#modelProfileWireApiInput").value = dialogProfile?.wire_api || "chat_completions";
+  if ($("#modelProfileReasoningEffortInput")) $("#modelProfileReasoningEffortInput").value = dialogProfile?.reasoning_effort || "";
   if ($("#ocrDetectionModeInput")) $("#ocrDetectionModeInput").value = state.config?.ocr_detection_mode || "auto_recommend";
   if ($("#ocrDefaultModelInput")) $("#ocrDefaultModelInput").value = state.config?.ocr_default_model || "PaddleOCR-VL-1.5";
   if ($("#pageindexLocalInstallationStateInput")) $("#pageindexLocalInstallationStateInput").value = state.config?.pageindex_local_installation_state || "not_installed";
@@ -3136,8 +3146,11 @@ function modelProfilePayload() {
   return {
     kb_dir: state.kbDir,
     name: $("#modelProfileNameInput")?.value.trim() || "Model Endpoint",
+    provider: $("#modelProfileProviderInput")?.value || "generic",
     wire_api: $("#modelProfileWireApiInput")?.value || "chat_completions",
     base_url: $("#modelProfileBaseUrlInput")?.value.trim() || "",
+    reasoning_effort: $("#modelProfileReasoningEffortInput")?.value || "",
+    thinking_enabled: $("#modelProfileThinkingEnabledInput") ? $("#modelProfileThinkingEnabledInput").checked : false,
     api_key: $("#apiKeyInput")?.value || "",
     enabled: $("#modelProfileEnabledInput") ? $("#modelProfileEnabledInput").checked : true,
     models: parseModelRows($("#modelProfileModelsInput")?.value || ""),
@@ -3354,6 +3367,5 @@ $("#clearAnswerBtn").addEventListener("click", () => {
 });
 
 setInterval(loadJobs, 1200);
-setInterval(autoProbeModelPool, 60000);
 loadAll();
 

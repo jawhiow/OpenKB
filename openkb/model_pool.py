@@ -21,6 +21,9 @@ _RUNTIME_ENV_KEYS = (
     "OPENAI_API_BASE",
     "OPENKB_WIRE_API",
     "OPENAI_WIRE_API",
+    "OPENKB_MODEL_PROVIDER",
+    "OPENKB_MODEL_REASONING_EFFORT",
+    "OPENKB_DEEPSEEK_THINKING_ENABLED",
 )
 
 
@@ -32,6 +35,9 @@ class ModelRoute:
     wire_api: str
     base_url: str
     api_key_env: str
+    provider: str = "generic"
+    reasoning_effort: str = ""
+    thinking_enabled: bool = False
     weight: int = 100
     health: str = "unknown"
     latency_ms: int | None = None
@@ -53,6 +59,9 @@ def route_profile(route: ModelRoute) -> dict[str, str]:
         "model": route.model,
         "wire_api": route.wire_api,
         "base_url": route.base_url,
+        "provider": str(getattr(route, "provider", "generic") or "generic"),
+        "reasoning_effort": str(getattr(route, "reasoning_effort", "") or ""),
+        "thinking_enabled": bool(getattr(route, "thinking_enabled", False)),
         "api_key_env": route.api_key_env,
     }
 
@@ -166,6 +175,9 @@ def configured_routes(kb_dir: Path) -> list[ModelRoute]:
                     wire_api=str(profile.get("wire_api") or config.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
                     base_url=str(profile.get("base_url") or config.get("base_url") or "").strip().rstrip("/"),
                     api_key_env=str(profile.get("api_key_env") or _profile_env_key(profile_id)).strip(),
+                    provider=str(profile.get("provider") or "generic").strip().lower(),
+                    reasoning_effort=str(profile.get("reasoning_effort") or "").strip().lower(),
+                    thinking_enabled=bool(profile.get("thinking_enabled", False)),
                     weight=max(int(item.get("weight") or 100), 1),
                     health=str(route_status.get("health") or "unknown"),
                     latency_ms=route_status.get("latency_ms"),
@@ -293,6 +305,12 @@ def probe_model_route(kb_dir: Path, route: ModelRoute, *, api_key: str = "", tim
         selected_key = api_key.strip()
         if not selected_key and route.api_key_env:
             selected_key = os.environ.get(route.api_key_env, "").strip()
+        if route.provider:
+            os.environ["OPENKB_MODEL_PROVIDER"] = route.provider
+        if route.reasoning_effort:
+            os.environ["OPENKB_MODEL_REASONING_EFFORT"] = route.reasoning_effort
+        if route.thinking_enabled:
+            os.environ["OPENKB_DEEPSEEK_THINKING_ENABLED"] = "true"
         if selected_key:
             os.environ["LLM_API_KEY"] = selected_key
             os.environ["OPENAI_API_KEY"] = selected_key

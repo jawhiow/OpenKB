@@ -361,6 +361,50 @@ def test_config_data_can_create_and_switch_llm_profiles_with_separate_keys(tmp_p
     assert "LLM_API_KEY=default-secret\n" in (kb_dir / ".env").read_text(encoding="utf-8")
 
 
+def test_config_data_roundtrips_deepseek_profile_fields(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")
+
+    created = update_config_data(
+        kb_dir,
+        {
+            "create_profile": True,
+            "profile_name": "DeepSeek Pro",
+            "model": "deepseek-v4-pro",
+            "provider": "deepseek",
+            "wire_api": "chat_completions",
+            "base_url": "https://api.deepseek.com",
+            "reasoning_effort": "high",
+            "thinking_enabled": True,
+            "api_key": "deepseek-secret",
+        },
+    )
+
+    assert created["active_profile"] == "deepseek-pro"
+    profile = created["profiles"][1]
+    assert profile["provider"] == "deepseek"
+    assert profile["reasoning_effort"] == "high"
+    assert profile["thinking_enabled"] is True
+    assert profile["base_url"] == "https://api.deepseek.com"
+
+    exported = export_config_data(kb_dir)
+    exported_profile = exported["profiles"][1]
+    assert exported_profile["provider"] == "deepseek"
+    assert exported_profile["reasoning_effort"] == "high"
+    assert exported_profile["thinking_enabled"] is True
+
+    imported_kb = _make_kb(tmp_path / "imported")
+    imported = import_config_data(imported_kb, exported)
+    imported_profile = imported["profiles"][1]
+    assert imported_profile["provider"] == "deepseek"
+    assert imported_profile["reasoning_effort"] == "high"
+    assert imported_profile["thinking_enabled"] is True
+    saved = yaml.safe_load((imported_kb / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["llm_profiles"][1]["provider"] == "deepseek"
+    assert saved["llm_profiles"][1]["reasoning_effort"] == "high"
+    assert saved["llm_profiles"][1]["thinking_enabled"] is True
+
+
 def test_config_profiles_can_be_exported_and_imported_with_api_keys(tmp_path: Path):
     source = _make_kb(tmp_path / "source")
     (source / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")

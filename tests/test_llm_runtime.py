@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -241,6 +242,94 @@ def test_completion_prefixes_openai_for_custom_gateway_models(monkeypatch):
     mock_client.responses.create.assert_not_called()
     assert mock_post.call_args.kwargs["json"]["model"] == "doubao-seed-2-0-pro-260215"
     assert mock_post.call_args.kwargs["json"]["stream"] is False
+
+
+def test_deepseek_profile_injects_reasoning_and_thinking_into_chat_payload(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENKB_MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("OPENKB_MODEL_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENKB_DEEPSEEK_THINKING_ENABLED", "true")
+
+    mock_post = MagicMock(return_value=_fake_requests_response("OK"))
+
+    with patch("openkb.llm_runtime.requests.post", mock_post):
+        result = completion(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+
+    assert result.text == "OK"
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["model"] == "deepseek-v4-pro"
+    assert payload["reasoning_effort"] == "high"
+    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["stream"] is False
+
+
+def test_custom_gateway_completion_raises_clear_error_when_choices_is_null(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "choices": None,
+        "usage": {},
+        "model": "deepseek-v4-flash",
+    }
+
+    with patch("openkb.llm_runtime.requests.post", return_value=response):
+        with pytest.raises(ValueError, match="did not return any choices"):
+            completion(
+                model="deepseek-v4-flash",
+                messages=[{"role": "user", "content": "Reply with OK"}],
+            )
+
+
+def test_custom_gateway_completion_prefers_utf8_bytes_when_response_declares_wrong_encoding(monkeypatch):
+    monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    expected_text = "????? - ????"
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "content": expected_text,
+                }
+            }
+        ],
+        "usage": {},
+    }
+    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.content = body_bytes
+    response.encoding = "ISO-8859-1"
+    response.apparent_encoding = "utf-8"
+    response.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": body_bytes.decode("iso-8859-1"),
+                }
+            }
+        ],
+        "usage": {},
+    }
+
+    with patch("openkb.llm_runtime.requests.post", return_value=response):
+        result = completion(
+            model="gpt-5.2",
+            messages=[{"role": "user", "content": "Reply with expected text"}],
+        )
+
+    assert result.text == expected_text
 
 
 def test_completion_retries_custom_gateway_transport_error(monkeypatch):

@@ -207,6 +207,35 @@ def test_llm_usage_excludes_llm_test_and_model_pool_probe(tmp_path, monkeypatch)
     assert usage.export_usage(kb_dir) == []
 
 
+def test_llm_usage_retains_only_latest_200_rows(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    usage = import_module("openkb.llm_usage")
+
+    for index in range(205):
+        usage.record_usage(
+            kb_dir=kb_dir,
+            feature="query",
+            model=f"model-{index}",
+            wire_api="responses",
+            base_url="",
+            status="succeeded",
+            duration_ms=index,
+            error="",
+            input_payload={"index": index},
+            output_payload={"text": f"row-{index}"},
+            created_at=f"2026-05-06T10:{index // 60:02d}:{index % 60:02d}Z",
+        )
+
+    rows = usage.export_usage(kb_dir)
+    assert len(rows) == 200
+    assert rows[0]["model"] == "model-204"
+    assert rows[-1]["model"] == "model-5"
+    listed = usage.list_usage(kb_dir, page=1, page_size=200)
+    assert listed["total"] == 200
+    assert listed["items"][0]["model"] == "model-204"
+    assert listed["items"][-1]["model"] == "model-5"
+
+
 def test_query_job_resumes_existing_web_chat_session(tmp_path):
     kb_dir = _make_kb(tmp_path)
     registry = JobRegistry()
@@ -1649,3 +1678,40 @@ def test_test_llm_endpoint_returns_rich_error_context(tmp_path, monkeypatch):
     assert "effective_url: https://gateway.example.com/v1/chat/completions" in detail
     assert "api_key: over...cret" in detail
     assert "override-secret" not in detail
+
+
+def test_test_llm_endpoint_applies_deepseek_profile_env(monkeypatch, tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    captured = {}
+
+    def fake_completion(model, messages, **kwargs):
+        captured["model"] = model
+        captured["provider"] = os.environ.get("OPENKB_MODEL_PROVIDER")
+        captured["reasoning_effort"] = os.environ.get("OPENKB_MODEL_REASONING_EFFORT")
+        captured["thinking_enabled"] = os.environ.get("OPENKB_DEEPSEEK_THINKING_ENABLED")
+        return SimpleNamespace(text="pong")
+
+    monkeypatch.setattr("openkb.llm_runtime.completion", fake_completion)
+
+    client = TestClient(create_app())
+    response = client.post(
+        "/api/config/test-llm",
+        json={
+            "kb_dir": str(kb_dir),
+            "model": "deepseek-v4-pro",
+            "provider": "deepseek",
+            "wire_api": "chat_completions",
+            "base_url": "https://api.deepseek.com",
+            "reasoning_effort": "high",
+            "thinking_enabled": True,
+            "api_key": "deepseek-secret",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "model": "deepseek-v4-pro",
+        "provider": "deepseek",
+        "reasoning_effort": "high",
+        "thinking_enabled": "true",
+    }

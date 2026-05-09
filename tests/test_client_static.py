@@ -306,6 +306,20 @@ def test_client_settings_uses_model_pool_profile_dialogs():
     assert ".model-dialog-backdrop" in styles
 
 
+def test_client_settings_supports_deepseek_profile_fields_and_manual_probe_only():
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="modelProfileProviderInput"' in script
+    assert 'value="deepseek"' in script
+    assert 'id="modelProfileReasoningEffortInput"' in script
+    assert 'id="modelProfileThinkingEnabledInput"' in script
+    assert 'provider: $("#modelProfileProviderInput")?.value || "generic"' in script
+    assert 'reasoning_effort: $("#modelProfileReasoningEffortInput")?.value || ""' in script
+    assert 'thinking_enabled: $("#modelProfileThinkingEnabledInput") ? $("#modelProfileThinkingEnabledInput").checked : false' in script
+    assert "function autoProbeModelPool" not in script
+    assert "setInterval(autoProbeModelPool, 60000);" not in script
+
+
 def test_client_settings_restores_general_without_llm_profile_editor():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 

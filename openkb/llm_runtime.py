@@ -499,9 +499,18 @@ def is_custom_openai_compatible(model: str | None = None) -> bool:
     return bool(get_base_url(model)) and not uses_responses_api(model)
 
 
+def get_model_provider() -> str | None:
+    value = os.getenv("OPENKB_MODEL_PROVIDER", "").strip().lower()
+    return value or None
+
+
 def get_reasoning_effort() -> str | None:
     value = os.getenv("OPENKB_MODEL_REASONING_EFFORT", "").strip().lower()
     return value or None
+
+
+def deepseek_thinking_enabled() -> bool:
+    return _env_flag("OPENKB_DEEPSEEK_THINKING_ENABLED", default=False)
 
 
 def get_verbosity() -> str | None:
@@ -596,7 +605,23 @@ def _custom_openai_payload(model: str, messages: list[dict], **kwargs) -> dict[s
         value = kwargs.get(key)
         if value is not None:
             payload[key] = value
+    if get_model_provider() == "deepseek":
+        effort = get_reasoning_effort()
+        if effort:
+            payload["reasoning_effort"] = effort
+        if deepseek_thinking_enabled():
+            payload["thinking"] = {"type": "enabled"}
     return payload
+
+
+def _custom_openai_response_json(response: requests.Response) -> Any:
+    raw = getattr(response, "content", b"") or b""
+    if isinstance(raw, bytes) and raw:
+        try:
+            return requests.models.complexjson.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            pass
+    return response.json()
 
 
 def _custom_openai_completion_via_requests(model: str, messages: list[dict], **kwargs) -> CompletionResult:
@@ -620,8 +645,20 @@ def _custom_openai_completion_via_requests(model: str, messages: list[dict], **k
         timeout=timeout,
     )
     response.raise_for_status()
-    data = response.json()
-    text = data["choices"][0]["message"]["content"] or ""
+    data = _custom_openai_response_json(response)
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices:
+        raise ValueError(
+            "Custom OpenAI-compatible endpoint did not return any choices. "
+            f"Response keys: {sorted(data.keys()) if isinstance(data, dict) else type(data).__name__}"
+        )
+    first_choice = choices[0] if isinstance(choices[0], dict) else None
+    message = first_choice.get("message") if isinstance(first_choice, dict) else None
+    if not isinstance(message, dict):
+        raise ValueError(
+            "Custom OpenAI-compatible endpoint returned a choice without a message payload."
+        )
+    text = message.get("content") or ""
     return CompletionResult(text=text.strip(), usage=data.get("usage"))
 
 
@@ -733,6 +770,7 @@ def resolve_agent_model(model: str) -> str:
 
 def build_agent_model_settings(*, parallel_tool_calls: bool | None = None, model: str | None = None) -> ModelSettings:
     settings = ModelSettings(parallel_tool_calls=parallel_tool_calls)
+    provider = get_model_provider()
     if uses_responses_api(model):
         settings.store = False if disable_response_storage() else None
         effort = get_reasoning_effort()
@@ -741,6 +779,15 @@ def build_agent_model_settings(*, parallel_tool_calls: bool | None = None, model
         verbosity = get_verbosity()
         if verbosity in {"low", "medium", "high"}:
             settings.verbosity = verbosity
+    elif provider == "deepseek":
+        extra_body: dict[str, Any] = {}
+        effort = get_reasoning_effort()
+        if effort:
+            extra_body["reasoning_effort"] = effort
+        if deepseek_thinking_enabled():
+            extra_body["thinking"] = {"type": "enabled"}
+        if extra_body:
+            settings.extra_body = extra_body
     return settings
 
 

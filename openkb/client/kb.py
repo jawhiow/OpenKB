@@ -61,9 +61,9 @@ _MODEL_POOL_CONFIG_KEYS = {
     "model_pool_failure_threshold",
     "model_pool_timeout_seconds",
 }
-_PROFILE_CONFIG_KEYS = {"model", "wire_api", "base_url"}
+_PROFILE_CONFIG_KEYS = {"model", "wire_api", "base_url", "provider", "reasoning_effort"}
 _PROFILE_LIST_KEYS = {"tags", "features", "probe_models"}
-_PROFILE_BOOL_KEYS = {"enabled"}
+_PROFILE_BOOL_KEYS = {"enabled", "thinking_enabled"}
 _PROFILE_INT_KEYS = {"priority"}
 _DEFAULT_PROFILE_ID = "default"
 _CONFIG_EXPORT_FORMAT = "openkb.settings-config.v1"
@@ -508,12 +508,17 @@ def _normalize_profile(raw: dict[str, Any], fallback_id: str, config: dict[str, 
     models = _model_rows(raw.get("models"), model)
     if not models:
         models = [{"name": item, "weight": 100} for item in probe_models]
+    provider = str(raw.get("provider") or "").strip().lower() or "generic"
+    reasoning_effort = str(raw.get("reasoning_effort") or "").strip().lower()
     return {
         "id": profile_id,
         "name": str(raw.get("name") or ("Default" if profile_id == _DEFAULT_PROFILE_ID else profile_id)).strip(),
         "model": model,
         "wire_api": str(raw.get("wire_api") or config.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
         "base_url": str(raw.get("base_url") or config.get("base_url") or DEFAULT_CONFIG.get("base_url", "")).strip().rstrip("/"),
+        "provider": provider,
+        "reasoning_effort": reasoning_effort,
+        "thinking_enabled": bool(raw.get("thinking_enabled", False)),
         "api_key_env": str(raw.get("api_key_env") or _profile_env_key(profile_id)).strip(),
         "enabled": bool(raw.get("enabled", True)),
         "tags": _string_list(raw.get("tags")),
@@ -597,6 +602,9 @@ def _profile_public_payload(
         "model": profile["model"],
         "wire_api": profile["wire_api"],
         "base_url": profile["base_url"],
+        "provider": str(profile.get("provider") or "generic"),
+        "reasoning_effort": str(profile.get("reasoning_effort") or ""),
+        "thinking_enabled": bool(profile.get("thinking_enabled", False)),
         "enabled": bool(profile.get("enabled", True)),
         "tags": list(profile.get("tags") or []),
         "features": list(profile.get("features") or []),
@@ -655,6 +663,9 @@ def _persist_profiles(config: dict[str, Any], profiles: list[dict[str, str]], ac
             "model": profile["model"],
             "wire_api": profile["wire_api"],
             "base_url": profile["base_url"],
+            "provider": str(profile.get("provider") or "generic"),
+            "reasoning_effort": str(profile.get("reasoning_effort") or ""),
+            "thinking_enabled": bool(profile.get("thinking_enabled", False)),
             "api_key_env": profile["api_key_env"],
             "enabled": bool(profile.get("enabled", True)),
             "tags": list(profile.get("tags") or []),
@@ -675,13 +686,13 @@ def _profile_updates_from_payload(profile: dict[str, Any], updates: dict[str, An
         name = str(updates.get("name") if updates.get("name") is not None else updates.get("profile_name") or "").strip()
         if name:
             profile["name"] = name
-    for key in ("model", "wire_api", "base_url"):
+    for key in ("model", "wire_api", "base_url", "provider", "reasoning_effort"):
         if key not in updates:
             continue
         value = updates[key]
         if key == "base_url":
             value = str(value or "").strip().rstrip("/")
-        elif key == "wire_api":
+        elif key in {"wire_api", "provider", "reasoning_effort"}:
             value = str(value or "").strip().lower()
         else:
             value = str(value or "").strip()
@@ -722,6 +733,9 @@ def save_model_pool_profile(kb_dir: Path, payload: dict[str, Any], profile_id: s
                 "model": str(payload.get("model") or DEFAULT_CONFIG["model"]).strip(),
                 "wire_api": str(payload.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
                 "base_url": str(payload.get("base_url") or "").strip().rstrip("/"),
+                "provider": str(payload.get("provider") or "generic").strip().lower(),
+                "reasoning_effort": str(payload.get("reasoning_effort") or "").strip().lower(),
+                "thinking_enabled": bool(payload.get("thinking_enabled", False)),
                 "api_key_env": _profile_env_key(new_id),
                 "models": payload.get("models"),
                 "enabled": payload.get("enabled", True),
@@ -870,6 +884,9 @@ def _profile_model_pool_payload(
         "model": profile["model"],
         "wire_api": profile["wire_api"],
         "base_url": profile["base_url"],
+        "provider": str(profile.get("provider") or "generic"),
+        "reasoning_effort": str(profile.get("reasoning_effort") or ""),
+        "thinking_enabled": bool(profile.get("thinking_enabled", False)),
         "enabled": bool(profile.get("enabled", True)),
         "tags": list(profile.get("tags") or []),
         "features": list(profile.get("features") or []),
@@ -1168,6 +1185,9 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
                 "model": profile["model"],
                 "wire_api": profile["wire_api"],
                 "base_url": profile["base_url"],
+                "provider": str(profile.get("provider") or "generic"),
+                "reasoning_effort": str(profile.get("reasoning_effort") or ""),
+                "thinking_enabled": bool(profile.get("thinking_enabled", False)),
                 "enabled": bool(profile.get("enabled", True)),
                 "tags": list(profile.get("tags") or []),
                 "features": list(profile.get("features") or []),
@@ -1315,6 +1335,9 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
             "model": str(updates.get("model") or DEFAULT_CONFIG["model"]).strip(),
             "wire_api": str(updates.get("wire_api") or DEFAULT_CONFIG["wire_api"]).strip().lower(),
             "base_url": str(updates.get("base_url") or "").strip().rstrip("/"),
+            "provider": str(updates.get("provider") or "generic").strip().lower(),
+            "reasoning_effort": str(updates.get("reasoning_effort") or "").strip().lower(),
+            "thinking_enabled": bool(updates.get("thinking_enabled", False)),
             "api_key_env": _profile_env_key(profile_id),
         }
         profiles.append(target_profile)

@@ -23,6 +23,7 @@ _ACTIVE_CONTEXT: contextvars.ContextVar[LlmUsageContext | None] = contextvars.Co
 
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGE_SIZE = 200
+_MAX_STORED_ROWS = 200
 
 
 def usage_db_path(kb_dir: Path) -> Path:
@@ -190,6 +191,18 @@ def record_usage(
                 payload["input_payload"],
                 payload["output_payload"],
             ),
+        )
+        connection.execute(
+            """
+            DELETE FROM llm_usage
+            WHERE id NOT IN (
+                SELECT id
+                FROM llm_usage
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+            )
+            """,
+            (_MAX_STORED_ROWS,),
         )
         connection.commit()
         payload["id"] = int(cursor.lastrowid)
