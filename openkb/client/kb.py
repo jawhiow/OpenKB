@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,9 @@ from openkb.llm_runtime import model_prefers_responses_api
 from openkb.kb_git import commit_kb_changes, ensure_kb_git
 from openkb.model_pool import model_pool_config
 from openkb.schema import AGENTS_MD, LEGACY_WIKI_DIRS
+
+
+UTC = timezone.utc
 
 
 class ClientError(RuntimeError):

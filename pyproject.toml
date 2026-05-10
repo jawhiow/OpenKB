@@ -28,6 +28,7 @@ keywords = ["ai", "rag", "retrieval", "knowledge-base", "llm", "pageindex", "age
 dependencies = [
     "pageindex>=0.2.8",
     "markitdown[all]",
+    "pymupdf",
     "click>=8.0",
     "watchdog>=3.0",
     "litellm",
