@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,19 @@ def _supported_files(target: Path) -> tuple[list[Path], list[Path]]:
     return files, skipped
 
 
+def _hash_registry_names(kb_root: Path) -> set[str]:
+    path = kb_root / ".openkb" / "hashes.json"
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    return {str(meta.get("name", "")) for meta in data.values() if isinstance(meta, dict)}
+
+
 def add_documents(kb: str, path: str, *, force: bool = False, strict: bool = False) -> dict[str, Any]:
     kb_root, warnings = resolve_kb(kb)
     if kb_root is None:
@@ -59,8 +73,13 @@ def add_documents(kb: str, path: str, *, force: bool = False, strict: bool = Fal
     failed: list[dict[str, str]] = []
     for file_path in files:
         try:
+            before_names = _hash_registry_names(kb_root)
             add_single_file(file_path, kb_root, force=force, strict=strict)
-            added.append(str(file_path))
+            after_names = _hash_registry_names(kb_root)
+            if file_path.name in after_names and (force or file_path.name not in before_names):
+                added.append(str(file_path))
+            else:
+                skipped.append(file_path)
         except Exception as exc:
             failed.append({"path": str(file_path), "error": str(exc)})
             if strict:

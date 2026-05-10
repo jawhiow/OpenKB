@@ -211,6 +211,12 @@ def test_add_documents_adds_supported_directory_files_with_openkb_helper(tmp_pat
 
     def fake_add_single_file(file_path, kb_dir, *, force=False, strict=False):
         calls.append((Path(file_path), Path(kb_dir), force))
+        openkb_dir = Path(kb_dir) / ".openkb"
+        openkb_dir.mkdir(exist_ok=True)
+        hashes_path = openkb_dir / "hashes.json"
+        hashes = json.loads(hashes_path.read_text(encoding="utf-8")) if hashes_path.exists() else {}
+        hashes[f"hash-{Path(file_path).stem}"] = {"name": Path(file_path).name, "type": Path(file_path).suffix.lstrip(".")}
+        hashes_path.write_text(json.dumps(hashes), encoding="utf-8")
 
     with patch.object(add_documents, "add_single_file", side_effect=fake_add_single_file):
         result = add_documents.add_documents(str(kb), str(docs), force=True)
@@ -219,6 +225,26 @@ def test_add_documents_adds_supported_directory_files_with_openkb_helper(tmp_pat
     assert result["added"] == [str(first), str(second)]
     assert result["skipped"] == [str(skipped)]
     assert calls == [(first, kb, True), (second, kb, True)]
+
+
+def test_add_documents_reports_noop_as_skipped_when_hash_registry_unchanged(tmp_path):
+    add_documents = _load_script("add_documents")
+    kb = _make_skill_kb(tmp_path)
+    openkb_dir = kb / ".openkb"
+    openkb_dir.mkdir()
+    (openkb_dir / "hashes.json").write_text(
+        json.dumps({"hash-a": {"name": "already.md", "type": "md"}}),
+        encoding="utf-8",
+    )
+    source = tmp_path / "already.md"
+    source.write_text("# Already", encoding="utf-8")
+
+    with patch.object(add_documents, "add_single_file", return_value=None):
+        result = add_documents.add_documents(str(kb), str(source))
+
+    assert result["ok"] is True
+    assert result["added"] == []
+    assert result["skipped"] == [str(source)]
 
 
 def test_delete_source_defaults_to_dry_run_without_mutating(tmp_path):

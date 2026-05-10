@@ -1860,12 +1860,6 @@ function sessionDisplayTitle(session) {
   return String(session?.title || session?.id || "Untitled session").trim();
 }
 
-function sessionPreview(session) {
-  const turns = session?.user_turns || [];
-  const last = turns[turns.length - 1] || session?.id || "Open conversation";
-  return String(last).replace(/\s+/g, " ").trim();
-}
-
 function chatMessagesFromSession(session = state.activeChatSession) {
   const messages = [];
   const turns = session?.user_turns || [];
@@ -1929,11 +1923,7 @@ function renderSessionListItem(session) {
   return `
     <button class="session-list-item${active}" type="button" data-action="open-chat" data-open-chat="${escapeHTML(session.id)}">
       <span class="session-list-title">${escapeHTML(sessionDisplayTitle(session))}</span>
-      <span class="session-list-preview">${escapeHTML(sessionPreview(session))}</span>
-      <span class="session-list-meta">
-        <span>${escapeHTML(session.turn_count || 0)} turns</span>
-        <span>${escapeHTML(formatDateTime(session.updated_at))}</span>
-      </span>
+      <span class="session-list-time">${escapeHTML(formatDateTime(session.updated_at))}</span>
     </button>
   `;
 }

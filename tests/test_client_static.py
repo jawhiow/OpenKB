@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -74,7 +74,11 @@ def test_client_ask_persists_and_reopens_chat_sessions():
     assert 'https://cdn.jsdelivr.net/npm/marked@13.0.2/marked.min.js' not in html
     assert 'https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js' not in html
     assert 'body.sessions-mode .session-workspace {' in styles
-    assert 'grid-template-columns: 264px minmax(0, 1fr) 280px;' in styles
+    assert 'grid-template-columns: 248px minmax(0, 1fr) 280px;' in styles
+    assert 'session-list-time' in script
+    assert 'session-list-preview' not in script
+    assert 'session-list-meta' not in script
+    assert 'sessionPreview' not in script
 
 
 def test_client_ask_streams_answers_and_renders_references():
@@ -448,3 +452,4 @@ def test_client_fix_plan_allows_manual_review_approval_and_result_display():
     assert "renderCreatedFixes" not in script
     assert ".badge.info" in styles
     assert ".reviewed-fix" in styles
+

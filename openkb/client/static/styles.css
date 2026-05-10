@@ -1377,7 +1377,7 @@ th {
 }
 
 .session-workspace.details-collapsed {
-  grid-template-columns: minmax(260px, 300px minmax(0, 1fr));
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
 }
 
 .session-sidebar,
@@ -2758,24 +2758,29 @@ th {
 
 /* Conversation view polish */
 body.sessions-mode {
-  background: #f7f8fa;
+  background: #eef2f5;
 }
 
 body.sessions-mode .view-title {
-  background: #fbfcfd;
+  background: #f8fafc;
   border-bottom: 1px solid #e5e9ee;
 }
 
 body.sessions-mode .main-view {
   padding: 0;
+  background: #eef2f5;
 }
 
 body.sessions-mode .session-workspace {
-  grid-template-columns: 292px minmax(560px, 1fr) 300px;
+  grid-template-columns: 248px minmax(0, 1fr) 280px;
   gap: 0;
   height: calc(100vh - 118px);
   padding: 0;
-  background: #ffffff;
+  background: #eef2f5;
+}
+
+body.sessions-mode .session-workspace.details-collapsed {
+  grid-template-columns: 248px minmax(0, 1fr);
 }
 
 body.sessions-mode .session-sidebar,
@@ -2790,22 +2795,24 @@ body.sessions-mode .session-details {
 
 body.sessions-mode .session-sidebar {
   border-left: 0;
-  border-right: 1px solid #e7ebef;
-  padding: 18px 16px;
-  background: #fbfcfd;
+  border-right: 1px solid #e5eaef;
+  padding: 16px 14px;
+  background: #f8fafb;
 }
 
 body.sessions-mode .session-details {
   border-right: 0;
-  border-left: 1px solid #edf0f3;
-  padding: 22px 18px;
-  background: #fbfcfd;
+  border-left: 1px solid #e5eaef;
+  padding: 18px 16px;
+  background: #f8fafb;
 }
 
 body.sessions-mode .session-chat {
   border-left: 0;
   border-right: 0;
-  background: #ffffff;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: linear-gradient(180deg, #f9fbfc 0%, #eef3f7 100%);
 }
 
 body.sessions-mode .session-sidebar-head h3,
@@ -2830,21 +2837,23 @@ body.sessions-mode .session-search {
 }
 
 body.sessions-mode .session-list {
-  gap: 8px;
+  gap: 6px;
   padding-right: 0;
 }
 
 body.sessions-mode .session-list-item {
-  min-height: 82px;
+  min-height: 0;
+  align-content: start;
+  gap: 2px;
   border: 0;
   border-radius: 10px;
   background: transparent;
-  padding: 11px 12px;
+  padding: 9px 10px;
   box-shadow: none;
 }
 
 body.sessions-mode .session-list-item:hover {
-  background: #f2f5f7;
+  background: #eff4f7;
 }
 
 body.sessions-mode .session-list-item.active {
@@ -2854,30 +2863,43 @@ body.sessions-mode .session-list-item.active {
 
 body.sessions-mode .session-list-title {
   font-size: 14px;
+  line-height: 1.35;
+  font-weight: 650;
 }
 
-body.sessions-mode .session-list-preview,
-body.sessions-mode .session-list-meta {
+body.sessions-mode .session-list-time {
   color: #718091;
+  font-size: 12px;
 }
 
 body.sessions-mode .session-chat-header {
-  padding: 20px 28px 14px;
-  border-bottom: 1px solid #edf0f3;
+  padding: 18px 26px 14px;
+  border-bottom: 1px solid #e5eaef;
+  background: rgba(248, 250, 252, 0.88);
+  backdrop-filter: blur(8px);
 }
 
 body.sessions-mode .session-thread {
-  padding: 12px 32px 22px;
-  background: #ffffff;
+  padding: 18px 26px 22px;
+  background: transparent;
+}
+
+body.sessions-mode .session-empty-state {
+  max-width: 540px;
+  margin: 0 auto;
 }
 
 body.sessions-mode .chat-message {
   grid-template-columns: 36px minmax(0, 1fr);
   gap: 12px;
-  max-width: 960px;
+  max-width: 940px;
   margin: 0 auto;
-  padding: 20px 0;
-  border-bottom: 1px solid #f0f2f4;
+  padding: 18px 0 10px;
+  border-bottom: 0;
+}
+
+body.sessions-mode .chat-message + .chat-message {
+  margin-top: 4px;
 }
 
 body.sessions-mode .chat-message.user {
@@ -2893,7 +2915,7 @@ body.sessions-mode .chat-message.user .chat-message-body {
   grid-column: 1;
   grid-row: 1;
   justify-self: end;
-  max-width: min(760px, 92%);
+  max-width: min(760px, 90%);
 }
 
 body.sessions-mode .chat-message.assistant .chat-message-body {
@@ -2907,14 +2929,37 @@ body.sessions-mode .chat-avatar {
   border-radius: 10px;
 }
 
-body.sessions-mode .chat-message.user .chat-markdown {
-  border-radius: 14px;
-  background: #eef5ff;
-  padding: 11px 14px;
+body.sessions-mode .chat-message.user .chat-avatar {
+  background: #e8f1ff;
+  color: #3357d6;
 }
 
-body.sessions-mode .chat-message.assistant .chat-markdown {
-  padding: 0;
+body.sessions-mode .chat-message.assistant .chat-avatar {
+  background: #eef8f6;
+  color: var(--accent-strong);
+}
+
+body.sessions-mode .chat-message.user .chat-message-body,
+body.sessions-mode .chat-message.assistant .chat-message-body {
+  min-width: 0;
+  border-radius: 16px;
+  padding: 12px 14px;
+}
+
+body.sessions-mode .chat-message.user .chat-message-body {
+  background: linear-gradient(180deg, #f4f8ff 0%, #edf4ff 100%);
+  border: 1px solid #dbe7ff;
+  box-shadow: 0 8px 20px rgba(51, 87, 214, 0.06);
+}
+
+body.sessions-mode .chat-message.assistant .chat-message-body {
+  background: #ffffff;
+  border: 1px solid #e3e8ee;
+  box-shadow: 0 8px 20px rgba(22, 32, 42, 0.04);
+}
+
+body.sessions-mode .chat-message.user .chat-message-meta {
+  justify-content: flex-end;
 }
 
 body.sessions-mode .chat-message-meta {
@@ -2923,15 +2968,30 @@ body.sessions-mode .chat-message-meta {
 
 body.sessions-mode .chat-markdown {
   color: #1d2733;
-  font-size: 15px;
-  line-height: 1.78;
+  font-size: 14px;
+  line-height: 1.72;
+}
+
+body.sessions-mode .chat-message.user .chat-markdown,
+body.sessions-mode .chat-message.assistant .chat-markdown {
+  padding: 0;
+}
+
+body.sessions-mode .chat-markdown p,
+body.sessions-mode .chat-markdown ul,
+body.sessions-mode .chat-markdown ol,
+body.sessions-mode .chat-markdown blockquote,
+body.sessions-mode .chat-markdown pre,
+body.sessions-mode .chat-markdown table {
+  margin: 0 0 10px;
 }
 
 body.sessions-mode .chat-markdown p:last-child,
 body.sessions-mode .chat-markdown ul:last-child,
 body.sessions-mode .chat-markdown ol:last-child,
 body.sessions-mode .chat-markdown pre:last-child,
-body.sessions-mode .chat-markdown blockquote:last-child {
+body.sessions-mode .chat-markdown blockquote:last-child,
+body.sessions-mode .chat-markdown table:last-child {
   margin-bottom: 0;
 }
 
@@ -2946,18 +3006,18 @@ body.sessions-mode .chat-markdown code {
 }
 
 body.sessions-mode .session-composer {
-  max-width: 960px;
-  width: calc(100% - 64px);
-  margin: 0 auto 20px;
+  max-width: 940px;
+  width: calc(100% - 48px);
+  margin: 0 auto 18px;
   border: 1px solid #dfe5eb;
-  border-radius: 18px;
-  background: #ffffff;
-  box-shadow: 0 10px 28px rgba(22, 32, 42, 0.08);
-  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 22px rgba(22, 32, 42, 0.06);
+  padding: 10px 12px;
 }
 
 body.sessions-mode .session-composer textarea {
-  min-height: 66px;
+  min-height: 64px;
   border: 0;
   border-radius: 12px;
   background: transparent;
