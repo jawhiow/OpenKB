@@ -6,6 +6,7 @@ from pathlib import Path
 
 from _runtime import (
     config_language,
+    bootstrap_openkb_repo_path,
     emit_json,
     load_evidence_map,
     package_available,
@@ -15,6 +16,8 @@ from _runtime import (
     wiki_root,
 )
 from search_wiki import search
+
+bootstrap_openkb_repo_path()
 
 
 INVESTMENT_DECISION_TERMS = (

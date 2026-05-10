@@ -789,6 +789,25 @@ th {
   font-size: 12px;
 }
 
+.source-browser-controls {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.source-browser-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.source-browser-meta button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .source-list {
   display: grid;
   gap: 6px;

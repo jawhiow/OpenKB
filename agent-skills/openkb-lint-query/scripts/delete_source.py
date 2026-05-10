@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from _runtime import emit_json, git_status, resolve_kb
+from _runtime import bootstrap_openkb_repo_path, emit_json, git_status, resolve_kb
+
+bootstrap_openkb_repo_path()
 
 try:
     from openkb.source_relations import delete_source_document, get_source_document_detail

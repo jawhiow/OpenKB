@@ -794,7 +794,12 @@ def add_single_file(
             doc_type = "long_pdf"
         else:
             doc_type = file_path.suffix.lstrip(".")
-        registry.add(result.file_hash, {"name": file_path.name, "type": doc_type})
+        from openkb.source_relations import current_ingested_at
+
+        registry.add(
+            result.file_hash,
+            {"name": file_path.name, "type": doc_type, "ingested_at": current_ingested_at()},
+        )
 
     append_log(kb_dir / "wiki", "ingest", file_path.name)
     commit_kb_changes(kb_dir, f"Add {file_path.name}")

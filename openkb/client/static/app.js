@@ -12,6 +12,7 @@ const state = {
   modelProfileDialog: null,
   llmUsageSearch: "",
   sourceSearch: "",
+  sourceDate: null,
   selectedSourceHash: null,
   wikiTree: [],
   wikiOpenDirs: {},
@@ -922,6 +923,41 @@ function sourceDocuments() {
   return state.documents?.documents || [];
 }
 
+function todaySourceDate() {
+  return new Date().toLocaleDateString("en-CA");
+}
+
+function sourceDateValue(doc) {
+  return doc?.ingested_date || (doc?.ingested_at ? new Date(doc.ingested_at).toLocaleDateString("en-CA") : "");
+}
+
+function filteredSourceDocuments() {
+  const query = state.sourceSearch.trim().toLowerCase();
+  const selectedDate = state.sourceDate || todaySourceDate();
+  const docs = selectedDate === "all" ? sourceDocuments() : sourceDocuments().filter((doc) => sourceDateValue(doc) === selectedDate);
+  if (!query) return docs;
+  return docs.filter((doc) => {
+    const haystack = [
+      doc.name,
+      doc.stem,
+      doc.type,
+      doc.hash,
+      doc.source_summary,
+      doc.source_path,
+      doc.ingested_at,
+      doc.ingested_date,
+      Object.values(doc.related_pages || {})
+        .flat()
+        .map((page) => page.path)
+        .join(" "),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
 function sourceRelatedCount(doc) {
   if (doc?.related_count !== undefined && doc?.related_count !== null) {
     const explicit = Number(doc.related_count);
@@ -1056,30 +1092,6 @@ function bindSourceDocumentActions(root = mainView) {
   });
 }
 
-function filteredSourceDocuments() {
-  const query = state.sourceSearch.trim().toLowerCase();
-  const docs = sourceDocuments();
-  if (!query) return docs;
-  return docs.filter((doc) => {
-    const haystack = [
-      doc.name,
-      doc.stem,
-      doc.type,
-      doc.hash,
-      doc.source_summary,
-      doc.source_path,
-      Object.values(doc.related_pages || {})
-        .flat()
-        .map((page) => page.path)
-        .join(" "),
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(query);
-  });
-}
-
 function syncSelectedSource(docs = sourceDocuments()) {
   if (!docs.length) {
     state.selectedSourceHash = null;
@@ -1089,6 +1101,21 @@ function syncSelectedSource(docs = sourceDocuments()) {
   if (selected) return selected;
   state.selectedSourceHash = docs[0].hash;
   return docs[0];
+}
+
+function syncSourceDate(docs = sourceDocuments()) {
+  const availableDates = [...new Set(docs.map((doc) => sourceDateValue(doc)).filter(Boolean))].sort().reverse();
+  const preferredDate = state.sourceDate || todaySourceDate();
+  if (preferredDate === "all") {
+    state.sourceDate = "all";
+    return "all";
+  }
+  if (availableDates.includes(preferredDate) || !availableDates.length) {
+    state.sourceDate = preferredDate;
+    return preferredDate;
+  }
+  state.sourceDate = todaySourceDate();
+  return state.sourceDate;
 }
 
 function selectSourceDocument(hash) {
@@ -1104,7 +1131,11 @@ function openSourceWorkbench(hash) {
 
 function sourceDocumentList(docs) {
   if (!sourceDocuments().length) return `<div class="empty">No documents</div>`;
-  if (!docs.length) return `<div class="empty">No matching sources</div>`;
+  if (!docs.length) {
+    return state.sourceSearch.trim()
+      ? `<div class="empty">No matching sources</div>`
+      : `<div class="empty">No sources ingested on this date</div>`;
+  }
   const page = paginatedItems(docs, "sources", 50);
   return `
     ${page.items
@@ -1166,10 +1197,14 @@ function sourceRelationGroups(doc) {
 }
 
 function renderSources() {
+  const activeDate = syncSourceDate();
   const filtered = filteredSourceDocuments();
   const hasSearch = Boolean(state.sourceSearch.trim());
-  const selected = filtered.length ? syncSelectedSource(filtered) : hasSearch ? null : syncSelectedSource(sourceDocuments());
+  const activeDateDocs = activeDate === "all" ? sourceDocuments() : sourceDocuments().filter((doc) => sourceDateValue(doc) === activeDate);
+  const selected = filtered.length ? syncSelectedSource(filtered) : hasSearch ? null : syncSelectedSource(activeDateDocs);
   const totalRelated = sourceDocuments().reduce((total, doc) => total + sourceRelatedCount(doc), 0);
+  const dateCount = activeDateDocs.length;
+  const dateLabel = activeDate === "all" ? "all dates" : activeDate;
   mainView.innerHTML = `
     <div class="sources-layout">
       <aside class="source-browser">
@@ -1178,7 +1213,14 @@ function renderSources() {
             <strong>Sources</strong>
             <span>${escapeHTML(sourceDocuments().length)} file(s), ${escapeHTML(totalRelated)} page(s)</span>
           </div>
-          <input data-source-search type="search" placeholder="Search sources or pages" value="${escapeHTML(state.sourceSearch)}" />
+          <div class="source-browser-controls">
+            <input data-source-date type="date" value="${escapeHTML(activeDate === "all" ? "" : activeDate)}" />
+            <input data-source-search type="search" placeholder="Search sources or pages" value="${escapeHTML(state.sourceSearch)}" />
+          </div>
+          <div class="source-browser-meta">
+            <span>${escapeHTML(dateCount)} file(s) on ${escapeHTML(dateLabel)}</span>
+            <button type="button" data-source-clear-date>Show all dates</button>
+          </div>
         </div>
         <div class="source-list">
           ${sourceDocumentList(filtered)}
@@ -1229,6 +1271,18 @@ function renderSources() {
     const search = mainView.querySelector("[data-source-search]");
     search?.focus();
     search?.setSelectionRange(search.value.length, search.value.length);
+  });
+  mainView.querySelector("[data-source-date]")?.addEventListener("change", (event) => {
+    state.sourceDate = event.target.value || todaySourceDate();
+    state.selectedSourceHash = null;
+    resetPage("sources");
+    renderSources();
+  });
+  mainView.querySelector("[data-source-clear-date]")?.addEventListener("click", () => {
+    state.sourceDate = "all";
+    state.selectedSourceHash = null;
+    resetPage("sources");
+    renderSources();
   });
   mainView.querySelectorAll("[data-source-select]").forEach((button) => {
     button.addEventListener("click", () => selectSourceDocument(button.dataset.sourceSelect));

@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -104,6 +105,24 @@ def package_available(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except Exception:
         return False
+
+
+def bootstrap_openkb_repo_path() -> Path | None:
+    """Put a local OpenKB source checkout on sys.path when it is nearby.
+
+    The skill scripts are often launched by absolute path, which means the
+    repository root is not automatically importable even when the current
+    working directory already is the repo checkout.
+    """
+    current = Path.cwd().resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / "openkb" / "cli.py").exists():
+            repo_root = candidate
+            repo_root_str = str(repo_root)
+            if repo_root_str not in sys.path:
+                sys.path.insert(0, repo_root_str)
+            return repo_root
+    return None
 
 
 def git_status(root: Path) -> dict[str, Any]:

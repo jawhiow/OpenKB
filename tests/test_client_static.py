@@ -174,6 +174,12 @@ def test_client_sources_view_browses_related_pages_and_deletes_source():
     assert "function selectSourceDocument" in script
     assert "function openSourceWorkbench" in script
     assert "data-source-search" in script
+    assert "data-source-date" in script
+    assert "data-source-clear-date" in script
+    assert "function todaySourceDate" in script
+    assert "function sourceDateValue" in script
+    assert "No sources ingested on this date" in script
+    assert "Show all dates" in script
     assert "data-source-select" in script
     assert "data-source-open-page" in script
     assert "data-delete-source" in script
@@ -181,6 +187,8 @@ def test_client_sources_view_browses_related_pages_and_deletes_source():
     assert "DELETE" in script
     assert "delete_source" in script
     assert ".sources-layout" in styles
+    assert ".source-browser-controls" in styles
+    assert ".source-browser-meta" in styles
     assert ".source-list-item.active" in styles
     assert ".relation-row" in styles
 

@@ -176,6 +176,8 @@ def get_document_data(kb_dir: Path) -> dict[str, Any]:
                 "source_path": document.get("source_path"),
                 "source_summary": document.get("source_summary"),
                 "summary_exists": document.get("summary_exists", False),
+                "ingested_at": document.get("ingested_at"),
+                "ingested_date": document.get("ingested_date"),
                 "related_count": document["related_count"],
                 "related_pages": document["related_pages"],
             }

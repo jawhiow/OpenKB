@@ -54,8 +54,18 @@ def _make_kb(tmp_path: Path) -> Path:
     (kb_dir / ".openkb" / "hashes.json").write_text(
         json.dumps(
             {
-                "hash-a": {"name": "paper.pdf", "type": "pdf", "pages": 12},
-                "hash-b": {"name": "manual.pdf", "type": "long_pdf", "pages": 80},
+                "hash-a": {
+                    "name": "paper.pdf",
+                    "type": "pdf",
+                    "pages": 12,
+                    "ingested_at": "2026-05-10T09:30:00+08:00",
+                },
+                "hash-b": {
+                    "name": "manual.pdf",
+                    "type": "long_pdf",
+                    "pages": 80,
+                    "ingested_at": "2026-05-09T17:20:00+08:00",
+                },
             }
         ),
         encoding="utf-8",
@@ -103,6 +113,8 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
             "source_path": None,
             "source_summary": "summaries/paper.md",
             "summary_exists": True,
+            "ingested_at": "2026-05-10T09:30:00+08:00",
+            "ingested_date": "2026-05-10",
             "related_count": 2,
             "related_pages": {
                 "summaries": [
@@ -126,6 +138,8 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
             "source_path": None,
             "source_summary": "summaries/manual.md",
             "summary_exists": False,
+            "ingested_at": "2026-05-09T17:20:00+08:00",
+            "ingested_date": "2026-05-09",
             "related_count": 0,
             "related_pages": {
                 "summaries": [],

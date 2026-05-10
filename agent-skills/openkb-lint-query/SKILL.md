@@ -97,6 +97,8 @@ python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\lint_kb.py" --kb .
 
 Default safe auto-fixes are conservative: they may update `index.md` and resolve obvious wikilink targets. Semantic findings such as duplicate concepts, company/concept boundary problems, missing evidence, and missing pages are reported as manual review by default.
 
+On real OpenKB KBs with indexed documents, the bundled lint script prefers the system `openkb lint` report when the package is available and falls back to the standalone scanner otherwise. The scripts will also try to bootstrap a nearby local OpenKB checkout from the current workspace before falling back.
+
 Draft-page creation is opt-in only:
 
 ```bash

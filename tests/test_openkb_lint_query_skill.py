@@ -71,6 +71,36 @@ def test_lint_kb_add_todos_flag_is_deprecated_noop(tmp_path):
     assert "TODO" not in report
 
 
+def test_lint_kb_uses_system_report_when_openkb_cli_is_available(tmp_path):
+    lint_kb = _load_script("lint_kb")
+    kb = _make_skill_kb(tmp_path)
+    page = kb / "wiki" / "companies" / "Tencent.md"
+    page.write_text("# Tencent\n\nTencent is an operating company.", encoding="utf-8")
+    system_report = kb / "wiki" / "reports" / "system-lint.md"
+    calls: list[tuple[Path, bool]] = []
+
+    async def fake_run_lint(kb_root, fix=False):
+        calls.append((Path(kb_root), fix))
+        system_report.parent.mkdir(parents=True, exist_ok=True)
+        system_report.write_text("# System Lint\n\nReport from openkb lint.", encoding="utf-8")
+        return system_report
+
+    async def fake_knowledge_lint(*_args, **_kwargs):
+        return "## Semantic\n\nNo issues."
+
+    with patch("openkb.cli.run_lint", new=fake_run_lint), \
+        patch("openkb.agent.linter.run_knowledge_lint", new=fake_knowledge_lint), \
+        patch.object(lint_kb, "report_timestamp", return_value="20260101_000000"):
+        result = lint_kb.build_lint(str(kb), apply_safe=False)
+
+    assert result["ok"] is True
+    assert result["lint_backend"] == "system"
+    assert calls == [(kb, False)]
+    assert result["report"] == "reports/system-lint.md"
+    assert system_report.read_text(encoding="utf-8").startswith("# System Lint")
+    assert not (kb / "wiki" / "reports" / "lint_20260101_000000.md").exists()
+
+
 def test_apply_fixes_ignores_deprecated_source_evidence_todo_action(tmp_path):
     apply_fixes = _load_script("apply_fixes")
     kb = _make_skill_kb(tmp_path)

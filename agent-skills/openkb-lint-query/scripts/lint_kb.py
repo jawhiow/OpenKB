@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import argparse
 import json
 import re
@@ -12,6 +13,7 @@ from _runtime import (
     WIKILINK_RE,
     append_log,
     brief_from_text,
+    bootstrap_openkb_repo_path,
     draft_page,
     emit_json,
     ensure_index_entry,
@@ -33,6 +35,8 @@ from _runtime import (
     wiki_root,
     write_text,
 )
+
+bootstrap_openkb_repo_path()
 
 
 TICKER_RE = re.compile(r"\b\d{4,6}\.(?:tw|two|hk|ss|sz|ks|kq)\b", re.IGNORECASE)
@@ -275,6 +279,19 @@ def append_review_note(wiki: Path, rel: str, text: str, note: str, fixes: list[d
     return new_text
 
 
+def _run_system_lint(kb_root: Path, *, fix: bool) -> Path | None:
+    bootstrap_openkb_repo_path()
+    try:
+        from openkb.cli import run_lint
+    except Exception:
+        return None
+
+    try:
+        return asyncio.run(run_lint(kb_root, fix=fix))
+    except Exception:
+        return None
+
+
 def build_lint(kb: str, apply_safe: bool, create_drafts: bool = False, add_todos: bool = False) -> dict:
     kb_root, warnings = resolve_kb(kb)
     if kb_root is None:
@@ -442,26 +459,33 @@ def build_lint(kb: str, apply_safe: bool, create_drafts: bool = False, add_todos
     if query_count >= 5 and exploration_count == 0:
         issues.append(issue("query_compounding_gap", "low", "Multiple queries are logged but no explorations are saved.", "log.md"))
 
-    report_path = wiki / "reports" / f"lint_{timestamp}.md"
+    system_report_path = _run_system_lint(kb_root, fix=apply_safe)
+    lint_backend = "system" if system_report_path is not None else "standalone"
+    if system_report_path is None:
+        warnings.append("System openkb lint unavailable; using standalone skill scanner.")
+    report_path = system_report_path or (wiki / "reports" / f"lint_{timestamp}.md")
     json_path = wiki / "reports" / f"lint_{timestamp}.json"
     report_rel = report_path.relative_to(wiki).as_posix()
     json_rel = json_path.relative_to(wiki).as_posix()
-    report = format_report(
-        timestamp,
-        apply_safe,
-        create_drafts,
-        add_todos,
-        git_before,
-        issues,
-        fixes,
-        manual_review,
-        duplicate_groups,
-        changes,
-        warnings,
-    )
-    write_text(report_path, report)
-    if apply_safe:
-        append_log(wiki, "lint", f"report -> {report_path.name}; safe_fixes={len(fixes)}")
+    if system_report_path is None:
+        report = format_report(
+            timestamp,
+            apply_safe,
+            create_drafts,
+            add_todos,
+            git_before,
+            issues,
+            fixes,
+            manual_review,
+            duplicate_groups,
+            changes,
+            warnings,
+        )
+        write_text(report_path, report)
+        if apply_safe:
+            append_log(wiki, "lint", f"report -> {report_path.name}; safe_fixes={len(fixes)}")
+            changes.append("log.md")
+    else:
         changes.append("log.md")
     changes.extend([report_rel, json_rel])
     payload = {
@@ -469,6 +493,7 @@ def build_lint(kb: str, apply_safe: bool, create_drafts: bool = False, add_todos
         "timestamp": timestamp,
         "kb_root": str(kb_root),
         "wiki_root": str(wiki),
+        "lint_backend": lint_backend,
         "apply_safe": apply_safe,
         "create_drafts": create_drafts,
         "add_todos": add_todos,

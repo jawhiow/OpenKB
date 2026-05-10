@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,94 @@ RELATED_PAGE_GROUPS = ("summaries", *GENERATED_PAGE_DIRS)
 
 _SOURCE_LIST_RE = re.compile(r"^sources:\s*\[(.*?)\]\s*$", re.MULTILINE)
 _FULL_TEXT_RE = re.compile(r"^full_text:\s*(.+?)\s*$", re.MULTILINE)
+_INGEST_LOG_RE = re.compile(r"^## \[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] ingest \| (?P<name>.+?)\s*$", re.MULTILINE)
+
+
+def _local_tzinfo():
+    return datetime.now().astimezone().tzinfo
+
+
+def _format_ingested_at(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_local_tzinfo())
+    return dt.astimezone(_local_tzinfo()).isoformat(timespec="seconds")
+
+
+def current_ingested_at() -> str:
+    """Return an ISO timestamp for a source document ingested now."""
+    return _format_ingested_at(datetime.now().astimezone())
+
+
+def _parse_ingested_at(value: object) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_local_tzinfo())
+    return parsed
+
+
+def _normalize_ingested_at(value: object) -> str | None:
+    parsed = _parse_ingested_at(value)
+    return _format_ingested_at(parsed) if parsed is not None else None
+
+
+def _ingested_date(value: object) -> str | None:
+    parsed = _parse_ingested_at(value)
+    return parsed.astimezone(_local_tzinfo()).date().isoformat() if parsed is not None else None
+
+
+def _read_ingest_log_dates(kb_dir: Path) -> dict[str, str]:
+    log_path = Path(kb_dir) / "wiki" / "log.md"
+    if not log_path.exists():
+        return {}
+    try:
+        text = log_path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    dates: dict[str, datetime] = {}
+    for match in _INGEST_LOG_RE.finditer(text):
+        name = _safe_doc_name(match.group("name"))
+        try:
+            parsed = datetime.strptime(match.group("timestamp"), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        existing = dates.get(name)
+        if existing is None or parsed > existing:
+            dates[name] = parsed
+    return {name: _format_ingested_at(value) for name, value in dates.items()}
+
+
+def _mtime_ingested_at(kb_dir: Path, name: str) -> str | None:
+    stem = Path(name).stem
+    candidates = [
+        Path(kb_dir) / "wiki" / "summaries" / f"{stem}.md",
+        Path(kb_dir) / "wiki" / "sources" / f"{stem}.md",
+        Path(kb_dir) / "wiki" / "sources" / f"{stem}.json",
+        Path(kb_dir) / "raw" / name,
+    ]
+    existing = [path for path in candidates if path.exists()]
+    if not existing:
+        return None
+    newest = max(existing, key=lambda path: path.stat().st_mtime)
+    return _format_ingested_at(datetime.fromtimestamp(newest.stat().st_mtime))
+
+
+def _resolve_ingested_at(kb_dir: Path, meta: dict[str, Any], name: str, ingest_log_dates: dict[str, str] | None = None) -> str | None:
+    existing = _normalize_ingested_at(meta.get("ingested_at"))
+    if existing:
+        return existing
+    if ingest_log_dates is None:
+        ingest_log_dates = _read_ingest_log_dates(kb_dir)
+    from_log = ingest_log_dates.get(name)
+    if from_log:
+        return from_log
+    return _mtime_ingested_at(kb_dir, name)
+
 
 
 def _hashes_path(kb_dir: Path) -> Path:
@@ -220,6 +309,7 @@ def _build_source_document(
     *,
     related_pages_index: dict[str, dict[str, list[dict[str, Any]]]] | None = None,
     summary_source_texts: dict[str, str | None] | None = None,
+    ingest_log_dates: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     kb_dir = Path(kb_dir)
     wiki_dir = kb_dir / "wiki"
@@ -259,12 +349,15 @@ def _build_source_document(
 
     related_count = sum(len(items) for items in related_pages.values())
     raw_path = kb_dir / "raw" / name
+    ingested_at = _resolve_ingested_at(kb_dir, meta, name, ingest_log_dates)
     return {
         "hash": file_hash,
         "name": name,
         "stem": stem,
         "type": meta.get("type", "unknown"),
         "pages": meta.get("pages", ""),
+        "ingested_at": ingested_at,
+        "ingested_date": _ingested_date(ingested_at),
         "raw_path": f"raw/{name}",
         "raw_exists": raw_path.exists(),
         "source_path": source_text_path,
@@ -280,6 +373,7 @@ def get_source_documents(kb_dir: Path) -> list[dict[str, Any]]:
     kb_dir = Path(kb_dir)
     hashes = _read_hashes(kb_dir)
     related_pages_index, summary_source_texts = _build_related_page_index(kb_dir)
+    ingest_log_dates = _read_ingest_log_dates(kb_dir)
     return [
         _build_source_document(
             kb_dir,
@@ -287,6 +381,7 @@ def get_source_documents(kb_dir: Path) -> list[dict[str, Any]]:
             meta,
             related_pages_index=related_pages_index,
             summary_source_texts=summary_source_texts,
+            ingest_log_dates=ingest_log_dates,
         )
         for file_hash, meta in hashes.items()
     ]
@@ -297,13 +392,44 @@ def resolve_source_document(kb_dir: Path, selector: str) -> dict[str, Any]:
     kb_dir = Path(kb_dir)
     file_hash, meta = _resolve_source_document_meta(kb_dir, selector)
     related_pages_index, summary_source_texts = _build_related_page_index(kb_dir)
+    ingest_log_dates = _read_ingest_log_dates(kb_dir)
     return _build_source_document(
         kb_dir,
         file_hash,
         meta,
         related_pages_index=related_pages_index,
         summary_source_texts=summary_source_texts,
+        ingest_log_dates=ingest_log_dates,
     )
+
+
+def backfill_source_ingest_dates(kb_dir: Path) -> dict[str, Any]:
+    """Persist missing source ingestion timestamps into `.openkb/hashes.json`."""
+    kb_dir = Path(kb_dir)
+    hashes = _read_hashes(kb_dir)
+    ingest_log_dates = _read_ingest_log_dates(kb_dir)
+    updated = 0
+    skipped = 0
+    missing = 0
+    for _file_hash, meta in hashes.items():
+        name = _safe_doc_name(meta.get("name"))
+        existing = _normalize_ingested_at(meta.get("ingested_at"))
+        if existing:
+            if existing != meta.get("ingested_at"):
+                meta["ingested_at"] = existing
+                updated += 1
+            else:
+                skipped += 1
+            continue
+        ingested_at = _resolve_ingested_at(kb_dir, meta, name, ingest_log_dates)
+        if not ingested_at:
+            missing += 1
+            continue
+        meta["ingested_at"] = ingested_at
+        updated += 1
+    if updated:
+        _write_hashes(kb_dir, hashes)
+    return {"updated": updated, "skipped": skipped, "missing": missing, "total": len(hashes)}
 
 
 def get_source_document_detail(kb_dir: Path, selector: str) -> dict[str, Any]:

@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from _runtime import emit_json, git_status, resolve_kb
+from _runtime import bootstrap_openkb_repo_path, emit_json, git_status, resolve_kb
+
+bootstrap_openkb_repo_path()
 
 try:
     from openkb.cli import SUPPORTED_EXTENSIONS, add_single_file

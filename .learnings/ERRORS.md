@@ -26,6 +26,35 @@ Use PowerShell here-strings piped into Python, e.g. `@'... '@ | .\.venv\Scripts\
 - Related Files: none
 
 ---
+## [ERR-20260510-001] powershell_python_unicode_path
+
+**Logged**: 2026-05-10T18:20:00+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: infra
+
+### Summary
+Passing Chinese Windows paths through a PowerShell here-string into Python can arrive as `???`, causing file reads to fail even when the file exists.
+
+### Error
+```text
+OSError: [Errno 22] Invalid argument: 'D:\\???\\llm-investment-kb\\wiki\\reports\\lint_20260510_181326.json'
+```
+
+### Context
+- Operation attempted: parse an OpenKB lint JSON report under `D:\知识库\...` from Python launched via PowerShell.
+- Earlier PowerShell `ConvertFrom-Json` also failed after terminal decoding corrupted UTF-8 Chinese content.
+- The lint itself succeeded; the failure was in post-processing the report through a non-UTF-8-safe command path.
+
+### Suggested Fix
+For OpenKB runtime KBs with non-ASCII paths on Windows, prefer tool output captured directly from the command that produced it, or run follow-up scripts from the KB working directory using relative paths. Avoid relying on PowerShell-decoded Chinese absolute paths in here-strings.
+
+### Metadata
+- Reproducible: yes
+- Related Files: D:\知识库\llm-investment-kb\wiki\reports\lint_20260510_181326.json
+- See Also: none
+
+---
 ## [ERR-20260507-001] git_subprocess_utf8_decode
 
 **Logged**: 2026-05-07T00:00:00+08:00
