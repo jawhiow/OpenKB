@@ -1144,6 +1144,13 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
+    @app.get("/api/ingest-gate")
+    def ingest_gate(kb_dir: str | None = Query(default=None), limit: int = Query(default=250, ge=1, le=1000)) -> dict[str, Any]:
+        try:
+            return kb_helpers.get_ingest_gate_data(_resolve_kb_dir(kb_dir), limit=limit)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str) -> dict[str, Any]:
         found = registry.get(job_id)

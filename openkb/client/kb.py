@@ -864,6 +864,99 @@ def get_config_data(kb_dir: Path) -> dict[str, Any]:
     }
 
 
+def get_ingest_gate_data(kb_dir: Path, *, limit: int = 250) -> dict[str, Any]:
+    """Return ingest gate configuration plus recent scoring decisions."""
+    kb_dir = require_kb_dir(kb_dir)
+    config = load_config(kb_dir / ".openkb" / "config.yaml")
+    ingest_gate = config.get("ingest_gate") if isinstance(config.get("ingest_gate"), dict) else {}
+    language = str(config.get("language", DEFAULT_CONFIG["language"]) or DEFAULT_CONFIG["language"])
+    history_path = kb_dir / ".openkb" / "ingest_gate_history.jsonl"
+    all_decisions: list[dict[str, Any]] = []
+
+    if history_path.exists():
+        for line_number, line in enumerate(history_path.read_text(encoding="utf-8").splitlines(), 1):
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                decision = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(decision, dict):
+                continue
+            item = dict(decision)
+            item["id"] = str(item.get("id") or line_number)
+            item["line_number"] = line_number
+            all_decisions.append(item)
+
+    newest_first = list(reversed(all_decisions))
+    limited = newest_first[: max(int(limit), 1)]
+    scores = [
+        int(item["total_score"])
+        for item in all_decisions
+        if isinstance(item.get("total_score"), int)
+    ]
+    summary = {
+        "total": len(all_decisions),
+        "pass": 0,
+        "hold": 0,
+        "reject": 0,
+        "force_pass": 0,
+        "force_reject": 0,
+        "average_score": round(sum(scores) / len(scores), 1) if scores else None,
+        "latest_at": newest_first[0].get("timestamp") if newest_first else "",
+    }
+    for item in all_decisions:
+        decision = str(item.get("final_decision") or item.get("raw_decision") or "").lower()
+        if decision == "pass":
+            summary["pass"] += 1
+        elif decision == "hold":
+            summary["hold"] += 1
+        elif decision == "reject":
+            summary["reject"] += 1
+        elif decision == "force_pass":
+            summary["force_pass"] += 1
+        elif decision == "force_reject":
+            summary["force_reject"] += 1
+
+    log_page = "explorations/资料准入评分台账.md" if language.lower().startswith("zh") else "explorations/ingest_gate.md"
+    return {
+        "config": {
+            "enabled": bool(ingest_gate.get("enabled", DEFAULT_CONFIG["ingest_gate"]["enabled"])),
+            "pass_threshold": int(ingest_gate.get("pass_threshold", DEFAULT_CONFIG["ingest_gate"]["pass_threshold"])),
+            "hold_threshold": int(ingest_gate.get("hold_threshold", DEFAULT_CONFIG["ingest_gate"]["hold_threshold"])),
+            "hard_reject_enabled": bool(
+                ingest_gate.get(
+                    "hard_reject_enabled",
+                    DEFAULT_CONFIG["ingest_gate"]["hard_reject_enabled"],
+                )
+            ),
+            "log_all_decisions": bool(
+                ingest_gate.get(
+                    "log_all_decisions",
+                    DEFAULT_CONFIG["ingest_gate"]["log_all_decisions"],
+                )
+            ),
+            "allow_force_pass": bool(
+                ingest_gate.get(
+                    "allow_force_pass",
+                    DEFAULT_CONFIG["ingest_gate"]["allow_force_pass"],
+                )
+            ),
+            "allow_force_reject": bool(
+                ingest_gate.get(
+                    "allow_force_reject",
+                    DEFAULT_CONFIG["ingest_gate"]["allow_force_reject"],
+                )
+            ),
+        },
+        "log_page": log_page,
+        "history_exists": history_path.exists(),
+        "summary": summary,
+        "decisions": limited,
+    }
+
+
 def _model_pool_status_path(kb_dir: Path) -> Path:
     return kb_dir / ".openkb" / "model-pool" / "status.json"
 

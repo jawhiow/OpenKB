@@ -437,6 +437,226 @@ h3 {
   padding: 12px;
 }
 
+.scoring-page {
+  display: grid;
+  gap: 14px;
+}
+
+.scoring-workbench {
+  display: grid;
+  grid-template-columns: minmax(310px, 0.8fr) minmax(0, 1.2fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.gate-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(96px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.gate-summary-strip div,
+.gate-detail-grid div {
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-alt);
+  padding: 8px 10px;
+}
+
+.gate-summary-strip span,
+.gate-detail-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gate-summary-strip strong,
+.gate-detail-grid strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.gate-settings-grid {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.gate-job-list,
+.gate-decision-list,
+.gate-dimension-list,
+.gate-detail {
+  display: grid;
+  gap: 8px;
+}
+
+.gate-job-row,
+.gate-decision-row {
+  display: grid;
+  width: 100%;
+  min-height: 64px;
+  align-items: center;
+  justify-content: stretch;
+  text-align: left;
+  gap: 10px;
+}
+
+.gate-job-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.gate-job-row span,
+.gate-decision-main,
+.gate-decision-meta,
+.gate-job-state {
+  min-width: 0;
+}
+
+.gate-job-row small,
+.gate-decision-main small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.gate-job-state,
+.gate-decision-meta,
+.gate-detail-score {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.gate-decision-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.gate-decision-row.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.gate-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.gate-detail-head > div:first-child {
+  min-width: 0;
+}
+
+.gate-detail-head h3,
+.gate-detail-head .muted-text {
+  overflow-wrap: anywhere;
+}
+
+.gate-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.gate-verdict,
+.gate-source-path,
+.gate-audit {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-alt);
+  padding: 10px;
+  overflow-wrap: anywhere;
+}
+
+.gate-source-path {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gate-dimension-row {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.gate-dimension-row header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gate-dimension-row p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.gate-dimension-meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8edf0;
+}
+
+.gate-dimension-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.gate-detail-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.gate-detail-list {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.gate-detail-list ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.gate-detail-list li {
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+
+.gate-audit dl {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 8px 0 0;
+}
+
+.gate-audit dt {
+  color: var(--muted);
+}
+
+.gate-audit dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .metric-list,
 .runtime-list,
 .quality-overview,
@@ -2615,9 +2835,14 @@ th {
   .add-source-grid,
   .workbench-grid,
   .sources-layout,
+  .scoring-workbench,
   .quality-layout,
   .profile-config-grid {
     grid-template-columns: 1fr;
+  }
+
+  .gate-summary-strip {
+    grid-template-columns: repeat(3, minmax(96px, 1fr));
   }
 
   .quality-layout {
@@ -2678,6 +2903,10 @@ th {
   .wiki-directory-toolbar,
   .wiki-body,
   .sources-layout,
+  .scoring-workbench,
+  .gate-summary-strip,
+  .gate-detail-grid,
+  .gate-detail-columns,
   .source-summary-grid,
   .profile-config-grid,
   .job-dock-body,

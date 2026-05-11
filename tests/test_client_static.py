@@ -453,6 +453,31 @@ def test_client_renders_ocr_page_and_import_strategy_controls():
     assert "data-ocr-retry" in script
 
 
+def test_client_renders_ingest_scoring_page_with_config_and_details():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert 'data-view="scoring"' in html
+    assert 'scoring: "Scoring"' in script
+    assert "ingestGate: null" in script
+    assert '"/api/ingest-gate"' in script
+    assert "function loadIngestGateData" in script
+    assert "function renderScoring" in script
+    assert "function renderGateDecisionDetails" in script
+    assert "function saveIngestGateSettings" in script
+    assert 'id="gateEnabledInput"' in script
+    assert 'id="gatePassThresholdInput"' in script
+    assert 'id="gateHoldThresholdInput"' in script
+    assert 'id="saveGateSettingsBtn"' in script
+    assert 'data-action="gate-decision-select"' in script
+    assert 'gate-decisions-page' in script
+    assert 'switchView("scoring")' in script
+    assert ".scoring-workbench" in styles
+    assert ".gate-dimension-list" in styles
+    assert "gate-detail-panel" in script
+
+
 def test_client_fix_plan_renders_report_reason_and_preview_content():
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 

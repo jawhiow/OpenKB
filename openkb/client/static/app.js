@@ -3,6 +3,7 @@ const state = {
   kbDir: null,
   status: null,
   documents: null,
+  ingestGate: null,
   llmUsage: null,
   ocrCache: null,
   modelPool: null,
@@ -14,6 +15,7 @@ const state = {
   sourceSearch: "",
   sourceDate: null,
   selectedSourceHash: null,
+  selectedGateDecisionId: null,
   wikiTree: [],
   wikiOpenDirs: {},
   selectedWikiPath: "index.md",
@@ -62,6 +64,7 @@ const viewLabels = {
   overview: "Overview",
   documents: "Documents",
   sources: "Sources",
+  scoring: "Scoring",
   ocr: "OCR",
   wiki: "Wiki",
   sessions: "Sessions",
@@ -235,18 +238,20 @@ function setError(message) {
 
 async function loadStartupKnowledgeData() {
   if (!state.kbDir) return;
-  const [status, documents, tree, chats, config] = await Promise.all([
+  const [status, documents, tree, chats, config, ingestGate] = await Promise.all([
     api(withKb("/api/status")),
     api(withKb("/api/documents")),
     api(withKb("/api/wiki/tree")),
     api(withKb("/api/chats")),
     api(withKb("/api/config")),
+    api(withKb("/api/ingest-gate")),
   ]);
   state.status = status;
   state.documents = documents;
   state.wikiTree = tree.files || [];
   state.chats = chats.sessions || [];
   state.config = config;
+  state.ingestGate = ingestGate;
 }
 
 async function loadDeferredKnowledgeData() {
@@ -279,6 +284,11 @@ async function loadOcrData() {
   ]);
   state.ocrCache = ocrCache;
   state.pageindexLocalStatus = pageindexLocalStatus;
+}
+
+async function loadIngestGateData() {
+  if (!state.kbDir) return;
+  state.ingestGate = await api(withKb("/api/ingest-gate"));
 }
 
 async function loadLlmUsage(options = {}) {
@@ -331,6 +341,7 @@ async function loadAll(event) {
     } else {
       state.status = null;
       state.documents = null;
+      state.ingestGate = null;
       state.llmUsage = null;
       state.ocrCache = null;
       state.modelPool = null;
@@ -366,6 +377,9 @@ async function loadJobs() {
     renderJobsPanel();
     handleJobTransitions(previousStatuses);
     handleQueryJob();
+    if (state.view === "scoring" && !mainView.querySelector("input:focus, select:focus, textarea:focus")) {
+      renderScoring();
+    }
   } catch (_) {
     state.jobs = [];
     renderJobsPanel();
@@ -806,6 +820,7 @@ function renderMainView() {
   if (state.view === "overview") renderOverview();
   if (state.view === "documents") renderDocuments();
   if (state.view === "sources") renderSources();
+  if (state.view === "scoring") renderScoring();
   if (state.view === "ocr") renderOcr();
   if (state.view === "wiki") renderWiki();
   if (state.view === "sessions") renderSessions();
@@ -1409,8 +1424,391 @@ async function uploadFile(event) {
 }
 
 function openGateLogPage() {
+  switchView("scoring");
+}
+
+const gateDimensionLabels = [
+  ["relevance", "Relevance"],
+  ["authority_traceability", "Authority / Traceability"],
+  ["signal_density", "Signal Density"],
+  ["novelty_vs_kb", "Novelty vs KB"],
+  ["durability", "Durability"],
+  ["compilation_yield", "Compilation Yield"],
+  ["actionability", "Actionability"],
+];
+
+function gateConfigData() {
   const cfg = state.config || {};
-  state.selectedWikiPath = cfg.language === "zh" ? "explorations/资料准入评分台账.md" : "explorations/ingest_gate.md";
+  return state.ingestGate?.config || {
+    enabled: Boolean(cfg.ingest_gate_enabled),
+    pass_threshold: cfg.ingest_gate_pass_threshold ?? 75,
+    hold_threshold: cfg.ingest_gate_hold_threshold ?? 60,
+    hard_reject_enabled: cfg.ingest_gate_hard_reject_enabled !== false,
+    log_all_decisions: cfg.ingest_gate_log_all_decisions !== false,
+    allow_force_pass: cfg.ingest_gate_allow_force_pass !== false,
+    allow_force_reject: cfg.ingest_gate_allow_force_reject !== false,
+  };
+}
+
+function gateDecisionId(decision) {
+  return String(decision?.id || decision?.line_number || `${decision?.timestamp || ""}-${decision?.doc_title || ""}`);
+}
+
+function gateDecisionClass(decision) {
+  const value = String(decision || "").toUpperCase();
+  if (value === "PASS" || value === "FORCE_PASS") return "good";
+  if (value === "REJECT" || value === "FORCE_REJECT") return "bad";
+  if (value === "HOLD") return "warn";
+  return "muted";
+}
+
+function gateDecisionBadge(decision) {
+  const label = decision || "UNKNOWN";
+  return `<span class="badge ${gateDecisionClass(label)}">${escapeHTML(label)}</span>`;
+}
+
+function gateScoreLabel(decision) {
+  return decision?.total_score === undefined || decision?.total_score === null ? "unscored" : `${decision.total_score}/100`;
+}
+
+function gateDecisions() {
+  return state.ingestGate?.decisions || [];
+}
+
+function syncSelectedGateDecision(decisions = gateDecisions()) {
+  if (!decisions.length) {
+    state.selectedGateDecisionId = null;
+    return null;
+  }
+  const selected = decisions.find((item) => gateDecisionId(item) === state.selectedGateDecisionId);
+  if (selected) return selected;
+  state.selectedGateDecisionId = gateDecisionId(decisions[0]);
+  return decisions[0];
+}
+
+function gateSummaryStat(label, value) {
+  return `<div><span>${escapeHTML(label)}</span><strong>${escapeHTML(value ?? "")}</strong></div>`;
+}
+
+function gateActiveImportJobs() {
+  return state.jobs.filter((job) => job.type === "add" && ["running", "stopping"].includes(job.status));
+}
+
+function gateJobObservation(job) {
+  const messages = (job.logs || []).map((entry) => entry.message || "");
+  const sawGate = messages.some((message) => /Pre-ingest gate|Gate result|Gate .*->|Gate blocked ingest/.test(message));
+  const startedCompile = messages.some((message) => /Converting:|Compiling /.test(message));
+  const llmFailures = messages.filter((message) => message.includes("LLM failed")).length;
+  if (sawGate) return { label: "Scoring observed", cls: "good", llmFailures };
+  if (startedCompile) return { label: "No scoring log observed", cls: "warn", llmFailures };
+  return { label: "Waiting for scoring", cls: "muted", llmFailures };
+}
+
+function renderGateActiveJobs() {
+  const jobs = gateActiveImportJobs();
+  if (!jobs.length) return `<div class="empty compact">No active imports</div>`;
+  return `
+    <div class="gate-job-list">
+      ${jobs
+        .map((job) => {
+          const observation = gateJobObservation(job);
+          return `
+            <button class="gate-job-row" type="button" data-action="select-job" data-job-id="${escapeHTML(job.id)}">
+              <span>
+                <strong>${escapeHTML(resultSummary(job))}</strong>
+                <small>${escapeHTML(job.id)}</small>
+              </span>
+              <span class="gate-job-state">
+                <span class="badge ${observation.cls}">${escapeHTML(observation.label)}</span>
+                ${observation.llmFailures ? `<span class="badge bad">${escapeHTML(observation.llmFailures)} LLM failed</span>` : ""}
+              </span>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderGateDecisionList(decisions) {
+  if (!decisions.length) return `<div class="empty compact">No scoring decisions</div>`;
+  const page = paginatedItems(decisions, "gate-decisions", 40);
+  return `
+    <div class="gate-decision-list">
+      ${page.items
+        .map((decision) => {
+          const active = gateDecisionId(decision) === state.selectedGateDecisionId ? " active" : "";
+          return `
+            <button class="gate-decision-row${active}" type="button" data-action="gate-decision-select" data-gate-decision-id="${escapeHTML(gateDecisionId(decision))}">
+              <span class="gate-decision-main">
+                <strong>${escapeHTML(decision.doc_title || "Untitled document")}</strong>
+                <small>${escapeHTML(formatDateTime(decision.timestamp))}</small>
+              </span>
+              <span class="gate-decision-meta">
+                ${gateDecisionBadge(decision.final_decision || decision.raw_decision)}
+                <strong>${escapeHTML(gateScoreLabel(decision))}</strong>
+              </span>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+    ${renderPager(page.meta, "gate-decisions")}
+  `;
+}
+
+function gateDetailList(label, items) {
+  const values = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!values.length) return "";
+  return `
+    <div class="gate-detail-list">
+      <strong>${escapeHTML(label)}</strong>
+      <ul>${values.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul>
+    </div>
+  `;
+}
+
+function renderGateDimensions(decision) {
+  const scores = decision?.dimension_scores || {};
+  return `
+    <div class="gate-dimension-list">
+      ${gateDimensionLabels
+        .map(([key, label]) => {
+          const item = scores[key] || {};
+          const max = Math.max(Number(item.max || 0), 1);
+          const score = Math.max(Math.min(Number(item.score || 0), max), 0);
+          const width = Math.round((score / max) * 100);
+          return `
+            <article class="gate-dimension-row">
+              <header>
+                <span>${escapeHTML(label)}</span>
+                <strong>${escapeHTML(score)}/${escapeHTML(max)}</strong>
+              </header>
+              <div class="gate-dimension-meter"><span style="width: ${width}%"></span></div>
+              ${item.reason ? `<p>${escapeHTML(item.reason)}</p>` : ""}
+              ${gateDetailList("Evidence", item.evidence)}
+              ${gateDetailList("Deductions", item.deductions)}
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderGateDecisionDetails(decision) {
+  if (!decision) return `<div class="empty compact">Select a scoring decision</div>`;
+  const audit = decision.audit_trail || {};
+  return `
+    <div class="gate-detail">
+      <header class="gate-detail-head">
+        <div>
+          <h3>${escapeHTML(decision.doc_title || "Untitled document")}</h3>
+          <span class="muted-text">${escapeHTML(formatDateTime(decision.timestamp))}</span>
+        </div>
+        <div class="gate-detail-score">
+          ${gateDecisionBadge(decision.final_decision || decision.raw_decision)}
+          <strong>${escapeHTML(gateScoreLabel(decision))}</strong>
+        </div>
+      </header>
+      <div class="gate-detail-grid">
+        ${gateSummaryStat("Raw", decision.raw_decision || "")}
+        ${gateSummaryStat("Mode", decision.recommended_ingest_mode || "")}
+        ${gateSummaryStat("Type", decision.doc_type || "")}
+        ${gateSummaryStat("Hard Reject", decision.hard_reject ? "yes" : "no")}
+        ${gateSummaryStat("Force Pass", decision.force_pass ? "yes" : "no")}
+        ${gateSummaryStat("Force Reject", decision.force_reject ? "yes" : "no")}
+      </div>
+      ${decision.one_line_verdict ? `<div class="gate-verdict">${escapeHTML(decision.one_line_verdict)}</div>` : ""}
+      ${decision.source_info ? `<div class="gate-source-path">${escapeHTML(decision.source_info)}</div>` : ""}
+      ${renderGateDimensions(decision)}
+      <div class="gate-detail-columns">
+        ${gateDetailList("Primary Reasons", decision.primary_reasons)}
+        ${gateDetailList("Hard Reject Reasons", decision.hard_reject_reasons)}
+        ${gateDetailList("Overlap With Existing KB", decision.overlap_with_existing_kb)}
+        ${gateDetailList("Suggested Outputs", decision.suggested_outputs_if_ingested)}
+      </div>
+      <div class="gate-audit">
+        <h3>Audit Trail</h3>
+        <dl>
+          <dt>Why this decision</dt><dd>${escapeHTML(audit.why_this_decision || "")}</dd>
+          <dt>Why not higher</dt><dd>${escapeHTML(audit.why_not_higher || "")}</dd>
+          <dt>Why not lower</dt><dd>${escapeHTML(audit.why_not_lower || "")}</dd>
+          <dt>Operator</dt><dd>${escapeHTML(decision.operator || "")}</dd>
+          <dt>Force reason</dt><dd>${escapeHTML(decision.force_reason || "")}</dd>
+        </dl>
+      </div>
+    </div>
+  `;
+}
+
+function renderScoring() {
+  const cfg = gateConfigData();
+  const summary = state.ingestGate?.summary || {};
+  const decisions = gateDecisions();
+  const selected = syncSelectedGateDecision(decisions);
+  mainView.innerHTML = `
+    <div class="scoring-page">
+      <section class="section gate-config-panel">
+        <header>
+          <div>
+            <h3>Ingest Scoring</h3>
+            <span class="muted-text">${escapeHTML(summary.latest_at ? `Latest ${formatDateTime(summary.latest_at)}` : "No scoring history")}</span>
+          </div>
+          <div class="row-actions">
+            <span class="badge ${cfg.enabled ? "good" : "warn"}">${cfg.enabled ? "Enabled" : "Disabled"}</span>
+            <button id="refreshGateBtn" type="button">Refresh</button>
+            <button id="openGateWikiLogBtn" type="button">Wiki Log</button>
+            <button id="saveGateSettingsBtn" class="primary" type="button">Save Gate Settings</button>
+          </div>
+        </header>
+        <div class="section-body">
+          <div class="gate-summary-strip">
+            ${gateSummaryStat("Total", summary.total || 0)}
+            ${gateSummaryStat("Pass", summary.pass || 0)}
+            ${gateSummaryStat("Hold", summary.hold || 0)}
+            ${gateSummaryStat("Reject", summary.reject || 0)}
+            ${gateSummaryStat("Force Pass", summary.force_pass || 0)}
+            ${gateSummaryStat("Force Reject", summary.force_reject || 0)}
+            ${gateSummaryStat("Avg Score", summary.average_score ?? "")}
+          </div>
+          <div class="form-grid gate-settings-grid">
+            <div class="field">
+              <label for="gateEnabledInput">Gate</label>
+              <label class="checkline">
+                <input id="gateEnabledInput" type="checkbox" ${cfg.enabled ? "checked" : ""} />
+                Enabled
+              </label>
+            </div>
+            <div class="field">
+              <label for="gatePassThresholdInput">Pass Threshold</label>
+              <input id="gatePassThresholdInput" type="number" min="0" max="100" value="${escapeHTML(cfg.pass_threshold ?? 75)}" />
+            </div>
+            <div class="field">
+              <label for="gateHoldThresholdInput">Hold Threshold</label>
+              <input id="gateHoldThresholdInput" type="number" min="0" max="100" value="${escapeHTML(cfg.hold_threshold ?? 60)}" />
+            </div>
+            <div class="field">
+              <label for="gateHardRejectInput">Hard Reject</label>
+              <label class="checkline">
+                <input id="gateHardRejectInput" type="checkbox" ${cfg.hard_reject_enabled === false ? "" : "checked"} />
+                Enforce
+              </label>
+            </div>
+            <div class="field">
+              <label for="gateLogAllInput">Audit Log</label>
+              <label class="checkline">
+                <input id="gateLogAllInput" type="checkbox" ${cfg.log_all_decisions === false ? "" : "checked"} />
+                Record all decisions
+              </label>
+            </div>
+            <div class="field">
+              <label for="gateAllowForcePassInput">Force Pass</label>
+              <label class="checkline">
+                <input id="gateAllowForcePassInput" type="checkbox" ${cfg.allow_force_pass === false ? "" : "checked"} />
+                Allowed
+              </label>
+            </div>
+            <div class="field">
+              <label for="gateAllowForceRejectInput">Force Reject</label>
+              <label class="checkline">
+                <input id="gateAllowForceRejectInput" type="checkbox" ${cfg.allow_force_reject === false ? "" : "checked"} />
+                Allowed
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="section">
+        <header>
+          <div>
+            <h3>Active Imports</h3>
+            <span class="muted-text">${escapeHTML(gateActiveImportJobs().length)} running add job(s)</span>
+          </div>
+        </header>
+        <div class="section-body">${renderGateActiveJobs()}</div>
+      </section>
+      <div class="scoring-workbench">
+        <section class="section gate-history-panel">
+          <header>
+            <div>
+              <h3>Scoring History</h3>
+              <span class="muted-text">${escapeHTML(decisions.length)} recent decision(s)</span>
+            </div>
+          </header>
+          <div class="section-body">${renderGateDecisionList(decisions)}</div>
+        </section>
+        <section class="section gate-detail-panel">
+          <header>
+            <div>
+              <h3>Decision Detail</h3>
+              <span class="muted-text">${escapeHTML(selected ? gateDecisionId(selected) : "")}</span>
+            </div>
+          </header>
+          <div class="section-body">${renderGateDecisionDetails(selected)}</div>
+        </section>
+      </div>
+    </div>
+  `;
+  $("#saveGateSettingsBtn")?.addEventListener("click", saveIngestGateSettings);
+  $("#refreshGateBtn")?.addEventListener("click", refreshIngestGate);
+  $("#openGateWikiLogBtn")?.addEventListener("click", openGateWikiLogPage);
+}
+
+function ingestGateSettingsPayload() {
+  const cfg = gateConfigData();
+  return {
+    ingest_gate_enabled: $("#gateEnabledInput") ? $("#gateEnabledInput").checked : Boolean(cfg.enabled),
+    ingest_gate_pass_threshold: Number($("#gatePassThresholdInput")?.value || cfg.pass_threshold || 75),
+    ingest_gate_hold_threshold: Number($("#gateHoldThresholdInput")?.value || cfg.hold_threshold || 60),
+    ingest_gate_hard_reject_enabled: $("#gateHardRejectInput") ? $("#gateHardRejectInput").checked : cfg.hard_reject_enabled !== false,
+    ingest_gate_log_all_decisions: $("#gateLogAllInput") ? $("#gateLogAllInput").checked : cfg.log_all_decisions !== false,
+    ingest_gate_allow_force_pass: $("#gateAllowForcePassInput") ? $("#gateAllowForcePassInput").checked : cfg.allow_force_pass !== false,
+    ingest_gate_allow_force_reject: $("#gateAllowForceRejectInput") ? $("#gateAllowForceRejectInput").checked : cfg.allow_force_reject !== false,
+  };
+}
+
+async function refreshIngestGate(event) {
+  const button = event?.currentTarget;
+  setButtonBusy(button, true, "Refreshing...");
+  try {
+    await Promise.all([loadIngestGateData(), loadJobs()]);
+    renderScoring();
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function saveIngestGateSettings(event) {
+  const button = event?.currentTarget;
+  if (!state.kbDir) {
+    notify("Select or create a knowledge base first.", "warning");
+    return;
+  }
+  setButtonBusy(button, true, "Saving...");
+  try {
+    state.config = await api("/api/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        kb_dir: state.kbDir,
+        ...ingestGateSettingsPayload(),
+      }),
+    });
+    await loadIngestGateData();
+    notify("Gate settings saved", "success");
+    renderScoring();
+  } catch (error) {
+    setError(error.message);
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+function openGateWikiLogPage() {
+  const cfg = state.config || {};
+  state.selectedWikiPath = state.ingestGate?.log_page || (cfg.language === "zh" ? "explorations/资料准入评分台账.md" : "explorations/ingest_gate.md");
   switchView("wiki");
 }
 
@@ -2594,6 +2992,16 @@ function handleAppClick(event) {
     });
     return;
   }
+  if (action === "gate-decision-select") {
+    state.selectedGateDecisionId = target.dataset.gateDecisionId || null;
+    renderScoring();
+    return;
+  }
+  if (action === "gate-decisions-page") {
+    setPage("gate-decisions", target.dataset.page);
+    renderScoring();
+    return;
+  }
   if (action === "open-chat") {
     openChatSession(target.dataset.openChat);
     return;
@@ -3633,6 +4041,13 @@ function switchView(view) {
   if (view === "usage" && state.kbDir) {
     loadLlmUsage().then(() => {
       if (state.view === "usage") renderLlmUsage();
+    }).catch((error) => {
+      notify(error.message, "error");
+    });
+  }
+  if (view === "scoring" && state.kbDir) {
+    loadIngestGateData().then(() => {
+      if (state.view === "scoring") renderScoring();
     }).catch((error) => {
       notify(error.message, "error");
     });

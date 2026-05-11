@@ -538,6 +538,74 @@ def test_add_document_job_passes_ingest_gate_overrides(tmp_path, monkeypatch):
     }
 
 
+def test_ingest_gate_endpoint_returns_config_history_and_details(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: gpt-5.4-mini\n"
+        "language: zh\n"
+        "ingest_gate:\n"
+        "  enabled: true\n"
+        "  pass_threshold: 82\n"
+        "  hold_threshold: 66\n"
+        "  hard_reject_enabled: true\n"
+        "  log_all_decisions: true\n"
+        "  allow_force_pass: true\n"
+        "  allow_force_reject: false\n",
+        encoding="utf-8",
+    )
+    history = kb_dir / ".openkb" / "ingest_gate_history.jsonl"
+    history.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-10 10:00:00",
+                        "doc_title": "old.pdf",
+                        "final_decision": "REJECT",
+                        "total_score": 40,
+                        "dimension_scores": {"relevance": {"score": 4, "max": 15, "reason": "weak"}},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-11 10:00:00",
+                        "doc_title": "new.pdf",
+                        "final_decision": "PASS",
+                        "total_score": 88,
+                        "one_line_verdict": "high signal",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(registry=JobRegistry()))
+    response = client.get("/api/ingest-gate", params={"kb_dir": str(kb_dir)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["config"]["enabled"] is True
+    assert body["config"]["pass_threshold"] == 82
+    assert body["config"]["hold_threshold"] == 66
+    assert body["config"]["allow_force_reject"] is False
+    assert body["log_page"] == "explorations/资料准入评分台账.md"
+    assert body["summary"] == {
+        "total": 2,
+        "pass": 1,
+        "hold": 0,
+        "reject": 1,
+        "force_pass": 0,
+        "force_reject": 0,
+        "average_score": 64.0,
+        "latest_at": "2026-05-11 10:00:00",
+    }
+    assert [item["doc_title"] for item in body["decisions"]] == ["new.pdf", "old.pdf"]
+    assert body["decisions"][0]["line_number"] == 2
+    assert body["decisions"][0]["id"] == "2"
+
+
 def test_add_document_job_passes_job_object_for_internal_ocr_logs(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     source = tmp_path / "scan.pdf"
