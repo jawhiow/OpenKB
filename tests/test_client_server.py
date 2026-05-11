@@ -1366,8 +1366,8 @@ def test_model_pool_routes_are_model_level_and_weighted_round_robin(tmp_path):
 
     assert [first.model, second.model, third.model, fourth.model] == [
         "fast-model",
-        "fast-model",
         "slow-model",
+        "fast-model",
         "fast-model",
     ]
 

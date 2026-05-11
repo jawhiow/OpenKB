@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
+
+
+_HASH_REGISTRY_LOCK = threading.RLock()
 
 
 def ocr_cache_root(kb_dir: Path) -> Path:
@@ -81,17 +85,22 @@ class HashRegistry:
 
     def add(self, file_hash: str, metadata: dict) -> None:
         """Register file_hash with metadata and persist to disk."""
-        self._data[file_hash] = metadata
-        self._persist()
+        with _HASH_REGISTRY_LOCK:
+            if self._path.exists():
+                with self._path.open("r", encoding="utf-8") as fh:
+                    self._data = json.load(fh)
+            self._data[file_hash] = metadata
+            self._persist()
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     def _persist(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("w", encoding="utf-8") as fh:
-            json.dump(self._data, fh, indent=2)
+        with _HASH_REGISTRY_LOCK:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("w", encoding="utf-8") as fh:
+                json.dump(self._data, fh, indent=2)
 
     # ------------------------------------------------------------------
     # Static utility

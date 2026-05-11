@@ -489,29 +489,58 @@ def _is_compile_managed_wiki_path(relative_path: Path) -> bool:
     )
 
 
-def _sync_staged_wiki(staged_wiki: Path, wiki_dir: Path) -> None:
-    """Copy compile-managed staged wiki changes into the real wiki."""
+def _managed_file_snapshot(wiki_dir: Path) -> dict[str, bytes]:
+    if not wiki_dir.exists():
+        return {}
+    return {
+        path.relative_to(wiki_dir).as_posix(): path.read_bytes()
+        for path in wiki_dir.rglob("*")
+        if path.is_file() and _is_compile_managed_wiki_path(path.relative_to(wiki_dir))
+    }
+
+
+def _sync_staged_wiki(staged_wiki: Path, wiki_dir: Path, baseline: dict[str, bytes]) -> None:
+    """Copy this compile's managed wiki changes into the real wiki."""
     staged_files = {
         path.relative_to(staged_wiki)
         for path in staged_wiki.rglob("*")
         if path.is_file() and _is_compile_managed_wiki_path(path.relative_to(staged_wiki))
     }
+    changed_files = {
+        rel
+        for rel in staged_files
+        if (staged_wiki / rel).read_bytes() != baseline.get(rel.as_posix())
+    }
+    removed_files = {
+        Path(rel)
+        for rel in baseline
+        if Path(rel) not in staged_files
+    }
 
-    if wiki_dir.exists():
-        for path in sorted(wiki_dir.rglob("*"), reverse=True):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(wiki_dir)
-            if _is_compile_managed_wiki_path(rel) and rel not in staged_files:
-                path.unlink()
-    else:
+    if not wiki_dir.exists():
         wiki_dir.mkdir(parents=True, exist_ok=True)
 
-    for rel in sorted(staged_files):
+    for rel in sorted(removed_files, reverse=True):
+        path = wiki_dir / rel
+        if path.exists() and path.read_bytes() == baseline.get(rel.as_posix()):
+            path.unlink()
+
+    for rel in sorted(changed_files):
         src = staged_wiki / rel
         dest = wiki_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists() and dest.read_bytes() == src.read_bytes():
+            continue
+        baseline_bytes = baseline.get(rel.as_posix())
+        if dest.exists() and baseline_bytes is not None and dest.read_bytes() != baseline_bytes and src.suffix == ".md":
+            baseline_lines = baseline_bytes.decode("utf-8", errors="replace").splitlines()
+            dest_text = dest.read_text(encoding="utf-8")
+            dest_lines = dest_text.splitlines()
+            staged_lines = src.read_text(encoding="utf-8").splitlines()
+            additions = [line for line in staged_lines if line not in baseline_lines and line not in dest_lines]
+            if additions:
+                merged = dest_text.rstrip("\n") + "\n" + "\n".join(additions) + "\n"
+                dest.write_text(merged, encoding="utf-8")
             continue
         shutil.copy2(src, dest)
 
@@ -524,12 +553,13 @@ async def _run_with_staged_wiki(kb_dir: Path, operation):
     staging_root = Path(tempfile.mkdtemp(prefix="compile-", dir=staging_parent))
     staged_wiki = staging_root / "wiki"
     try:
+        baseline = _managed_file_snapshot(wiki_dir)
         if wiki_dir.exists():
             shutil.copytree(wiki_dir, staged_wiki)
         else:
             staged_wiki.mkdir(parents=True, exist_ok=True)
         result = await operation(staged_wiki)
-        _sync_staged_wiki(staged_wiki, wiki_dir)
+        _sync_staged_wiki(staged_wiki, wiki_dir, baseline)
         return result
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)

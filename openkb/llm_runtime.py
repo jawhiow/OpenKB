@@ -22,6 +22,16 @@ class CompletionResult:
     usage: Any
 
 
+@dataclass(frozen=True)
+class LlmRuntimeConfig:
+    api_key: str = ""
+    wire_api: str = ""
+    base_url: str = ""
+    provider: str = ""
+    reasoning_effort: str = ""
+    thinking_enabled: bool | None = None
+
+
 _async_client: AsyncOpenAI | None = None
 _async_client_config: tuple[str | None, str | None] | None = None
 _sync_client: OpenAI | None = None
@@ -31,7 +41,62 @@ _LOW_LEVEL_USAGE_LOGGING_SUPPRESSED: contextvars.ContextVar[bool] = contextvars.
     "openkb_low_level_usage_logging_suppressed",
     default=False,
 )
+_ACTIVE_RUNTIME_CONFIG: contextvars.ContextVar[LlmRuntimeConfig | None] = contextvars.ContextVar(
+    "openkb_llm_runtime_config",
+    default=None,
+)
 _ORIGINAL_LITELLM_ACOMPLETION = litellm.acompletion
+
+
+@contextlib.contextmanager
+def llm_runtime_context(config: dict[str, Any] | LlmRuntimeConfig | None):
+    """Use request/task-local LLM runtime settings without mutating os.environ."""
+    if isinstance(config, LlmRuntimeConfig):
+        runtime_config = config
+    else:
+        raw = config or {}
+        runtime_config = LlmRuntimeConfig(
+            api_key=str(raw.get("api_key") or "").strip(),
+            wire_api=str(raw.get("wire_api") or "").strip().lower(),
+            base_url=str(raw.get("base_url") or "").strip().rstrip("/"),
+            provider=str(raw.get("provider") or "").strip().lower(),
+            reasoning_effort=str(raw.get("reasoning_effort") or "").strip().lower(),
+            thinking_enabled=(bool(raw.get("thinking_enabled")) if "thinking_enabled" in raw else None),
+        )
+    token = _ACTIVE_RUNTIME_CONFIG.set(runtime_config)
+    try:
+        yield runtime_config
+    finally:
+        _ACTIVE_RUNTIME_CONFIG.reset(token)
+
+
+def _runtime_config() -> LlmRuntimeConfig | None:
+    return _ACTIVE_RUNTIME_CONFIG.get()
+
+
+def runtime_env_overlay(model: str | None = None) -> dict[str, str]:
+    """Return environment variables implied by the active runtime context."""
+    overlay: dict[str, str] = {}
+    api_key = get_api_key()
+    if api_key:
+        overlay["LLM_API_KEY"] = api_key
+        overlay["OPENAI_API_KEY"] = api_key
+    wire_api = get_wire_api(model)
+    if wire_api:
+        overlay["OPENKB_WIRE_API"] = wire_api
+    base_url = get_base_url(model)
+    if base_url:
+        overlay["OPENAI_BASE_URL"] = base_url
+        overlay["OPENAI_API_BASE"] = base_url
+    provider = get_model_provider()
+    if provider:
+        overlay["OPENKB_MODEL_PROVIDER"] = provider
+    effort = get_reasoning_effort()
+    if effort:
+        overlay["OPENKB_MODEL_REASONING_EFFORT"] = effort
+    if deepseek_thinking_enabled():
+        overlay["OPENKB_DEEPSEEK_THINKING_ENABLED"] = "true"
+    return overlay
 
 
 def _json_safe(value: Any) -> Any:
@@ -447,6 +512,9 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _configured_wire_api() -> str:
+    runtime = _runtime_config()
+    if runtime is not None and runtime.wire_api:
+        return runtime.wire_api
     return os.getenv("OPENKB_WIRE_API", os.getenv("OPENAI_WIRE_API", "chat_completions")).strip().lower()
 
 
@@ -471,10 +539,19 @@ def uses_responses_api(model: str | None = None) -> bool:
 
 
 def get_api_key() -> str | None:
+    runtime = _runtime_config()
+    if runtime is not None and runtime.api_key:
+        return runtime.api_key
     return os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
 
 
 def get_base_url(model: str | None = None) -> str | None:
+    runtime = _runtime_config()
+    if runtime is not None and runtime.base_url:
+        base_url = runtime.base_url
+        if uses_responses_api(model) and not base_url.endswith("/v1"):
+            base_url = f"{base_url}/v1"
+        return base_url
     base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
     if not base_url:
         return None
@@ -500,16 +577,25 @@ def is_custom_openai_compatible(model: str | None = None) -> bool:
 
 
 def get_model_provider() -> str | None:
+    runtime = _runtime_config()
+    if runtime is not None and runtime.provider:
+        return runtime.provider
     value = os.getenv("OPENKB_MODEL_PROVIDER", "").strip().lower()
     return value or None
 
 
 def get_reasoning_effort() -> str | None:
+    runtime = _runtime_config()
+    if runtime is not None and runtime.reasoning_effort:
+        return runtime.reasoning_effort
     value = os.getenv("OPENKB_MODEL_REASONING_EFFORT", "").strip().lower()
     return value or None
 
 
 def deepseek_thinking_enabled() -> bool:
+    runtime = _runtime_config()
+    if runtime is not None and runtime.thinking_enabled is not None:
+        return runtime.thinking_enabled
     return _env_flag("OPENKB_DEEPSEEK_THINKING_ENABLED", default=False)
 
 
@@ -662,6 +748,17 @@ def _custom_openai_completion_via_requests(model: str, messages: list[dict], **k
     return CompletionResult(text=text.strip(), usage=data.get("usage"))
 
 
+def _litellm_runtime_kwargs(model: str) -> dict[str, Any]:
+    runtime_kwargs: dict[str, Any] = {}
+    api_key = get_api_key()
+    base_url = get_base_url(model)
+    if api_key:
+        runtime_kwargs["api_key"] = api_key
+    if base_url:
+        runtime_kwargs["base_url"] = base_url
+    return runtime_kwargs
+
+
 def _status_code(exc: Exception) -> int | None:
     status = getattr(exc, "status_code", None)
     if isinstance(status, int):
@@ -728,6 +825,8 @@ def _retry_delay_seconds(attempt: int, exc: Exception) -> float:
 def _get_sync_openai_client(model: str | None = None) -> OpenAI:
     global _sync_client, _sync_client_config
     config = (get_api_key(), get_base_url(model))
+    if _runtime_config() is not None:
+        return OpenAI(api_key=config[0], base_url=config[1])
     if _sync_client is None or _sync_client_config != config:
         _sync_client = OpenAI(api_key=config[0], base_url=config[1])
         _sync_client_config = config
@@ -737,6 +836,8 @@ def _get_sync_openai_client(model: str | None = None) -> OpenAI:
 def _get_async_openai_client(model: str | None = None) -> Any:
     global _async_client, _async_client_config
     config = (get_api_key(), get_base_url(model))
+    if _runtime_config() is not None:
+        return _AsyncOpenAIClientProxy(AsyncOpenAI(api_key=config[0], base_url=config[1]), model=model)
     if _async_client is None or _async_client_config != config:
         _async_client = AsyncOpenAI(api_key=config[0], base_url=config[1])
         _async_client_config = config
@@ -821,6 +922,7 @@ def _completion_once(model: str, messages: list[dict], **kwargs) -> CompletionRe
         response = litellm.completion(
             model=normalized_model,
             messages=messages,
+            **_litellm_runtime_kwargs(normalized_model),
             **_apply_default_timeout(kwargs),
         )
         text = response.choices[0].message.content or ""
@@ -883,6 +985,7 @@ async def _acompletion_once(model: str, messages: list[dict], **kwargs) -> Compl
         response = await litellm.acompletion(
             model=normalized_model,
             messages=messages,
+            **_litellm_runtime_kwargs(normalized_model),
             **_apply_default_timeout(kwargs),
         )
         text = response.choices[0].message.content or ""

@@ -116,6 +116,50 @@ class TestAddCommand:
             assert "b.txt" in called_names
             assert "ignore.xyz" not in called_names
 
+    def test_add_directory_parallelizes_across_healthy_model_pool_routes(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "model: fallback-model\n"
+            "model_pool:\n"
+            "  enabled: true\n"
+            "llm_profiles:\n"
+            "- id: primary\n"
+            "  name: Primary\n"
+            "  model: primary-model\n"
+            "  wire_api: chat_completions\n"
+            "  models:\n"
+            "  - name: primary-model\n"
+            "    weight: 100\n"
+            "- id: backup\n"
+            "  name: Backup\n"
+            "  model: backup-model\n"
+            "  wire_api: chat_completions\n"
+            "  models:\n"
+            "  - name: backup-model\n"
+            "    weight: 100\n",
+            encoding="utf-8",
+        )
+        from openkb.model_pool import record_route_success
+
+        record_route_success(kb_dir, "primary", "primary-model")
+        record_route_success(kb_dir, "backup", "backup-model")
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "a.md").write_text("# A")
+        (docs_dir / "b.md").write_text("# B")
+        seen_routes: list[str] = []
+
+        def fake_add(_path, _kb_dir, **kwargs):
+            seen_routes.append(kwargs["model_route"].route_id)
+
+        runner = CliRunner()
+        with patch("openkb.cli.add_single_file", side_effect=fake_add), \
+             patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["add", str(docs_dir)])
+
+        assert result.exception is None
+        assert sorted(seen_routes) == ["backup:backup-model", "primary:primary-model"]
+
     def test_add_unsupported_extension(self, tmp_path):
         kb_dir = self._setup_kb(tmp_path)
         doc = tmp_path / "file.xyz"

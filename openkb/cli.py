@@ -8,10 +8,12 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import sys
 import time
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,7 +27,7 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import click
 import litellm
 litellm.suppress_debug_info = True
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from openkb.config import DEFAULT_CONFIG, load_config, save_config, load_global_config, register_kb
 from openkb.llm_runtime import configure_runtime, get_base_url, model_prefers_responses_api
@@ -309,6 +311,18 @@ def _find_kb_dir(override: Path | None = None) -> Path | None:
 
 ProgressCallback = Callable[[str], None]
 CompileOperation = Callable[[str], object]
+_KB_MUTATION_LOCKS: dict[Path, threading.RLock] = {}
+_KB_MUTATION_LOCKS_LOCK = threading.Lock()
+
+
+def _kb_mutation_lock(kb_dir: Path) -> threading.RLock:
+    key = Path(kb_dir).resolve()
+    with _KB_MUTATION_LOCKS_LOCK:
+        lock = _KB_MUTATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _KB_MUTATION_LOCKS[key] = lock
+        return lock
 
 
 def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> None:
@@ -323,7 +337,38 @@ def _profile_from_model_route(route) -> dict[str, str]:
         "model": route.model,
         "wire_api": route.wire_api,
         "base_url": route.base_url,
+        "provider": str(getattr(route, "provider", "generic") or "generic"),
+        "reasoning_effort": str(getattr(route, "reasoning_effort", "") or ""),
+        "thinking_enabled": bool(getattr(route, "thinking_enabled", False)),
         "api_key_env": route.api_key_env,
+    }
+
+
+def _runtime_context_for_profile(kb_dir: Path, profile: dict[str, Any]) -> dict[str, Any]:
+    env_values = dict(os.environ)
+    env_file = kb_dir / ".env"
+    if env_file.exists():
+        env_values.update({key: str(value) for key, value in dotenv_values(env_file).items() if value is not None})
+    from openkb.config import GLOBAL_CONFIG_DIR
+
+    global_env = GLOBAL_CONFIG_DIR / ".env"
+    if global_env.exists():
+        for key, value in dotenv_values(global_env).items():
+            if value is not None and key not in env_values:
+                env_values[key] = str(value)
+    api_key = ""
+    profile_env = str(profile.get("api_key_env") or "").strip()
+    if profile_env:
+        api_key = env_values.get(profile_env, "").strip()
+    if not api_key:
+        api_key = env_values.get("LLM_API_KEY", "").strip() or env_values.get("OPENAI_API_KEY", "").strip()
+    return {
+        "api_key": api_key,
+        "wire_api": str(profile.get("wire_api") or "").strip().lower(),
+        "base_url": str(profile.get("base_url") or "").strip().rstrip("/"),
+        "provider": str(profile.get("provider") or "").strip().lower(),
+        "reasoning_effort": str(profile.get("reasoning_effort") or "").strip().lower(),
+        "thinking_enabled": bool(profile.get("thinking_enabled", False)),
     }
 
 
@@ -372,6 +417,7 @@ def _run_pageindex_with_model_pool(
     operation: Callable[[str], object],
     *,
     input_payload: dict[str, Any],
+    fixed_route=None,
 ) -> object:
     from openkb.model_pool import (
         configured_routes,
@@ -381,6 +427,44 @@ def _run_pageindex_with_model_pool(
         route_profile,
         select_model_route,
     )
+
+    if fixed_route is not None:
+        route = fixed_route
+        started_at = time.perf_counter()
+        try:
+            from openkb.llm_runtime import llm_runtime_context
+
+            with llm_runtime_context(_runtime_context_for_profile(kb_dir, _profile_from_model_route(route))):
+                result = operation(route.model)
+            record_route_success(kb_dir, route.profile_id, route.model)
+            _record_external_compile_usage(
+                kb_dir,
+                model=route.model,
+                wire_api=route.wire_api,
+                base_url=route.base_url,
+                started_at=started_at,
+                status="succeeded",
+                input_payload=input_payload,
+                output_payload={
+                    "doc_id": str(getattr(result, "doc_id", "") or ""),
+                    "description": str(getattr(result, "description", "") or ""),
+                },
+            )
+            return result
+        except Exception as exc:
+            record_route_failure(kb_dir, route.profile_id, route.model, exc)
+            _record_external_compile_usage(
+                kb_dir,
+                model=route.model,
+                wire_api=route.wire_api,
+                base_url=route.base_url,
+                started_at=started_at,
+                status="failed",
+                error=str(exc),
+                input_payload=input_payload,
+                output_payload={},
+            )
+            raise
 
     if is_model_pool_enabled(kb_dir):
         excluded_routes: set[str] = set()
@@ -503,13 +587,37 @@ def _run_compile_with_model_pool(
     raise RuntimeError("No healthy model routes available for compilation.")
 
 
+def _run_compile_with_fixed_route(
+    kb_dir: Path,
+    route,
+    operation: CompileOperation,
+) -> object:
+    from openkb.llm_runtime import llm_runtime_context
+    from openkb.model_pool import record_route_failure, record_route_success
+
+    profile = _profile_from_model_route(route)
+    try:
+        with llm_runtime_context(_runtime_context_for_profile(kb_dir, profile)):
+            result = asyncio.run(operation(route.model))
+        record_route_success(kb_dir, route.profile_id, route.model)
+        return result
+    except Exception as exc:
+        record_route_failure(kb_dir, route.profile_id, route.model, exc)
+        raise
+
+
 def _run_compile_with_profile_fallback(
     kb_dir: Path,
     profiles: list[dict[str, str]],
     progress_callback: ProgressCallback | None,
     operation: CompileOperation,
+    *,
+    fixed_route=None,
 ) -> object:
     from openkb.model_pool import is_model_pool_enabled
+
+    if fixed_route is not None:
+        return _run_compile_with_fixed_route(kb_dir, fixed_route, operation)
 
     if is_model_pool_enabled(kb_dir):
         return _run_compile_with_model_pool(kb_dir, progress_callback, operation)
@@ -563,6 +671,7 @@ def add_single_file(
     strategy_override: str | None = None,
     progress_callback: ProgressCallback | None = None,
     job=None,
+    model_route=None,
 ) -> None:
     """Convert, index, and compile a single document into the knowledge base.
 
@@ -585,7 +694,8 @@ def add_single_file(
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
     profiles = _ordered_llm_profiles(config)
-    _setup_llm_key(kb_dir, profiles[0])
+    if model_route is None:
+        _setup_llm_key(kb_dir, profiles[0])
     compile_max_concurrency = max(int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])), 1)
     registry = HashRegistry(openkb_dir / "hashes.json")
 
@@ -596,6 +706,7 @@ def add_single_file(
                 profiles,
                 progress_callback,
                 operation,
+                fixed_route=model_route,
             )
 
     # 2. Convert document
@@ -667,6 +778,7 @@ def add_single_file(
                     "pageindex_input_path": str(result.pageindex_input_path),
                     "mode": "pageindex_local",
                 },
+                fixed_route=model_route,
             )
         except Exception as exc:
             click.echo(f"  [WARN] Local PageIndex failed; falling back to OCR local-long: {exc}")
@@ -729,6 +841,7 @@ def add_single_file(
                     "raw_path": str(result.raw_path),
                     "mode": "pageindex_cloud",
                 },
+                fixed_route=model_route,
             )
         except Exception as exc:
             click.echo(f"  [ERROR] Indexing failed: {exc}")
@@ -801,10 +914,69 @@ def add_single_file(
             {"name": file_path.name, "type": doc_type, "ingested_at": current_ingested_at()},
         )
 
-    append_log(kb_dir / "wiki", "ingest", file_path.name)
-    commit_kb_changes(kb_dir, f"Add {file_path.name}")
+    with _kb_mutation_lock(kb_dir):
+        append_log(kb_dir / "wiki", "ingest", file_path.name)
+        commit_kb_changes(kb_dir, f"Add {file_path.name}")
     _emit_progress(progress_callback, f"Finished: {file_path.name}")
     click.echo(f"  [OK] {file_path.name} added to knowledge base.")
+
+
+def _healthy_model_pool_routes(kb_dir: Path) -> list[Any]:
+    from openkb.model_pool import is_model_pool_enabled, route_candidates
+
+    if not is_model_pool_enabled(kb_dir):
+        return []
+    routes = []
+    seen_profiles: set[str] = set()
+    for route in route_candidates(kb_dir):
+        if route.health != "healthy":
+            continue
+        if route.profile_id in seen_profiles:
+            continue
+        routes.append(route)
+        seen_profiles.add(route.profile_id)
+    return routes
+
+
+def _add_directory_files(files: list[Path], kb_dir: Path, *, force: bool = False) -> None:
+    total = len(files)
+    routes = _healthy_model_pool_routes(kb_dir)
+    if len(routes) < 2 or total < 2:
+        for i, f in enumerate(files, 1):
+            click.echo(f"\n[{i}/{total}] ", nl=False)
+            if force:
+                add_single_file(f, kb_dir, force=True)
+            else:
+                add_single_file(f, kb_dir)
+        return
+
+    max_workers = min(len(routes), total)
+    click.echo(f"Importing with {max_workers} parallel task(s) across healthy LLM profile(s).")
+
+    route_buckets: list[list[tuple[int, Path]]] = [[] for _ in range(max_workers)]
+    for offset, item in enumerate(enumerate(files, 1)):
+        route_buckets[offset % max_workers].append(item)
+    errors: list[tuple[Path, Exception]] = []
+    errors_lock = threading.Lock()
+
+    def run_worker(route, bucket: list[tuple[int, Path]]) -> None:
+        for index, file_path in bucket:
+            try:
+                click.echo(f"\n[{index}/{total}] {file_path.name} -> {route.profile_name}/{route.model}")
+                add_single_file(file_path, kb_dir, force=force, strict=True, model_route=route)
+            except Exception as exc:
+                with errors_lock:
+                    errors.append((file_path, exc))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(run_worker, route, bucket)
+            for route, bucket in zip(routes[:max_workers], route_buckets)
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+    for file_path, exc in errors:
+        click.echo(f"  [ERROR] {file_path.name} failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -965,12 +1137,7 @@ def add(ctx, force, path):
             return
         total = len(files)
         click.echo(f"Found {total} supported file(s) in {path}.")
-        for i, f in enumerate(files, 1):
-            click.echo(f"\n[{i}/{total}] ", nl=False)
-            if force:
-                add_single_file(f, kb_dir, force=True)
-            else:
-                add_single_file(f, kb_dir)
+        _add_directory_files(files, kb_dir, force=force)
     else:
         if target.suffix.lower() not in SUPPORTED_EXTENSIONS:
             click.echo(

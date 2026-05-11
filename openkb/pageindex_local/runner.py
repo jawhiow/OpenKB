@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+import os
 from pathlib import Path
 
+from openkb.llm_runtime import runtime_env_overlay
 from openkb.pageindex_local.runtime import read_pageindex_local_manifest, runtime_is_ready
 
 
@@ -48,5 +50,5 @@ def run_pageindex_local(
         text=True,
         capture_output=True,
         timeout=timeout,
+        env={**os.environ, **runtime_env_overlay(model)},
     )
-

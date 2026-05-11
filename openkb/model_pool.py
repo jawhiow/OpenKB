@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from openkb.config import DEFAULT_CONFIG, GLOBAL_CONFIG_DIR, load_config
 
 
 UTC = timezone.utc
+_STATUS_LOCK = threading.RLock()
 
 
 _RUNTIME_ENV_KEYS = (
@@ -205,46 +207,48 @@ def _route_status(route: ModelRoute, **updates: Any) -> dict[str, Any]:
 
 
 def record_route_success(kb_dir: Path, profile_id: str, model: str, *, latency_ms: int | None = None) -> dict[str, Any]:
-    status = load_status(kb_dir)
-    routes_by_id = {route.route_id: route for route in configured_routes(kb_dir)}
-    rid = route_id(profile_id, model)
-    route = routes_by_id.get(rid) or ModelRoute(profile_id, profile_id, model, "", "", "", route_id=rid)
-    current = dict(status.setdefault("routes", {}).get(rid) or {})
-    current.update(
-        _route_status(
-            route,
-            health="healthy",
-            latency_ms=latency_ms,
-            consecutive_failures=0,
-            last_error="",
+    with _STATUS_LOCK:
+        status = load_status(kb_dir)
+        routes_by_id = {route.route_id: route for route in configured_routes(kb_dir)}
+        rid = route_id(profile_id, model)
+        route = routes_by_id.get(rid) or ModelRoute(profile_id, profile_id, model, "", "", "", route_id=rid)
+        current = dict(status.setdefault("routes", {}).get(rid) or {})
+        current.update(
+            _route_status(
+                route,
+                health="healthy",
+                latency_ms=latency_ms,
+                consecutive_failures=0,
+                last_error="",
+            )
         )
-    )
-    current["success_count"] = int(current.get("success_count") or 0) + 1
-    status["routes"][rid] = current
-    save_status(kb_dir, status)
-    return current
+        current["success_count"] = int(current.get("success_count") or 0) + 1
+        status["routes"][rid] = current
+        save_status(kb_dir, status)
+        return current
 
 
 def record_route_failure(kb_dir: Path, profile_id: str, model: str, error: Exception | str) -> dict[str, Any]:
-    status = load_status(kb_dir)
-    routes_by_id = {route.route_id: route for route in configured_routes(kb_dir)}
-    rid = route_id(profile_id, model)
-    route = routes_by_id.get(rid) or ModelRoute(profile_id, profile_id, model, "", "", "", route_id=rid)
-    current = dict(status.setdefault("routes", {}).get(rid) or {})
-    failures = int(current.get("consecutive_failures") or 0) + 1
-    message = str(error).splitlines()[0]
-    current.update(
-        _route_status(
-            route,
-            health="offline",
-            consecutive_failures=failures,
-            last_error=message,
+    with _STATUS_LOCK:
+        status = load_status(kb_dir)
+        routes_by_id = {route.route_id: route for route in configured_routes(kb_dir)}
+        rid = route_id(profile_id, model)
+        route = routes_by_id.get(rid) or ModelRoute(profile_id, profile_id, model, "", "", "", route_id=rid)
+        current = dict(status.setdefault("routes", {}).get(rid) or {})
+        failures = int(current.get("consecutive_failures") or 0) + 1
+        message = str(error).splitlines()[0]
+        current.update(
+            _route_status(
+                route,
+                health="offline",
+                consecutive_failures=failures,
+                last_error=message,
+            )
         )
-    )
-    current["failure_count"] = int(current.get("failure_count") or 0) + 1
-    status["routes"][rid] = current
-    save_status(kb_dir, status)
-    return current
+        current["failure_count"] = int(current.get("failure_count") or 0) + 1
+        status["routes"][rid] = current
+        save_status(kb_dir, status)
+        return current
 
 
 def route_candidates(kb_dir: Path, *, exclude: set[str] | None = None) -> list[ModelRoute]:
@@ -260,19 +264,36 @@ def route_candidates(kb_dir: Path, *, exclude: set[str] | None = None) -> list[M
 
 
 def select_model_route(kb_dir: Path, *, exclude: set[str] | None = None) -> ModelRoute:
-    candidates = route_candidates(kb_dir, exclude=exclude)
-    if not candidates:
-        raise RuntimeError("No healthy model routes available.")
-    expanded: list[ModelRoute] = []
-    for route in candidates:
-        expanded.extend([route] * max(int(route.weight), 1))
-    status = load_status(kb_dir)
-    scheduler = status.setdefault("scheduler", {})
-    cursor = int(scheduler.get("weighted_round_robin_cursor") or 0)
-    selected = expanded[cursor % len(expanded)]
-    scheduler["weighted_round_robin_cursor"] = cursor + 1
-    save_status(kb_dir, status)
-    return selected
+    with _STATUS_LOCK:
+        candidates = route_candidates(kb_dir, exclude=exclude)
+        if not candidates:
+            raise RuntimeError("No healthy model routes available.")
+        status = load_status(kb_dir)
+        scheduler = status.setdefault("scheduler", {})
+        weights = {route.route_id: max(int(route.weight), 1) for route in candidates}
+        current = scheduler.setdefault("weighted_round_robin_current", {})
+        if not isinstance(current, dict):
+            current = {}
+            scheduler["weighted_round_robin_current"] = current
+        candidate_ids = set(weights)
+        for route_key in list(current):
+            if route_key not in candidate_ids:
+                current.pop(route_key, None)
+
+        total_weight = sum(weights.values())
+        selected: ModelRoute | None = None
+        selected_score: int | None = None
+        for route in candidates:
+            score = int(current.get(route.route_id) or 0) + weights[route.route_id]
+            current[route.route_id] = score
+            if selected is None or score > int(selected_score or 0):
+                selected = route
+                selected_score = score
+        assert selected is not None
+        current[selected.route_id] = int(current.get(selected.route_id) or 0) - total_weight
+        scheduler["weighted_round_robin_cursor"] = int(scheduler.get("weighted_round_robin_cursor") or 0) + 1
+        save_status(kb_dir, status)
+        return selected
 
 
 def probe_model_route(kb_dir: Path, route: ModelRoute, *, api_key: str = "", timeout: int = 20) -> dict[str, Any]:
