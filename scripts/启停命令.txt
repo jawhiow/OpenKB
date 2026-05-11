@@ -6,7 +6,7 @@
 # 查看状态
 powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 status
 
-# 启动页面服务，默认 127.0.0.1:8765，默认 --no-browser
+# 启动页面服务，默认 0.0.0.0:8765，默认 --no-browser
 powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 start
 
 # 停止由这个脚本启动的服务
@@ -29,7 +29,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 start -Brow
 powershell -ExecutionPolicy Bypass -File .\scripts\openkb-client.ps1 start -Python .\.venv\Scripts\python.exe
 ```
 
-脚本默认会用 `.\.venv\Scripts\python.exe -m openkb client --host 127.0.0.1 --port 8765 --no-browser` 启动服务，PID 和日志会写到：
+脚本默认会用 `.\.venv\Scripts\python.exe -m openkb client --host 0.0.0.0 --port 8765 --no-browser` 启动服务，PID 和日志会写到：
 
 ```text
 .openkb-client/client-8765.pid

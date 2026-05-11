@@ -154,7 +154,7 @@ A single source might touch 10-15 wiki pages. Knowledge accumulates: each docume
 | Command | Description |
 |---|---|
 | `openkb init` | Initialize a new knowledge base (interactive) |
-| <code>openkb&nbsp;add&nbsp;&lt;file_or_dir&gt;</code> | Add documents and compile to wiki |
+| <code>openkb&nbsp;add&nbsp;&lt;file_or_dir&gt;</code> | Add documents and compile to wiki (optionally with a pre-ingest scoring gate) |
 | <code>openkb&nbsp;query&nbsp;"question"</code> | Ask a question over the knowledge base (use `--save` to save the answer to `wiki/explorations/`) |
 | `openkb chat` | Start an interactive multi-turn chat (use `--resume`, `--list`, `--delete` to manage sessions) |
 | `openkb watch` | Watch `raw/` and auto-compile new files |
@@ -243,12 +243,57 @@ Settings are initialized by `openkb init`, and stored in `.openkb/config.yaml`:
 model: gpt-5.4                   # LLM model (any LiteLLM-supported provider)
 language: en                     # Wiki output language
 pageindex_threshold: 20          # PDF pages threshold for PageIndex-style long-doc routing
+ingest_gate:
+  enabled: false                 # Score candidate documents before they enter raw/
+  pass_threshold: 75             # PASS if score >= 75
+  hold_threshold: 60             # HOLD if 60 <= score < 75
+  hard_reject_enabled: true      # Block hard rejects from the scorer
+  log_all_decisions: true        # Record decisions into wiki/explorations + .openkb history
+  allow_force_pass: true         # Allow operator override to force a pass
+  allow_force_reject: true       # Allow operator override to force a reject
 ocr_enabled: true                # Enable OCR recommendations for scanned PDFs
 ocr_default_model: PaddleOCR-VL-1.5
 ocr_chunk_pages: 100             # PaddleOCR requests are capped at 100 pages
 pageindex_local_enabled: false   # Use OCR Markdown with a local PageIndex runtime
 wire_api: responses              # gpt-5 models prefer responses
 ```
+
+### Pre-ingest Scoring Gate
+
+OpenKB can score candidate documents before they are copied into `raw/`.
+This is useful when you want to keep the knowledge base high-signal and avoid
+polluting the wiki with low-value source material.
+
+When `ingest_gate.enabled: true`, `openkb add` will:
+
+1. extract a lightweight preview from the source document
+2. compare it against the current KB index
+3. ask the configured LLM to score the document
+4. record the decision in:
+   - `.openkb/ingest_gate_history.jsonl`
+   - `wiki/explorations/ingest_gate.md` (or the localized Chinese page name)
+5. only proceed with ingest when the final decision is `PASS` or `FORCE_PASS`
+
+The gate supports:
+
+- configurable thresholds
+- a global on/off switch
+- detailed dimension-level scoring reasons
+- operator overrides
+
+Force a document through:
+
+```bash
+openkb add --force-pass --gate-reason "primary source; strategic inclusion" paper.pdf
+```
+
+Force a document to be rejected:
+
+```bash
+openkb add --force-reject --gate-reason "known duplicate; do not ingest" paper.pdf
+```
+
+Override decisions are still recorded in the audit trail.
 
 For OpenAI-compatible providers:
 

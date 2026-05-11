@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import json
 import os
+import tempfile
+import threading
 import time
 import webbrowser
 from collections.abc import AsyncIterator
@@ -342,6 +345,13 @@ def create_app(registry: JobRegistry | None = None):
                 language=str(payload.get("language") or DEFAULT_CONFIG["language"]),
                 pageindex_threshold=int(payload.get("pageindex_threshold") or DEFAULT_CONFIG["pageindex_threshold"]),
                 compile_max_concurrency=int(payload.get("compile_max_concurrency") or DEFAULT_CONFIG["compile_max_concurrency"]),
+                ingest_gate_enabled=payload.get("ingest_gate_enabled"),
+                ingest_gate_pass_threshold=payload.get("ingest_gate_pass_threshold"),
+                ingest_gate_hold_threshold=payload.get("ingest_gate_hold_threshold"),
+                ingest_gate_hard_reject_enabled=payload.get("ingest_gate_hard_reject_enabled"),
+                ingest_gate_log_all_decisions=payload.get("ingest_gate_log_all_decisions"),
+                ingest_gate_allow_force_pass=payload.get("ingest_gate_allow_force_pass"),
+                ingest_gate_allow_force_reject=payload.get("ingest_gate_allow_force_reject"),
                 wire_api=payload.get("wire_api"),
                 base_url=str(payload.get("base_url") or ""),
                 api_key=str(payload.get("api_key") or ""),
@@ -379,13 +389,33 @@ def create_app(registry: JobRegistry | None = None):
         message_source: str | None = None,
         strategy_override: str | None = None,
         force: bool = False,
+        force_gate_pass: bool = False,
+        force_gate_reject: bool = False,
+        gate_reason: str = "",
+        gate_operator: str = "",
     ):
         def run(job):
-            from openkb.cli import SUPPORTED_EXTENSIONS, add_single_file
+            from openkb.cli import SUPPORTED_EXTENSIONS, _healthy_model_pool_routes, add_single_file
 
             def progress(message: str) -> None:
                 job.raise_if_stopped()
                 job.add_log(message)
+
+            class _ParallelChildJobProxy:
+                """Forward logs/stop checks without letting child tasks overwrite batch progress."""
+
+                def add_log(self, message: str, level: str = "info") -> None:
+                    job.raise_if_stopped()
+                    job.add_log(message, level=level)
+
+                def set_message(self, message: str) -> None:
+                    self.add_log(message)
+
+                def set_progress(self, current: int, total: int) -> None:
+                    return None
+
+                def raise_if_stopped(self) -> None:
+                    job.raise_if_stopped()
 
             files: list[Path]
             if preset_files is not None:
@@ -413,47 +443,109 @@ def create_app(registry: JobRegistry | None = None):
                 raise ValueError("No supported files found.")
             job.set_progress(0, len(files))
             job.add_log(f"Found {len(files)} supported file(s)")
+            routes = _healthy_model_pool_routes(target_kb) if len(files) > 1 else []
+            if len(routes) >= 2:
+                max_workers = min(len(routes), len(files))
+                job.add_log(f"Importing with {max_workers} parallel task(s) across healthy LLM profile(s).")
+            else:
+                max_workers = 1
             added = 0
             failures: list[dict[str, str]] = []
-            for index, file_path in enumerate(files, 1):
+            completed = 0
+            state_lock = threading.Lock()
+
+            def run_one(index: int, file_path: Path, *, model_route=None, child_job=None) -> None:
                 job.raise_if_stopped()
                 if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                     raise ValueError(f"Unsupported file type: {file_path.suffix}")
-                job.set_progress(index - 1, len(files))
                 job.set_message(f"Adding {index}/{len(files)}: {file_path.name}")
-                try:
-                    add_kwargs: dict[str, Any] = {
-                        "strict": True,
-                        "progress_callback": progress,
-                    }
-                    if strategy_override:
-                        add_kwargs["strategy_override"] = strategy_override
-                    if force:
-                        add_kwargs["force"] = True
-                    if _callable_accepts_keyword(add_single_file, "job"):
-                        add_kwargs["job"] = job
-                    add_single_file(
-                        file_path,
-                        target_kb,
-                        **add_kwargs,
-                    )
-                    job.raise_if_stopped()
-                except Exception as exc:
-                    if isinstance(exc, JobStopped):
-                        raise
+                if model_route is not None:
+                    route_name = f"{model_route.profile_name}/{model_route.model}"
+                    job.add_log(f"Dispatching {index}/{len(files)}: {file_path.name} -> {route_name}")
+                add_kwargs: dict[str, Any] = {
+                    "strict": True,
+                    "progress_callback": progress,
+                }
+                if strategy_override:
+                    add_kwargs["strategy_override"] = strategy_override
+                if force:
+                    add_kwargs["force"] = True
+                if _callable_accepts_keyword(add_single_file, "force_gate_pass"):
+                    add_kwargs["force_gate_pass"] = force_gate_pass
+                if _callable_accepts_keyword(add_single_file, "force_gate_reject"):
+                    add_kwargs["force_gate_reject"] = force_gate_reject
+                if _callable_accepts_keyword(add_single_file, "gate_reason"):
+                    add_kwargs["gate_reason"] = gate_reason
+                if _callable_accepts_keyword(add_single_file, "gate_operator"):
+                    add_kwargs["gate_operator"] = gate_operator
+                if child_job is not None and _callable_accepts_keyword(add_single_file, "job"):
+                    add_kwargs["job"] = child_job
+                elif _callable_accepts_keyword(add_single_file, "job"):
+                    add_kwargs["job"] = job
+                if model_route is not None and _callable_accepts_keyword(add_single_file, "model_route"):
+                    add_kwargs["model_route"] = model_route
+                add_single_file(
+                    file_path,
+                    target_kb,
+                    **add_kwargs,
+                )
+                job.raise_if_stopped()
+
+            def record_success(index: int, file_path: Path) -> None:
+                nonlocal added, completed
+                with state_lock:
+                    added += 1
+                    completed += 1
+                    job.set_progress(completed, len(files))
+                    job.add_log(f"Finished {index}/{len(files)}: {file_path.name}")
+
+            def record_failure(index: int, file_path: Path, exc: Exception) -> None:
+                nonlocal completed
+                if isinstance(exc, JobStopped):
+                    raise exc
+                with state_lock:
                     job.add_log(f"Failed {file_path.name}: {exc}", level="error")
                     if len(files) == 1:
-                        raise
+                        raise exc
                     failures.append({
                         "name": file_path.name,
                         "path": str(file_path),
                         "error": str(exc),
                     })
-                    job.set_progress(index, len(files))
-                    continue
-                added += 1
-                job.set_progress(index, len(files))
-                job.add_log(f"Finished {index}/{len(files)}: {file_path.name}")
+                    completed += 1
+                    job.set_progress(completed, len(files))
+
+            if max_workers == 1:
+                for index, file_path in enumerate(files, 1):
+                    try:
+                        run_one(index, file_path)
+                    except Exception as exc:
+                        record_failure(index, file_path, exc)
+                        continue
+                    record_success(index, file_path)
+            else:
+                route_buckets: list[list[tuple[int, Path]]] = [[] for _ in range(max_workers)]
+                for offset, item in enumerate(enumerate(files, 1)):
+                    route_buckets[offset % max_workers].append(item)
+
+                def worker(route, bucket: list[tuple[int, Path]]) -> None:
+                    child_job = _ParallelChildJobProxy()
+                    for index, file_path in bucket:
+                        try:
+                            run_one(index, file_path, model_route=route, child_job=child_job)
+                        except Exception as exc:
+                            record_failure(index, file_path, exc)
+                            continue
+                        record_success(index, file_path)
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [
+                        executor.submit(worker, route, bucket)
+                        for route, bucket in zip(routes[:max_workers], route_buckets)
+                        if bucket
+                    ]
+                    for future in concurrent.futures.as_completed(futures):
+                        future.result()
             if failures and added == 0:
                 if len(failures) == 1:
                     raise RuntimeError(failures[0]["error"])
@@ -465,6 +557,12 @@ def create_app(registry: JobRegistry | None = None):
                     level="warning",
                 )
             job.raise_if_stopped()
+            for staged in preset_files or []:
+                try:
+                    if staged.exists() and ".openkb-upload-" in staged.name:
+                        staged.unlink()
+                except OSError:
+                    pass
             return {
                 "added": added,
                 "failed": len(failures),
@@ -487,6 +585,10 @@ def create_app(registry: JobRegistry | None = None):
             target_kb,
             source,
             strategy_override=str(payload.get("strategy_override") or "").strip() or None,
+            force_gate_pass=bool(payload.get("force_gate_pass", False)),
+            force_gate_reject=bool(payload.get("force_gate_reject", False)),
+            gate_reason=str(payload.get("gate_reason") or "").strip(),
+            gate_operator=str(payload.get("gate_operator") or "").strip(),
         )
         return {"job": job.to_dict()}
 
@@ -495,6 +597,10 @@ def create_app(registry: JobRegistry | None = None):
         file: list[UploadFile] = File(...),
         kb_dir: str | None = None,
         strategy_override: str | None = None,
+        force_gate_pass: bool = False,
+        force_gate_reject: bool = False,
+        gate_reason: str = "",
+        gate_operator: str = "",
     ) -> dict[str, Any]:
         try:
             target_kb = _resolve_kb_dir(kb_dir)
@@ -503,14 +609,15 @@ def create_app(registry: JobRegistry | None = None):
             uploads = list(file)
             if not uploads:
                 raise ValueError("No files uploaded.")
-            raw_dir = target_kb / "raw"
-            raw_dir.mkdir(exist_ok=True)
+            staging_dir = target_kb / ".openkb" / "uploads"
+            staging_dir.mkdir(parents=True, exist_ok=True)
             destinations: list[Path] = []
             for upload in uploads:
                 suffix = Path(upload.filename or "").suffix.lower()
                 if suffix not in SUPPORTED_EXTENSIONS:
                     raise ValueError(f"Unsupported file type: {suffix}")
-                destination = raw_dir / Path(upload.filename or "upload").name
+                safe_name = Path(upload.filename or "upload").name
+                destination = staging_dir / f".openkb-upload-{next(tempfile._get_candidate_names())}-{safe_name}"
                 destination.write_bytes(await upload.read())
                 destinations.append(destination)
         except Exception as exc:
@@ -521,6 +628,10 @@ def create_app(registry: JobRegistry | None = None):
             preset_files=destinations,
             message_source=f"{len(destinations)} uploaded file(s)",
             strategy_override=str(strategy_override or "").strip() or None,
+            force_gate_pass=force_gate_pass,
+            force_gate_reject=force_gate_reject,
+            gate_reason=str(gate_reason or "").strip(),
+            gate_operator=str(gate_operator or "").strip(),
         )
         return {"job": job.to_dict()}
 
@@ -1109,7 +1220,7 @@ def create_app(registry: JobRegistry | None = None):
     return app
 
 
-def serve_client(*, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+def serve_client(*, host: str = "0.0.0.0", port: int = 8765, open_browser: bool = True) -> None:
     """Start the local client server."""
     _FastAPI, _File, _FileResponse, _HTTPException, _Query, _Response, _StaticFiles, _UploadFile, uvicorn = _import_web_dependencies()
     url = f"http://{host}:{port}"

@@ -30,6 +30,14 @@ litellm.suppress_debug_info = True
 from dotenv import dotenv_values, load_dotenv
 
 from openkb.config import DEFAULT_CONFIG, load_config, save_config, load_global_config, register_kb
+from openkb.ingest_gate import (
+    evaluate_candidate,
+    gate_is_active,
+    gate_summary_line,
+    ingest_gate_config,
+    record_gate_decision,
+    should_continue_ingest,
+)
 from openkb.llm_runtime import configure_runtime, get_base_url, model_prefers_responses_api
 from openkb.converter import convert_document
 from openkb.kb_git import commit_kb_changes, ensure_kb_git
@@ -667,6 +675,10 @@ def add_single_file(
     kb_dir: Path,
     *,
     force: bool = False,
+    force_gate_pass: bool = False,
+    force_gate_reject: bool = False,
+    gate_reason: str = "",
+    gate_operator: str = "",
     strict: bool = False,
     strategy_override: str | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -696,7 +708,10 @@ def add_single_file(
     profiles = _ordered_llm_profiles(config)
     if model_route is None:
         _setup_llm_key(kb_dir, profiles[0])
+    else:
+        _setup_llm_key(kb_dir, _profile_from_model_route(model_route))
     compile_max_concurrency = max(int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])), 1)
+    gate_config = ingest_gate_config(config)
     registry = HashRegistry(openkb_dir / "hashes.json")
 
     def _run_compile(operation):
@@ -708,6 +723,62 @@ def add_single_file(
                 operation,
                 fixed_route=model_route,
             )
+
+    if force_gate_pass and not gate_config.allow_force_pass:
+        message = "Ingest gate force-pass is disabled by config."
+        click.echo(f"  [ERROR] {message}")
+        if strict:
+            raise RuntimeError(message)
+        return
+    if force_gate_reject and not gate_config.allow_force_reject:
+        message = "Ingest gate force-reject is disabled by config."
+        click.echo(f"  [ERROR] {message}")
+        if strict:
+            raise RuntimeError(message)
+        return
+
+    if gate_is_active(gate_config, force_pass=force_gate_pass, force_reject=force_gate_reject):
+        gate_model = str(config.get("ingest_gate", {}).get("model") or profiles[0]["model"]).strip()
+        click.echo(f"  Pre-ingest gate evaluating: {file_path.name}")
+        _emit_progress(progress_callback, f"Pre-ingest gate: {file_path.name}")
+        try:
+            with llm_usage_context(kb_dir, "ingest_gate"):
+                gate_result = evaluate_candidate(
+                    file_path,
+                    kb_dir,
+                    model=gate_model,
+                    language=str(config.get("language") or DEFAULT_CONFIG["language"]),
+                    config=gate_config,
+                    force_pass=force_gate_pass,
+                    force_reject=force_gate_reject,
+                    force_reason=gate_reason,
+                    operator=gate_operator,
+                )
+        except Exception as exc:
+            click.echo(f"  [ERROR] Ingest gate failed: {exc}")
+            logger.debug("Ingest gate traceback:", exc_info=True)
+            if strict:
+                raise RuntimeError(f"Ingest gate failed: {exc}") from exc
+            return
+
+        if gate_config.log_all_decisions:
+            with _kb_mutation_lock(kb_dir):
+                record_gate_decision(
+                    kb_dir,
+                    gate_result,
+                    language=str(config.get("language") or DEFAULT_CONFIG["language"]),
+                )
+                append_log(kb_dir / "wiki", "ingest-gate", f"{file_path.name} | {gate_summary_line(gate_result)}")
+                commit_kb_changes(
+                    kb_dir,
+                    f"Gate {file_path.name} -> {gate_result.get('final_decision')} {gate_result.get('total_score', 'unscored')}",
+                )
+
+        click.echo(f"  Gate result: {gate_summary_line(gate_result)}")
+        if not should_continue_ingest(gate_result):
+            click.echo(f"  [SKIP] Ingest blocked by gate: {file_path.name}")
+            _emit_progress(progress_callback, f"Gate blocked ingest: {file_path.name}")
+            return
 
     # 2. Convert document
     click.echo(f"Adding: {file_path.name}")
@@ -938,16 +1009,40 @@ def _healthy_model_pool_routes(kb_dir: Path) -> list[Any]:
     return routes
 
 
-def _add_directory_files(files: list[Path], kb_dir: Path, *, force: bool = False) -> None:
+def _add_directory_files(
+    files: list[Path],
+    kb_dir: Path,
+    *,
+    force: bool = False,
+    force_gate_pass: bool = False,
+    force_gate_reject: bool = False,
+    gate_reason: str = "",
+    gate_operator: str = "",
+) -> None:
     total = len(files)
     routes = _healthy_model_pool_routes(kb_dir)
     if len(routes) < 2 or total < 2:
         for i, f in enumerate(files, 1):
             click.echo(f"\n[{i}/{total}] ", nl=False)
             if force:
-                add_single_file(f, kb_dir, force=True)
+                add_single_file(
+                    f,
+                    kb_dir,
+                    force=True,
+                    force_gate_pass=force_gate_pass,
+                    force_gate_reject=force_gate_reject,
+                    gate_reason=gate_reason,
+                    gate_operator=gate_operator,
+                )
             else:
-                add_single_file(f, kb_dir)
+                add_single_file(
+                    f,
+                    kb_dir,
+                    force_gate_pass=force_gate_pass,
+                    force_gate_reject=force_gate_reject,
+                    gate_reason=gate_reason,
+                    gate_operator=gate_operator,
+                )
         return
 
     max_workers = min(len(routes), total)
@@ -963,7 +1058,17 @@ def _add_directory_files(files: list[Path], kb_dir: Path, *, force: bool = False
         for index, file_path in bucket:
             try:
                 click.echo(f"\n[{index}/{total}] {file_path.name} -> {route.profile_name}/{route.model}")
-                add_single_file(file_path, kb_dir, force=force, strict=True, model_route=route)
+                add_single_file(
+                    file_path,
+                    kb_dir,
+                    force=force,
+                    force_gate_pass=force_gate_pass,
+                    force_gate_reject=force_gate_reject,
+                    gate_reason=gate_reason,
+                    gate_operator=gate_operator,
+                    strict=True,
+                    model_route=route,
+                )
             except Exception as exc:
                 with errors_lock:
                     errors.append((file_path, exc))
@@ -1112,10 +1217,20 @@ def init():
 
 @cli.command()
 @click.option("--force", is_flag=True, default=False, help="Recompile even if the document hash is already indexed.")
+@click.option("--force-pass", is_flag=True, default=False, help="Force the ingest gate to allow this document.")
+@click.option("--force-reject", is_flag=True, default=False, help="Force the ingest gate to reject this document.")
+@click.option("--gate-reason", default="", help="Reason recorded for force-pass or force-reject.")
+@click.option("--gate-operator", default="", help="Operator name recorded in ingest gate audit.")
 @click.argument("path")
 @click.pass_context
-def add(ctx, force, path):
+def add(ctx, force, force_pass, force_reject, gate_reason, gate_operator, path):
     """Add a document or directory of documents at PATH to the knowledge base."""
+    if force_pass and force_reject:
+        click.echo("Cannot use --force-pass and --force-reject together.")
+        return
+    if (force_pass or force_reject) and not gate_reason.strip():
+        click.echo("--gate-reason is required when using --force-pass or --force-reject.")
+        return
     kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
     if kb_dir is None:
         click.echo("No knowledge base found. Run `openkb init` first.")
@@ -1137,7 +1252,15 @@ def add(ctx, force, path):
             return
         total = len(files)
         click.echo(f"Found {total} supported file(s) in {path}.")
-        _add_directory_files(files, kb_dir, force=force)
+        _add_directory_files(
+            files,
+            kb_dir,
+            force=force,
+            force_gate_pass=force_pass,
+            force_gate_reject=force_reject,
+            gate_reason=gate_reason,
+            gate_operator=gate_operator,
+        )
     else:
         if target.suffix.lower() not in SUPPORTED_EXTENSIONS:
             click.echo(
@@ -1146,9 +1269,24 @@ def add(ctx, force, path):
             )
             return
         if force:
-            add_single_file(target, kb_dir, force=True)
+            add_single_file(
+                target,
+                kb_dir,
+                force=True,
+                force_gate_pass=force_pass,
+                force_gate_reject=force_reject,
+                gate_reason=gate_reason,
+                gate_operator=gate_operator,
+            )
         else:
-            add_single_file(target, kb_dir)
+            add_single_file(
+                target,
+                kb_dir,
+                force_gate_pass=force_pass,
+                force_gate_reject=force_reject,
+                gate_reason=gate_reason,
+                gate_operator=gate_operator,
+            )
 
 
 @cli.command()
@@ -1822,7 +1960,7 @@ def status(ctx):
 
 
 @cli.command()
-@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind the local client server.")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Host to bind the local client server.")
 @click.option("--port", default=8765, show_default=True, type=int, help="Port for the local client server.")
 @click.option("--no-browser", is_flag=True, default=False, help="Do not open a browser automatically.")
 def client(host, port, no_browser):

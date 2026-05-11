@@ -1,5 +1,13 @@
 model: gpt-5.4                   # LLM model (any LiteLLM-supported provider)
 language: en                     # Wiki output language
 pageindex_threshold: 20          # PDF pages threshold for PageIndex-style long-doc routing
+ingest_gate:
+  enabled: false                 # Enable pre-ingest scoring gate before files enter raw/
+  pass_threshold: 75             # PASS if total score >= this value
+  hold_threshold: 60             # HOLD if hold_threshold <= score < pass_threshold
+  hard_reject_enabled: true      # Enforce hard reject flags from the scoring model
+  log_all_decisions: true        # Record gate decisions to wiki/explorations + .openkb history
+  allow_force_pass: true         # Allow CLI/operator override to force a pass
+  allow_force_reject: true       # Allow CLI/operator override to force a reject
 wire_api: responses              # gpt-5 models prefer responses; others may use chat_completions
 base_url: ""                     # Optional OpenAI-compatible gateway URL, e.g. https://api.example.com/v1

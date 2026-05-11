@@ -48,6 +48,13 @@ _GENERAL_CONFIG_KEYS = {
     "language",
     "pageindex_threshold",
     "compile_max_concurrency",
+    "ingest_gate_enabled",
+    "ingest_gate_pass_threshold",
+    "ingest_gate_hold_threshold",
+    "ingest_gate_hard_reject_enabled",
+    "ingest_gate_log_all_decisions",
+    "ingest_gate_allow_force_pass",
+    "ingest_gate_allow_force_reject",
     "ocr_enabled",
     "ocr_detection_mode",
     "ocr_default_model",
@@ -820,11 +827,19 @@ def get_config_data(kb_dir: Path) -> dict[str, Any]:
     active_profile = _find_profile(profiles, active_id) or profiles[0]
     env_values = _read_env_values(kb_dir)
     runtime_fields = _pageindex_local_runtime_fields(kb_dir)
+    ingest_gate = config.get("ingest_gate") if isinstance(config.get("ingest_gate"), dict) else {}
     return {
         "model": active_profile.get("model", config.get("model", DEFAULT_CONFIG["model"])),
         "language": config.get("language", DEFAULT_CONFIG["language"]),
         "pageindex_threshold": config.get("pageindex_threshold", DEFAULT_CONFIG["pageindex_threshold"]),
         "compile_max_concurrency": int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])),
+        "ingest_gate_enabled": bool(ingest_gate.get("enabled", DEFAULT_CONFIG["ingest_gate"]["enabled"])),
+        "ingest_gate_pass_threshold": int(ingest_gate.get("pass_threshold", DEFAULT_CONFIG["ingest_gate"]["pass_threshold"])),
+        "ingest_gate_hold_threshold": int(ingest_gate.get("hold_threshold", DEFAULT_CONFIG["ingest_gate"]["hold_threshold"])),
+        "ingest_gate_hard_reject_enabled": bool(ingest_gate.get("hard_reject_enabled", DEFAULT_CONFIG["ingest_gate"]["hard_reject_enabled"])),
+        "ingest_gate_log_all_decisions": bool(ingest_gate.get("log_all_decisions", DEFAULT_CONFIG["ingest_gate"]["log_all_decisions"])),
+        "ingest_gate_allow_force_pass": bool(ingest_gate.get("allow_force_pass", DEFAULT_CONFIG["ingest_gate"]["allow_force_pass"])),
+        "ingest_gate_allow_force_reject": bool(ingest_gate.get("allow_force_reject", DEFAULT_CONFIG["ingest_gate"]["allow_force_reject"])),
         "ocr_enabled": bool(config.get("ocr_enabled", DEFAULT_CONFIG["ocr_enabled"])),
         "ocr_detection_mode": str(config.get("ocr_detection_mode", DEFAULT_CONFIG["ocr_detection_mode"])),
         "ocr_default_model": str(config.get("ocr_default_model", DEFAULT_CONFIG["ocr_default_model"])),
@@ -1136,6 +1151,7 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
     profiles, active_id = _normalize_profiles(config)
     env_values = _read_env_values(kb_dir)
     runtime_fields = _pageindex_local_runtime_fields(kb_dir, include_version=True)
+    ingest_gate = config.get("ingest_gate") if isinstance(config.get("ingest_gate"), dict) else {}
     return {
         "format": _CONFIG_EXPORT_FORMAT,
         "active_profile": active_id,
@@ -1143,6 +1159,13 @@ def export_config_data(kb_dir: Path) -> dict[str, Any]:
             "language": config.get("language", DEFAULT_CONFIG["language"]),
             "pageindex_threshold": int(config.get("pageindex_threshold", DEFAULT_CONFIG["pageindex_threshold"])),
             "compile_max_concurrency": int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])),
+            "ingest_gate_enabled": bool(ingest_gate.get("enabled", DEFAULT_CONFIG["ingest_gate"]["enabled"])),
+            "ingest_gate_pass_threshold": int(ingest_gate.get("pass_threshold", DEFAULT_CONFIG["ingest_gate"]["pass_threshold"])),
+            "ingest_gate_hold_threshold": int(ingest_gate.get("hold_threshold", DEFAULT_CONFIG["ingest_gate"]["hold_threshold"])),
+            "ingest_gate_hard_reject_enabled": bool(ingest_gate.get("hard_reject_enabled", DEFAULT_CONFIG["ingest_gate"]["hard_reject_enabled"])),
+            "ingest_gate_log_all_decisions": bool(ingest_gate.get("log_all_decisions", DEFAULT_CONFIG["ingest_gate"]["log_all_decisions"])),
+            "ingest_gate_allow_force_pass": bool(ingest_gate.get("allow_force_pass", DEFAULT_CONFIG["ingest_gate"]["allow_force_pass"])),
+            "ingest_gate_allow_force_reject": bool(ingest_gate.get("allow_force_reject", DEFAULT_CONFIG["ingest_gate"]["allow_force_reject"])),
             "ocr_enabled": bool(config.get("ocr_enabled", DEFAULT_CONFIG["ocr_enabled"])),
             "ocr_detection_mode": str(config.get("ocr_detection_mode", DEFAULT_CONFIG["ocr_detection_mode"])),
             "ocr_default_model": str(config.get("ocr_default_model", DEFAULT_CONFIG["ocr_default_model"])),
@@ -1252,6 +1275,22 @@ def import_config_data(kb_dir: Path, imported: dict[str, Any]) -> dict[str, Any]
         config["pageindex_threshold"] = max(int(settings["pageindex_threshold"]), 1)
     if "compile_max_concurrency" in settings:
         config["compile_max_concurrency"] = max(int(settings["compile_max_concurrency"]), 1)
+    ingest_gate = config.get("ingest_gate") if isinstance(config.get("ingest_gate"), dict) else dict(DEFAULT_CONFIG["ingest_gate"])
+    if "ingest_gate_enabled" in settings:
+        ingest_gate["enabled"] = bool(settings["ingest_gate_enabled"])
+    if "ingest_gate_pass_threshold" in settings:
+        ingest_gate["pass_threshold"] = max(int(settings["ingest_gate_pass_threshold"]), 0)
+    if "ingest_gate_hold_threshold" in settings:
+        ingest_gate["hold_threshold"] = max(int(settings["ingest_gate_hold_threshold"]), 0)
+    if "ingest_gate_hard_reject_enabled" in settings:
+        ingest_gate["hard_reject_enabled"] = bool(settings["ingest_gate_hard_reject_enabled"])
+    if "ingest_gate_log_all_decisions" in settings:
+        ingest_gate["log_all_decisions"] = bool(settings["ingest_gate_log_all_decisions"])
+    if "ingest_gate_allow_force_pass" in settings:
+        ingest_gate["allow_force_pass"] = bool(settings["ingest_gate_allow_force_pass"])
+    if "ingest_gate_allow_force_reject" in settings:
+        ingest_gate["allow_force_reject"] = bool(settings["ingest_gate_allow_force_reject"])
+    config["ingest_gate"] = ingest_gate
     if "ocr_enabled" in settings:
         config["ocr_enabled"] = bool(settings["ocr_enabled"])
     if "ocr_detection_mode" in settings:
@@ -1380,11 +1419,27 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
         elif key in _GENERAL_CONFIG_KEYS:
             if key in {"pageindex_threshold", "compile_max_concurrency", "ocr_chunk_pages"}:
                 value = max(int(value), 1)
+            elif key in {"ingest_gate_pass_threshold", "ingest_gate_hold_threshold"}:
+                value = max(int(value), 0)
             elif key in {"ocr_enabled", "ocr_auto_recommend", "pageindex_local_enabled"}:
+                value = bool(value)
+            elif key in {
+                "ingest_gate_enabled",
+                "ingest_gate_hard_reject_enabled",
+                "ingest_gate_log_all_decisions",
+                "ingest_gate_allow_force_pass",
+                "ingest_gate_allow_force_reject",
+            }:
                 value = bool(value)
             else:
                 value = str(value or "").strip() if key not in {"language"} else value
-            config[key] = value
+            if key.startswith("ingest_gate_"):
+                gate = config.get("ingest_gate") if isinstance(config.get("ingest_gate"), dict) else dict(DEFAULT_CONFIG["ingest_gate"])
+                gate_key = key.removeprefix("ingest_gate_")
+                gate[gate_key] = value
+                config["ingest_gate"] = gate
+            else:
+                config[key] = value
         elif key in _MODEL_POOL_CONFIG_KEYS:
             pool = model_pool_config(config)
             if key == "model_pool_enabled":
@@ -1422,6 +1477,13 @@ def init_kb(
     language: str = "en",
     pageindex_threshold: int = 20,
     compile_max_concurrency: int = 2,
+    ingest_gate_enabled: bool | None = None,
+    ingest_gate_pass_threshold: int | None = None,
+    ingest_gate_hold_threshold: int | None = None,
+    ingest_gate_hard_reject_enabled: bool | None = None,
+    ingest_gate_log_all_decisions: bool | None = None,
+    ingest_gate_allow_force_pass: bool | None = None,
+    ingest_gate_allow_force_reject: bool | None = None,
     wire_api: str | None = None,
     base_url: str = "",
     api_key: str = "",
@@ -1457,6 +1519,22 @@ def init_kb(
     openkb_dir.mkdir(parents=True)
     resolved_wire_api = wire_api or ("responses" if model_prefers_responses_api(model) else DEFAULT_CONFIG["wire_api"])
     resolved_base_url = base_url.strip().rstrip("/")
+    ingest_gate = dict(DEFAULT_CONFIG["ingest_gate"])
+    if ingest_gate_enabled is not None:
+        ingest_gate["enabled"] = bool(ingest_gate_enabled)
+    if ingest_gate_pass_threshold is not None:
+        ingest_gate["pass_threshold"] = max(int(ingest_gate_pass_threshold), 0)
+    if ingest_gate_hold_threshold is not None:
+        ingest_gate["hold_threshold"] = max(int(ingest_gate_hold_threshold), 0)
+    if ingest_gate_hard_reject_enabled is not None:
+        ingest_gate["hard_reject_enabled"] = bool(ingest_gate_hard_reject_enabled)
+    if ingest_gate_log_all_decisions is not None:
+        ingest_gate["log_all_decisions"] = bool(ingest_gate_log_all_decisions)
+    if ingest_gate_allow_force_pass is not None:
+        ingest_gate["allow_force_pass"] = bool(ingest_gate_allow_force_pass)
+    if ingest_gate_allow_force_reject is not None:
+        ingest_gate["allow_force_reject"] = bool(ingest_gate_allow_force_reject)
+
     config = {
         "active_llm_profile": _DEFAULT_PROFILE_ID,
         "llm_profiles": [
@@ -1473,6 +1551,7 @@ def init_kb(
         "language": language,
         "pageindex_threshold": int(pageindex_threshold),
         "compile_max_concurrency": max(int(compile_max_concurrency), 1),
+        "ingest_gate": ingest_gate,
         "ocr_enabled": DEFAULT_CONFIG["ocr_enabled"],
         "ocr_detection_mode": DEFAULT_CONFIG["ocr_detection_mode"],
         "ocr_default_model": DEFAULT_CONFIG["ocr_default_model"],

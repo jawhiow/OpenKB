@@ -489,6 +489,55 @@ def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monke
     assert job.progress_total == 1
 
 
+def test_add_document_job_passes_ingest_gate_overrides(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    source = tmp_path / "doc.txt"
+    source.write_text("hello", encoding="utf-8")
+    registry = JobRegistry()
+    calls: dict[str, object] = {}
+
+    def fake_add_single_file(
+        file_path,
+        target_kb,
+        *,
+        strict=False,
+        progress_callback=None,
+        force_gate_pass=False,
+        force_gate_reject=False,
+        gate_reason="",
+        gate_operator="",
+    ):
+        calls["force_gate_pass"] = force_gate_pass
+        calls["force_gate_reject"] = force_gate_reject
+        calls["gate_reason"] = gate_reason
+        calls["gate_operator"] = gate_operator
+
+    monkeypatch.setattr("openkb.cli.add_single_file", fake_add_single_file)
+
+    client = TestClient(create_app(registry=registry))
+    response = client.post(
+        "/api/documents/add",
+        json={
+            "kb_dir": str(kb_dir),
+            "path": str(source),
+            "force_gate_pass": True,
+            "gate_reason": "trusted primary filing",
+            "gate_operator": "alice",
+        },
+    )
+
+    assert response.status_code == 200
+    job = registry.wait(response.json()["job"]["id"], timeout=10)
+    assert job is not None
+    assert job.status == "succeeded"
+    assert calls == {
+        "force_gate_pass": True,
+        "force_gate_reject": False,
+        "gate_reason": "trusted primary filing",
+        "gate_operator": "alice",
+    }
+
+
 def test_add_document_job_passes_job_object_for_internal_ocr_logs(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     source = tmp_path / "scan.pdf"
@@ -598,7 +647,8 @@ def test_upload_document_accepts_single_file_and_queues_add_job(tmp_path, monkey
 
     assert job is not None
     assert job.status == "succeeded"
-    assert calls["file_path"] == kb_dir / "raw" / "doc.txt"
+    assert calls["file_path"].parent == kb_dir / ".openkb" / "uploads"
+    assert calls["file_path"].name.endswith("-doc.txt")
     assert calls["target_kb"] == kb_dir
     assert calls["strict"] is True
 
@@ -630,7 +680,90 @@ def test_upload_document_accepts_multiple_files_in_one_add_job(tmp_path, monkeyp
 
     assert job is not None
     assert job.status == "succeeded"
-    assert calls == [kb_dir / "raw" / "a.txt", kb_dir / "raw" / "b.txt"]
+    assert [path.parent for path in calls] == [kb_dir / ".openkb" / "uploads", kb_dir / ".openkb" / "uploads"]
+    assert {path.name.split("-", 3)[-1] for path in calls} == {"a.txt", "b.txt"}
+    assert job.result["added"] == 2
+    assert job.result["failed"] == 0
+    assert job.result["total"] == 2
+
+
+def test_upload_document_parallelizes_multiple_files_across_healthy_profiles(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    config = (kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8")
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        config
+        + "model_pool:\n"
+        + "  enabled: true\n"
+        + "llm_profiles:\n"
+        + "  - id: p1\n"
+        + "    name: primary\n"
+        + "    enabled: true\n"
+        + "    model: model-a\n"
+        + "    wire_api: responses\n"
+        + "  - id: p2\n"
+        + "    name: backup\n"
+        + "    enabled: true\n"
+        + "    model: model-b\n"
+        + "    wire_api: responses\n",
+        encoding="utf-8",
+    )
+    registry = JobRegistry()
+    started = threading.Barrier(2)
+    active_lock = threading.Lock()
+    active = 0
+    max_active = 0
+    seen_routes: list[tuple[str, str, str]] = []
+
+    def fake_routes(_kb_dir):
+        assert _kb_dir == kb_dir
+        return [
+            SimpleNamespace(profile_id="p1", profile_name="primary", model="model-a"),
+            SimpleNamespace(profile_id="p2", profile_name="backup", model="model-b"),
+        ]
+
+    def fake_add_single_file(file_path, target_kb, *, strict=False, progress_callback=None, model_route=None, job=None):
+        nonlocal active, max_active
+        assert target_kb == kb_dir
+        assert strict is True
+        assert model_route is not None
+        assert job is not None
+        if progress_callback:
+            progress_callback(f"Compiling short document: {file_path.name}")
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            started.wait(timeout=2)
+            seen_routes.append((file_path.name, model_route.profile_name, model_route.model))
+        finally:
+            with active_lock:
+                active -= 1
+
+    monkeypatch.setattr("openkb.cli._healthy_model_pool_routes", fake_routes)
+    monkeypatch.setattr("openkb.cli.add_single_file", fake_add_single_file)
+
+    client = TestClient(create_app(registry=registry))
+    response = client.post(
+        f"/api/documents/upload?kb_dir={kb_dir}",
+        files=[
+            ("file", ("a.txt", b"first", "text/plain")),
+            ("file", ("b.txt", b"second", "text/plain")),
+        ],
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job"]["id"]
+    job = registry.wait(job_id, timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert max_active >= 2
+    normalized = sorted((name.split("-", 3)[-1], profile, model) for name, profile, model in seen_routes)
+    assert normalized == [
+        ("a.txt", "primary", "model-a"),
+        ("b.txt", "backup", "model-b"),
+    ]
+    assert any("Importing with 2 parallel task(s)" in entry["message"] for entry in job.logs)
     assert job.result["added"] == 2
     assert job.result["failed"] == 0
     assert job.result["total"] == 2
@@ -1461,6 +1594,9 @@ def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):
     assert get_response.status_code == 200
     current = get_response.json()
     assert current["ocr_enabled"] is True
+    assert current["ingest_gate_enabled"] is False
+    assert current["ingest_gate_pass_threshold"] == 75
+    assert current["ingest_gate_hold_threshold"] == 60
     assert current["ocr_default_model"] == "PaddleOCR-VL-1.5"
     assert current["ocr_chunk_pages"] == 100
     assert current["paddleocr_token"] == "paddle-secret"
@@ -1473,6 +1609,13 @@ def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):
         "/api/config",
         json={
             "kb_dir": str(kb_dir),
+            "ingest_gate_enabled": True,
+            "ingest_gate_pass_threshold": 82,
+            "ingest_gate_hold_threshold": 65,
+            "ingest_gate_hard_reject_enabled": False,
+            "ingest_gate_log_all_decisions": False,
+            "ingest_gate_allow_force_pass": False,
+            "ingest_gate_allow_force_reject": False,
             "ocr_enabled": False,
             "ocr_detection_mode": "always_ask",
             "ocr_default_model": "PP-StructureV3",
@@ -1490,6 +1633,13 @@ def test_config_endpoint_roundtrips_kb_scoped_ocr_settings(tmp_path):
 
     assert update_response.status_code == 200
     updated = update_response.json()
+    assert updated["ingest_gate_enabled"] is True
+    assert updated["ingest_gate_pass_threshold"] == 82
+    assert updated["ingest_gate_hold_threshold"] == 65
+    assert updated["ingest_gate_hard_reject_enabled"] is False
+    assert updated["ingest_gate_log_all_decisions"] is False
+    assert updated["ingest_gate_allow_force_pass"] is False
+    assert updated["ingest_gate_allow_force_reject"] is False
     assert updated["ocr_enabled"] is False
     assert updated["ocr_detection_mode"] == "always_ask"
     assert updated["ocr_default_model"] == "PP-StructureV3"
@@ -1533,6 +1683,13 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
             "wire_api": "chat_completions",
             "base_url": "https://gateway.example.com/v1",
             "compile_max_concurrency": 3,
+            "ingest_gate_enabled": True,
+            "ingest_gate_pass_threshold": 81,
+            "ingest_gate_hold_threshold": 64,
+            "ingest_gate_hard_reject_enabled": False,
+            "ingest_gate_log_all_decisions": False,
+            "ingest_gate_allow_force_pass": False,
+            "ingest_gate_allow_force_reject": False,
             "ocr_enabled": False,
             "ocr_detection_mode": "always_ask",
             "ocr_default_model": "PP-StructureV3",
@@ -1575,6 +1732,13 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
     exported = export_response.json()
     assert exported["format"] == "openkb.settings-config.v1"
     assert exported["settings"]["compile_max_concurrency"] == 3
+    assert exported["settings"]["ingest_gate_enabled"] is True
+    assert exported["settings"]["ingest_gate_pass_threshold"] == 81
+    assert exported["settings"]["ingest_gate_hold_threshold"] == 64
+    assert exported["settings"]["ingest_gate_hard_reject_enabled"] is False
+    assert exported["settings"]["ingest_gate_log_all_decisions"] is False
+    assert exported["settings"]["ingest_gate_allow_force_pass"] is False
+    assert exported["settings"]["ingest_gate_allow_force_reject"] is False
     assert exported["settings"]["ocr_enabled"] is False
     assert exported["settings"]["ocr_detection_mode"] == "always_ask"
     assert exported["settings"]["ocr_default_model"] == "PP-StructureV3"
@@ -1609,6 +1773,13 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
     imported = import_response.json()
     assert imported["active_profile"] == "gateway"
     assert imported["compile_max_concurrency"] == 3
+    assert imported["ingest_gate_enabled"] is True
+    assert imported["ingest_gate_pass_threshold"] == 81
+    assert imported["ingest_gate_hold_threshold"] == 64
+    assert imported["ingest_gate_hard_reject_enabled"] is False
+    assert imported["ingest_gate_log_all_decisions"] is False
+    assert imported["ingest_gate_allow_force_pass"] is False
+    assert imported["ingest_gate_allow_force_reject"] is False
     assert imported["ocr_enabled"] is False
     assert imported["ocr_detection_mode"] == "always_ask"
     assert imported["ocr_default_model"] == "PP-StructureV3"
@@ -1630,6 +1801,9 @@ def test_config_endpoint_exports_and_imports_llm_profiles_with_keys(tmp_path):
         {"name": "openai/doubao-seed-2-0-thinking", "weight": 1},
     ]
     saved = yaml.safe_load((target / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["ingest_gate"]["enabled"] is True
+    assert saved["ingest_gate"]["pass_threshold"] == 81
+    assert saved["ingest_gate"]["hold_threshold"] == 64
     assert saved["llm_profiles"][1]["enabled"] is False
     assert saved["llm_profiles"][1]["models"] == [
         {"name": "openai/doubao-seed-2-0-pro-260215", "weight": 3},

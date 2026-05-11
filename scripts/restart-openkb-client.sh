@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-HOST="${OPENKB_CLIENT_HOST:-127.0.0.1}"
+HOST="${OPENKB_CLIENT_HOST:-0.0.0.0}"
 PORT="${OPENKB_CLIENT_PORT:-8765}"
 STATE_DIR="${OPENKB_CLIENT_STATE_DIR:-$REPO_ROOT/.openkb-client}"
 PYTHON_BIN="${OPENKB_CLIENT_PYTHON:-$REPO_ROOT/.venv/bin/python}"

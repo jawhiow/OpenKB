@@ -84,7 +84,14 @@ class TestAddCommand:
         with patch("openkb.cli.add_single_file") as mock_add, \
              patch("openkb.cli._find_kb_dir", return_value=kb_dir):
             result = runner.invoke(cli, ["add", str(doc)])
-            mock_add.assert_called_once_with(doc, kb_dir)
+            mock_add.assert_called_once_with(
+                doc,
+                kb_dir,
+                force_gate_pass=False,
+                force_gate_reject=False,
+                gate_reason="",
+                gate_operator="",
+            )
 
     def test_add_force_passes_force_to_helper(self, tmp_path):
         kb_dir = self._setup_kb(tmp_path)
@@ -95,7 +102,46 @@ class TestAddCommand:
         with patch("openkb.cli.add_single_file") as mock_add, \
              patch("openkb.cli._find_kb_dir", return_value=kb_dir):
             result = runner.invoke(cli, ["add", "--force", str(doc)])
-            mock_add.assert_called_once_with(doc, kb_dir, force=True)
+            mock_add.assert_called_once_with(
+                doc,
+                kb_dir,
+                force=True,
+                force_gate_pass=False,
+                force_gate_reject=False,
+                gate_reason="",
+                gate_operator="",
+            )
+
+    def test_add_force_pass_options_pass_through_to_helper(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+
+        runner = CliRunner()
+        with patch("openkb.cli.add_single_file") as mock_add, \
+             patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(
+                cli,
+                ["add", "--force-pass", "--gate-reason", "trusted source", "--gate-operator", "alice", str(doc)],
+            )
+            mock_add.assert_called_once_with(
+                doc,
+                kb_dir,
+                force_gate_pass=True,
+                force_gate_reject=False,
+                gate_reason="trusted source",
+                gate_operator="alice",
+            )
+
+    def test_add_force_reject_requires_reason(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+            result = runner.invoke(cli, ["add", "--force-reject", str(doc)])
+            assert "--gate-reason is required" in result.output
 
     def test_add_directory_calls_helper_for_each_file(self, tmp_path):
         kb_dir = self._setup_kb(tmp_path)
@@ -320,6 +366,123 @@ class TestAddCommand:
 
         assert any("Converting" in event for event in events)
         assert any("Compiling short document" in event for event in events)
+
+    def test_add_single_file_gate_reject_blocks_before_conversion(self, tmp_path):
+        from openkb.cli import add_single_file
+
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "model: gpt-4o-mini\n"
+            "ingest_gate:\n"
+            "  enabled: true\n",
+            encoding="utf-8",
+        )
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+
+        gate_result = {
+            "doc_title": "test.md",
+            "doc_type": "other",
+            "gate_enabled": True,
+            "raw_decision": "REJECT",
+            "final_decision": "REJECT",
+            "hard_reject": False,
+            "total_score": 42,
+            "one_line_verdict": "low value",
+            "recommended_ingest_mode": "reject",
+            "dimension_scores": {
+                "relevance": {"score": 0, "max": 15, "reason": ""},
+                "authority_traceability": {"score": 0, "max": 15, "reason": ""},
+                "signal_density": {"score": 0, "max": 20, "reason": ""},
+                "novelty_vs_kb": {"score": 0, "max": 20, "reason": ""},
+                "durability": {"score": 0, "max": 10, "reason": ""},
+                "compilation_yield": {"score": 0, "max": 10, "reason": ""},
+                "actionability": {"score": 0, "max": 10, "reason": ""},
+            },
+            "primary_reasons": ["duplicative"],
+            "hard_reject_reasons": [],
+            "overlap_with_existing_kb": [],
+            "suggested_outputs_if_ingested": [],
+            "audit_trail": {"why_this_decision": "", "why_not_higher": "", "why_not_lower": ""},
+            "timestamp": "2026-05-11 22:00:00",
+            "source_info": f"file: {doc}",
+            "operator": "",
+            "force_reason": "",
+            "force_pass": False,
+            "force_reject": False,
+        }
+
+        with patch("openkb.cli.evaluate_candidate", return_value=gate_result), \
+             patch("openkb.cli.convert_document") as mock_convert:
+            add_single_file(doc, kb_dir)
+
+        mock_convert.assert_not_called()
+        history = (kb_dir / ".openkb" / "ingest_gate_history.jsonl").read_text(encoding="utf-8")
+        assert '"final_decision": "REJECT"' in history
+        gate_page = kb_dir / "wiki" / "explorations" / "ingest_gate.md"
+        assert gate_page.exists()
+        assert "REJECT 42/100" in gate_page.read_text(encoding="utf-8")
+
+    def test_add_single_file_force_pass_continues_after_gate(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "model: gpt-4o-mini\n"
+            "ingest_gate:\n"
+            "  enabled: true\n",
+            encoding="utf-8",
+        )
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+        source_path = kb_dir / "wiki" / "sources" / "test.md"
+        source_path.write_text("# Hello converted")
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "test.md",
+            source_path=source_path,
+            is_long_doc=False,
+        )
+        gate_result = {
+            "doc_title": "test.md",
+            "doc_type": "other",
+            "gate_enabled": True,
+            "raw_decision": "REJECT",
+            "final_decision": "FORCE_PASS",
+            "hard_reject": False,
+            "total_score": 42,
+            "one_line_verdict": "forced through",
+            "recommended_ingest_mode": "full_ingest",
+            "dimension_scores": {
+                "relevance": {"score": 0, "max": 15, "reason": ""},
+                "authority_traceability": {"score": 0, "max": 15, "reason": ""},
+                "signal_density": {"score": 0, "max": 20, "reason": ""},
+                "novelty_vs_kb": {"score": 0, "max": 20, "reason": ""},
+                "durability": {"score": 0, "max": 10, "reason": ""},
+                "compilation_yield": {"score": 0, "max": 10, "reason": ""},
+                "actionability": {"score": 0, "max": 10, "reason": ""},
+            },
+            "primary_reasons": ["manual override"],
+            "hard_reject_reasons": [],
+            "overlap_with_existing_kb": [],
+            "suggested_outputs_if_ingested": [],
+            "audit_trail": {"why_this_decision": "", "why_not_higher": "", "why_not_lower": ""},
+            "timestamp": "2026-05-11 22:00:00",
+            "source_info": f"file: {doc}",
+            "operator": "alice",
+            "force_reason": "trusted source",
+            "force_pass": True,
+            "force_reject": False,
+        }
+
+        with patch("openkb.cli.evaluate_candidate", return_value=gate_result), \
+             patch("openkb.cli.convert_document", return_value=mock_result), \
+             patch("openkb.agent.compiler.compile_short_doc", new_callable=AsyncMock) as mock_compile:
+            mock_compile.return_value = []
+            add_single_file(doc, kb_dir, force_gate_pass=True, gate_reason="trusted source", gate_operator="alice")
+
+        mock_compile.assert_awaited_once()
 
     def test_add_single_file_passes_strategy_override_to_convert_document(self, tmp_path):
         from openkb.cli import add_single_file

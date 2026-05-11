@@ -377,6 +377,13 @@ def test_client_settings_restores_general_without_llm_profile_editor():
     assert 'id="saveSettingsBtn"' in script
     assert 'id="languageInput"' in script
     assert 'id="compileConcurrencyInput"' in script
+    assert 'id="ingestGateEnabledInput"' in script
+    assert 'id="ingestGatePassThresholdInput"' in script
+    assert 'id="ingestGateHoldThresholdInput"' in script
+    assert 'id="ingestGateHardRejectEnabledInput"' in script
+    assert 'id="ingestGateLogAllDecisionsInput"' in script
+    assert 'id="ingestGateAllowForcePassInput"' in script
+    assert 'id="ingestGateAllowForceRejectInput"' in script
     assert 'id="ocrEnabledInput"' in script
     assert 'id="pageindexLocalRepoDirInput"' in script
     assert 'id="paddleocrTokenInput"' in script
@@ -428,6 +435,15 @@ def test_client_renders_ocr_page_and_import_strategy_controls():
     assert '"/api/pageindex-local/status"' in script
     assert 'id="importStrategyInput"' in script
     assert 'strategy_override: importStrategy()' in script
+    assert 'id="forceGatePassInput"' in script
+    assert 'id="forceGateRejectInput"' in script
+    assert 'id="gateReasonInput"' in script
+    assert 'id="gateOperatorInput"' in script
+    assert "function ingestGateOverrides()" in script
+    assert "function openGateLogPage()" in script
+    assert 'force_gate_pass: Boolean($("#forceGatePassInput")?.checked)' in script
+    assert 'force_gate_reject: Boolean($("#forceGateRejectInput")?.checked)' in script
+    assert 'gate_reason: $("#gateReasonInput")?.value.trim() || ""' in script
     assert 'searchParams.set("strategy_override", importStrategy())' in script
     assert "async function invalidateOcrCache" in script
     assert "async function rerunOcrCache" in script
@@ -460,4 +476,3 @@ def test_client_fix_plan_allows_manual_review_approval_and_result_display():
     assert "renderCreatedFixes" not in script
     assert ".badge.info" in styles
     assert ".reviewed-fix" in styles
-

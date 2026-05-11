@@ -1053,11 +1053,36 @@ function renderDocuments() {
             <button id="addPathBtn" class="primary" type="button">Add Folder / File</button>
           </div>
           <div class="field">
+            <label for="forceGatePassInput">Force Pass</label>
+            <label class="checkline">
+              <input id="forceGatePassInput" type="checkbox" />
+              Allow this import through
+            </label>
+          </div>
+          <div class="field">
+            <label for="forceGateRejectInput">Force Reject</label>
+            <label class="checkline">
+              <input id="forceGateRejectInput" type="checkbox" />
+              Block this import
+            </label>
+          </div>
+          <div class="field">
+            <label for="gateOperatorInput">Gate Operator</label>
+            <input id="gateOperatorInput" type="text" placeholder="your name" />
+          </div>
+          <div class="field full">
+            <label for="gateReasonInput">Gate Reason</label>
+            <input id="gateReasonInput" type="text" placeholder="Required when force pass/reject is enabled" />
+          </div>
+          <div class="field">
             <label for="uploadInput">File</label>
             <input id="uploadInput" type="file" multiple />
           </div>
           <div class="row-actions add-source-actions">
             <button id="uploadBtn" type="button">Upload</button>
+          </div>
+          <div class="row-actions add-source-actions">
+            <button id="openGateLogBtn" type="button">Open Gate Log</button>
           </div>
         </div>
       </section>
@@ -1075,12 +1100,22 @@ function renderDocuments() {
   `;
   $("#addPathBtn").addEventListener("click", addPath);
   $("#uploadBtn").addEventListener("click", uploadFile);
+  $("#openGateLogBtn")?.addEventListener("click", openGateLogPage);
   bindViewButtons();
   bindSourceDocumentActions();
 }
 
 function importStrategy() {
   return $("#importStrategyInput")?.value || "";
+}
+
+function ingestGateOverrides() {
+  return {
+    force_gate_pass: Boolean($("#forceGatePassInput")?.checked),
+    force_gate_reject: Boolean($("#forceGateRejectInput")?.checked),
+    gate_reason: $("#gateReasonInput")?.value.trim() || "",
+    gate_operator: $("#gateOperatorInput")?.value.trim() || "",
+  };
 }
 
 function bindSourceDocumentActions(root = mainView) {
@@ -1305,15 +1340,24 @@ function renderSources() {
 async function addPath(event) {
   const button = event?.currentTarget;
   const path = $("#addPathInput").value.trim();
+  const gate = ingestGateOverrides();
   if (!path) {
     notify("Enter a folder or file path first.", "warning");
+    return;
+  }
+  if (gate.force_gate_pass && gate.force_gate_reject) {
+    notify("Force pass and force reject cannot both be enabled.", "warning");
+    return;
+  }
+  if ((gate.force_gate_pass || gate.force_gate_reject) && !gate.gate_reason) {
+    notify("Gate reason is required when forcing pass or reject.", "warning");
     return;
   }
   setButtonBusy(button, true, "Queueing...");
   try {
     const result = await api("/api/documents/add", {
       method: "POST",
-      body: JSON.stringify({ kb_dir: state.kbDir, path, strategy_override: importStrategy() }),
+      body: JSON.stringify({ kb_dir: state.kbDir, path, strategy_override: importStrategy(), ...gate }),
     });
     trackJob(result.job, "Add job queued");
   } catch (error) {
@@ -1326,8 +1370,17 @@ async function addPath(event) {
 async function uploadFile(event) {
   const button = event?.currentTarget;
   const input = $("#uploadInput");
+  const gate = ingestGateOverrides();
   if (!input.files.length) {
     notify("Choose a file first.", "warning");
+    return;
+  }
+  if (gate.force_gate_pass && gate.force_gate_reject) {
+    notify("Force pass and force reject cannot both be enabled.", "warning");
+    return;
+  }
+  if ((gate.force_gate_pass || gate.force_gate_reject) && !gate.gate_reason) {
+    notify("Gate reason is required when forcing pass or reject.", "warning");
     return;
   }
   const files = Array.from(input.files);
@@ -1338,6 +1391,10 @@ async function uploadFile(event) {
     const uploadUrl = new URL("/api/documents/upload", window.location.origin);
     uploadUrl.searchParams.set("kb_dir", state.kbDir);
     if (importStrategy()) uploadUrl.searchParams.set("strategy_override", importStrategy());
+    if (gate.force_gate_pass) uploadUrl.searchParams.set("force_gate_pass", "true");
+    if (gate.force_gate_reject) uploadUrl.searchParams.set("force_gate_reject", "true");
+    if (gate.gate_reason) uploadUrl.searchParams.set("gate_reason", gate.gate_reason);
+    if (gate.gate_operator) uploadUrl.searchParams.set("gate_operator", gate.gate_operator);
     const result = await api(`${uploadUrl.pathname}${uploadUrl.search}`, {
       method: "POST",
       body: form,
@@ -1349,6 +1406,12 @@ async function uploadFile(event) {
   } finally {
     setButtonBusy(button, false);
   }
+}
+
+function openGateLogPage() {
+  const cfg = state.config || {};
+  state.selectedWikiPath = cfg.language === "zh" ? "explorations/资料准入评分台账.md" : "explorations/ingest_gate.md";
+  switchView("wiki");
 }
 
 function buildWikiDirectory(files) {
@@ -2956,6 +3019,49 @@ function renderGeneralSettings() {
             <input id="compileConcurrencyInput" type="number" min="1" value="${escapeHTML(cfg.compile_max_concurrency || 2)}" />
           </div>
           <div class="field">
+            <label for="ingestGateEnabledInput">Ingest Gate</label>
+            <label class="checkline">
+              <input id="ingestGateEnabledInput" type="checkbox" ${cfg.ingest_gate_enabled ? "checked" : ""} />
+              Enabled
+            </label>
+          </div>
+          <div class="field">
+            <label for="ingestGatePassThresholdInput">Gate Pass Threshold</label>
+            <input id="ingestGatePassThresholdInput" type="number" min="0" max="100" value="${escapeHTML(cfg.ingest_gate_pass_threshold ?? 75)}" />
+          </div>
+          <div class="field">
+            <label for="ingestGateHoldThresholdInput">Gate Hold Threshold</label>
+            <input id="ingestGateHoldThresholdInput" type="number" min="0" max="100" value="${escapeHTML(cfg.ingest_gate_hold_threshold ?? 60)}" />
+          </div>
+          <div class="field">
+            <label for="ingestGateHardRejectEnabledInput">Hard Reject</label>
+            <label class="checkline">
+              <input id="ingestGateHardRejectEnabledInput" type="checkbox" ${cfg.ingest_gate_hard_reject_enabled === false ? "" : "checked"} />
+              Enforce
+            </label>
+          </div>
+          <div class="field">
+            <label for="ingestGateLogAllDecisionsInput">Gate Audit Log</label>
+            <label class="checkline">
+              <input id="ingestGateLogAllDecisionsInput" type="checkbox" ${cfg.ingest_gate_log_all_decisions === false ? "" : "checked"} />
+              Record all decisions
+            </label>
+          </div>
+          <div class="field">
+            <label for="ingestGateAllowForcePassInput">Allow Force Pass</label>
+            <label class="checkline">
+              <input id="ingestGateAllowForcePassInput" type="checkbox" ${cfg.ingest_gate_allow_force_pass === false ? "" : "checked"} />
+              Enabled
+            </label>
+          </div>
+          <div class="field">
+            <label for="ingestGateAllowForceRejectInput">Allow Force Reject</label>
+            <label class="checkline">
+              <input id="ingestGateAllowForceRejectInput" type="checkbox" ${cfg.ingest_gate_allow_force_reject === false ? "" : "checked"} />
+              Enabled
+            </label>
+          </div>
+          <div class="field">
             <label for="ocrEnabledInput">OCR</label>
             <label class="checkline">
               <input id="ocrEnabledInput" type="checkbox" ${cfg.ocr_enabled === false ? "" : "checked"} />
@@ -3072,6 +3178,13 @@ function settingsPayload() {
     pageindex_threshold: Number($("#thresholdInput")?.value || cfg.pageindex_threshold || 20),
     // compile_max_concurrency: Number($("#compileConcurrencyInput").value || 2)
     compile_max_concurrency: Number($("#compileConcurrencyInput")?.value || cfg.compile_max_concurrency || 2),
+    ingest_gate_enabled: $("#ingestGateEnabledInput") ? $("#ingestGateEnabledInput").checked : Boolean(cfg.ingest_gate_enabled),
+    ingest_gate_pass_threshold: Number($("#ingestGatePassThresholdInput")?.value || cfg.ingest_gate_pass_threshold || 75),
+    ingest_gate_hold_threshold: Number($("#ingestGateHoldThresholdInput")?.value || cfg.ingest_gate_hold_threshold || 60),
+    ingest_gate_hard_reject_enabled: $("#ingestGateHardRejectEnabledInput") ? $("#ingestGateHardRejectEnabledInput").checked : cfg.ingest_gate_hard_reject_enabled !== false,
+    ingest_gate_log_all_decisions: $("#ingestGateLogAllDecisionsInput") ? $("#ingestGateLogAllDecisionsInput").checked : cfg.ingest_gate_log_all_decisions !== false,
+    ingest_gate_allow_force_pass: $("#ingestGateAllowForcePassInput") ? $("#ingestGateAllowForcePassInput").checked : cfg.ingest_gate_allow_force_pass !== false,
+    ingest_gate_allow_force_reject: $("#ingestGateAllowForceRejectInput") ? $("#ingestGateAllowForceRejectInput").checked : cfg.ingest_gate_allow_force_reject !== false,
     // ocr_enabled: $("#ocrEnabledInput").checked
     ocr_enabled: $("#ocrEnabledInput") ? $("#ocrEnabledInput").checked : cfg.ocr_enabled !== false,
     // ocr_detection_mode: $("#ocrDetectionModeInput").value
@@ -3180,6 +3293,13 @@ async function createKb(event) {
         language: $("#languageInput")?.value.trim() || state.config?.language || "en",
         pageindex_threshold: Number($("#thresholdInput")?.value || 20),
         compile_max_concurrency: Number($("#compileConcurrencyInput")?.value || 2),
+        ingest_gate_enabled: $("#ingestGateEnabledInput") ? $("#ingestGateEnabledInput").checked : Boolean(state.config?.ingest_gate_enabled),
+        ingest_gate_pass_threshold: Number($("#ingestGatePassThresholdInput")?.value || state.config?.ingest_gate_pass_threshold || 75),
+        ingest_gate_hold_threshold: Number($("#ingestGateHoldThresholdInput")?.value || state.config?.ingest_gate_hold_threshold || 60),
+        ingest_gate_hard_reject_enabled: $("#ingestGateHardRejectEnabledInput") ? $("#ingestGateHardRejectEnabledInput").checked : state.config?.ingest_gate_hard_reject_enabled !== false,
+        ingest_gate_log_all_decisions: $("#ingestGateLogAllDecisionsInput") ? $("#ingestGateLogAllDecisionsInput").checked : state.config?.ingest_gate_log_all_decisions !== false,
+        ingest_gate_allow_force_pass: $("#ingestGateAllowForcePassInput") ? $("#ingestGateAllowForcePassInput").checked : state.config?.ingest_gate_allow_force_pass !== false,
+        ingest_gate_allow_force_reject: $("#ingestGateAllowForceRejectInput") ? $("#ingestGateAllowForceRejectInput").checked : state.config?.ingest_gate_allow_force_reject !== false,
         wire_api: $("#wireApiInput")?.value || "chat_completions",
         base_url: $("#baseUrlInput")?.value.trim() || "",
         api_key: $("#apiKeyInput")?.value || "",
@@ -3661,4 +3781,3 @@ $("#clearAnswerBtn").addEventListener("click", () => {
 
 setInterval(loadJobs, 1200);
 loadAll();
-
