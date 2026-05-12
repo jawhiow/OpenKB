@@ -82,6 +82,33 @@ def _callable_accepts_keyword(fn: Any, name: str) -> bool:
     )
 
 
+_LOCAL_CORS_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
+
+def _cors_settings() -> dict[str, Any]:
+    raw_origins = os.getenv("OPENKB_CLIENT_CORS_ORIGINS", "").strip()
+    if not raw_origins:
+        return {
+            "allow_origins": [],
+            "allow_origin_regex": _LOCAL_CORS_ORIGIN_REGEX,
+            "allow_credentials": True,
+        }
+
+    origins = [origin.strip().rstrip("/") for origin in raw_origins.split(",") if origin.strip()]
+    if "*" in origins:
+        return {
+            "allow_origins": ["*"],
+            "allow_origin_regex": None,
+            "allow_credentials": False,
+        }
+
+    return {
+        "allow_origins": origins,
+        "allow_origin_regex": _LOCAL_CORS_ORIGIN_REGEX,
+        "allow_credentials": True,
+    }
+
+
 def _route_profile_payload(route: Any) -> dict[str, str]:
     return {
         "id": str(getattr(route, "profile_id", "") or ""),
@@ -308,8 +335,20 @@ def create_app(registry: JobRegistry | None = None):
     import the package and use the CLI without the optional client extra.
     """
     FastAPI, File, FileResponse, HTTPException, Query, Response, StaticFiles, UploadFile, _uvicorn = _import_web_dependencies()
+    from fastapi.middleware.cors import CORSMiddleware
     registry = registry or default_registry
     app = FastAPI(title="OpenKB Client", version="0.1.0")
+    cors_settings = _cors_settings()
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_settings["allow_origins"],
+        allow_origin_regex=cors_settings["allow_origin_regex"],
+        allow_credentials=cors_settings["allow_credentials"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     static_dir = _static_dir()
 
     def translate_error(exc: Exception) -> HTTPException:
