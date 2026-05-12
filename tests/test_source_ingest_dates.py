@@ -6,11 +6,13 @@ import sys
 from pathlib import Path
 
 from openkb.client.kb import get_document_data
+from openkb.document_ledger import document_ledger_path, load_document_ledger
 from openkb.source_relations import backfill_source_ingest_dates, get_source_documents
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "backfill_source_ingest_dates.py"
+LEDGER_SCRIPT = REPO_ROOT / "scripts" / "backfill_document_ledger.py"
 
 
 def _make_kb(tmp_path: Path) -> Path:
@@ -115,3 +117,21 @@ def test_backfill_script_updates_kb_hashes(tmp_path: Path):
     assert "updated=1" in result.stdout
     hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
     assert hashes["hash-paper"]["ingested_at"] == "2026-05-10T09:15:00+08:00"
+
+
+def test_backfill_document_ledger_script_persists_legacy_records(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, str(LEDGER_SCRIPT), str(kb_dir)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "added=2" in result.stdout
+    assert document_ledger_path(kb_dir).exists()
+    ledger = load_document_ledger(kb_dir)
+    assert sorted(ledger["documents"]) == ["hash-manual", "hash-paper"]
+    assert ledger["documents"]["hash-paper"]["workflow_state"]["summary_state"] == "ready"

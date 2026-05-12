@@ -48,6 +48,7 @@ class ConvertResult:
     pageindex_input_path: Path | None = None
     skipped: bool = False
     file_hash: str | None = None  # For deferred hash registration
+    page_count: int | None = None
 
 
 def get_pdf_page_count(path: Path) -> int:
@@ -114,7 +115,7 @@ def convert_document(
     file_hash = HashRegistry.hash_file(src)
     if registry.is_known(file_hash) and not force:
         logger.info("Skipping already-known file: %s", src.name)
-        return ConvertResult(skipped=True)
+        return ConvertResult(skipped=True, file_hash=file_hash)
 
     # ------------------------------------------------------------------
     # 2. Copy to raw/
@@ -129,6 +130,7 @@ def convert_document(
     # 3. PDF long-doc detection
     # ------------------------------------------------------------------
     doc_name = src.stem
+    page_count: int | None = None
 
     if src.suffix.lower() == ".pdf":
         page_count = get_pdf_page_count(src)
@@ -170,6 +172,7 @@ def convert_document(
                 if selected_strategy == OCR_PAGEINDEX_LOCAL
                 else None,
                 file_hash=file_hash,
+                page_count=page_count,
             )
 
         if strategy_override == PLAIN_LOCAL_LONG:
@@ -192,6 +195,7 @@ def convert_document(
                 recommended_strategy=recommended_strategy,
                 selected_strategy=selected_strategy,
                 file_hash=file_hash,
+                page_count=page_count,
             )
 
         if is_long_doc:
@@ -209,6 +213,7 @@ def convert_document(
                     recommended_strategy=recommended_strategy,
                     selected_strategy=selected_strategy,
                     file_hash=file_hash,
+                    page_count=page_count,
                 )
 
             logger.info(
@@ -235,6 +240,7 @@ def convert_document(
                 recommended_strategy=recommended_strategy,
                 selected_strategy=selected_strategy,
                 file_hash=file_hash,
+                page_count=page_count,
             )
 
     # ------------------------------------------------------------------
@@ -261,4 +267,9 @@ def convert_document(
     dest_md = sources_dir / f"{doc_name}.md"
     dest_md.write_text(markdown, encoding="utf-8")
 
-    return ConvertResult(raw_path=raw_dest, source_path=dest_md, file_hash=file_hash)
+    return ConvertResult(
+        raw_path=raw_dest,
+        source_path=dest_md,
+        file_hash=file_hash,
+        page_count=page_count if src.suffix.lower() == ".pdf" else None,
+    )

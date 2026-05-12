@@ -489,6 +489,131 @@ def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monke
     assert job.progress_total == 1
 
 
+def test_import_document_job_uses_source_only_pipeline(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    source = tmp_path / "doc.txt"
+    source.write_text("hello", encoding="utf-8")
+    registry = JobRegistry()
+    calls: dict[str, object] = {}
+
+    def fake_import_document_source(file_path, target_kb, *, force=False, strategy_override=None, job=None):
+        calls["file_path"] = file_path
+        calls["target_kb"] = target_kb
+        calls["force"] = force
+        calls["strategy_override"] = strategy_override
+        return {"name": file_path.name, "file_hash": "hash-a", "skipped": False}
+
+    monkeypatch.setattr("openkb.workflows.import_pipeline.import_document_source", fake_import_document_source)
+    monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
+
+    app = create_app(registry=registry)
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/import")
+    response = route.endpoint({"kb_dir": str(kb_dir), "path": str(source), "force": True})
+    job = registry.wait(response["job"]["id"], timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.type == "import"
+    assert job.result["imported"] == 1
+    assert job.result["total"] == 1
+    assert calls == {
+        "file_path": source,
+        "target_kb": kb_dir,
+        "force": True,
+        "strategy_override": None,
+    }
+
+
+def test_summarize_document_job_uses_summary_pipeline(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    calls: dict[str, object] = {}
+
+    def fake_summarize_documents(target_kb, *, file_hashes=None, model=None, force=False):
+        calls["target_kb"] = target_kb
+        calls["file_hashes"] = file_hashes
+        calls["model"] = model
+        calls["force"] = force
+        return {"generated": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []}
+
+    monkeypatch.setattr("openkb.workflows.summary_pipeline.summarize_documents", fake_summarize_documents)
+    monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
+
+    app = create_app(registry=registry)
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/summarize")
+    response = route.endpoint({"kb_dir": str(kb_dir), "file_hashes": ["hash-a"], "model": "gpt-test", "force": True})
+    job = registry.wait(response["job"]["id"], timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.type == "summarize"
+    assert job.result["generated"] == 1
+    assert calls == {
+        "target_kb": kb_dir,
+        "file_hashes": ["hash-a"],
+        "model": "gpt-test",
+        "force": True,
+    }
+
+
+def test_review_summary_job_uses_summary_review_pipeline(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    reviews = [{"file_hash": "hash-a", "review_state": "approved", "summary_score": 90}]
+    calls: dict[str, object] = {}
+
+    def fake_update_summary_reviews(target_kb, review_payload):
+        calls["target_kb"] = target_kb
+        calls["reviews"] = review_payload
+        return {"updated": 1, "failed": 0, "total": 1, "failures": [], "documents": []}
+
+    monkeypatch.setattr("openkb.workflows.summary_pipeline.update_summary_reviews", fake_update_summary_reviews)
+    monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
+
+    app = create_app(registry=registry)
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/review-summary")
+    response = route.endpoint({"kb_dir": str(kb_dir), "reviews": reviews})
+    job = registry.wait(response["job"]["id"], timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.type == "review_summary"
+    assert job.result["updated"] == 1
+    assert calls == {"target_kb": kb_dir, "reviews": reviews}
+
+
+def test_promote_document_job_uses_promotion_pipeline(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    calls: dict[str, object] = {}
+
+    def fake_promote_summary_documents(target_kb, *, file_hashes=None, model=None, force=False):
+        calls["target_kb"] = target_kb
+        calls["file_hashes"] = file_hashes
+        calls["model"] = model
+        calls["force"] = force
+        return {"promoted": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []}
+
+    monkeypatch.setattr("openkb.workflows.promotion_pipeline.promote_summary_documents", fake_promote_summary_documents)
+    monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
+
+    app = create_app(registry=registry)
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/promote")
+    response = route.endpoint({"kb_dir": str(kb_dir), "file_hashes": ["hash-a"], "model": "gpt-test", "force": True})
+    job = registry.wait(response["job"]["id"], timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.type == "promote"
+    assert job.result["promoted"] == 1
+    assert calls == {
+        "target_kb": kb_dir,
+        "file_hashes": ["hash-a"],
+        "model": "gpt-test",
+        "force": True,
+    }
+
+
 def test_add_document_job_passes_ingest_gate_overrides(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     source = tmp_path / "doc.txt"

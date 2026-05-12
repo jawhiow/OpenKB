@@ -407,9 +407,27 @@ def create_app(registry: JobRegistry | None = None):
             raise translate_error(exc) from exc
 
     @app.get("/api/documents")
-    def documents(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+    def documents(
+        kb_dir: str | None = Query(default=None),
+        q: str | None = Query(default=None),
+        ingest_state: str | None = Query(default=None),
+        ocr_state: str | None = Query(default=None),
+        source_state: str | None = Query(default=None),
+        summary_state: str | None = Query(default=None),
+        review_state: str | None = Query(default=None),
+        promotion_state: str | None = Query(default=None),
+    ) -> dict[str, Any]:
         try:
-            return kb_helpers.get_document_data(_resolve_kb_dir(kb_dir))
+            return kb_helpers.get_document_data(
+                _resolve_kb_dir(kb_dir),
+                query=q or "",
+                ingest_state=ingest_state or "",
+                ocr_state=ocr_state or "",
+                source_state=source_state or "",
+                summary_state=summary_state or "",
+                review_state=review_state or "",
+                promotion_state=promotion_state or "",
+            )
         except Exception as exc:
             raise translate_error(exc) from exc
 
@@ -612,6 +630,104 @@ def create_app(registry: JobRegistry | None = None):
         job = registry.submit("add", run, message=f"Queued add: {message_source or source}")
         return job
 
+    def _submit_import_job(
+        target_kb: Path,
+        source: Path,
+        *,
+        preset_files: list[Path] | None = None,
+        message_source: str | None = None,
+        strategy_override: str | None = None,
+        force: bool = False,
+    ):
+        def run(job):
+            from openkb.cli import SUPPORTED_EXTENSIONS
+            from openkb.workflows.import_pipeline import import_document_source
+
+            files: list[Path]
+            if preset_files is not None:
+                files = list(preset_files)
+            else:
+                if not source.exists():
+                    raise FileNotFoundError(source)
+                if source.is_dir():
+                    job.add_log(f"Scanning folder: {source}")
+                    unsupported = [
+                        p
+                        for p in sorted(source.rglob("*"))
+                        if p.is_file() and p.suffix.lower() not in SUPPORTED_EXTENSIONS
+                    ]
+                    if unsupported:
+                        job.add_log(f"Skipped {len(unsupported)} unsupported file(s)")
+                    files = [
+                        p
+                        for p in sorted(source.rglob("*"))
+                        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+                    ]
+                else:
+                    files = [source]
+            if not files:
+                raise ValueError("No supported files found.")
+
+            imported = 0
+            skipped = 0
+            failures: list[dict[str, str]] = []
+            results: list[dict[str, Any]] = []
+            job.set_progress(0, len(files))
+            job.add_log(f"Found {len(files)} supported file(s)")
+            for index, file_path in enumerate(files, 1):
+                job.raise_if_stopped()
+                if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    raise ValueError(f"Unsupported file type: {file_path.suffix}")
+                job.set_message(f"Importing {index}/{len(files)}: {file_path.name}")
+                try:
+                    result = import_document_source(
+                        file_path,
+                        target_kb,
+                        force=force,
+                        strategy_override=strategy_override,
+                        job=job,
+                    )
+                except Exception as exc:
+                    if len(files) == 1:
+                        raise exc
+                    failures.append({
+                        "name": file_path.name,
+                        "path": str(file_path),
+                        "error": str(exc),
+                    })
+                    job.add_log(f"Failed {file_path.name}: {exc}", level="error")
+                else:
+                    results.append(result)
+                    if result.get("skipped"):
+                        skipped += 1
+                        job.add_log(f"Skipped already-known file: {file_path.name}")
+                    else:
+                        imported += 1
+                        job.add_log(f"Imported source artifacts: {file_path.name}")
+                job.set_progress(index, len(files))
+
+            if failures and imported == 0 and skipped == 0:
+                raise RuntimeError(f"All {len(failures)} file(s) failed. First failure: {failures[0]['error']}")
+            if imported:
+                commit_kb_changes(target_kb, f"Import {imported} source document(s)")
+            for staged in preset_files or []:
+                try:
+                    if staged.exists() and ".openkb-upload-" in staged.name:
+                        staged.unlink()
+                except OSError:
+                    pass
+            return {
+                "imported": imported,
+                "skipped": skipped,
+                "failed": len(failures),
+                "total": len(files),
+                "failures": failures,
+                "documents": results,
+            }
+
+        job = registry.submit("import", run, message=f"Queued import: {message_source or source}")
+        return job
+
     @app.post("/api/documents/add")
     def add_document(payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -620,15 +736,130 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
-        job = _submit_add_job(
+        if bool(payload.get("import_only", False)):
+            job = _submit_import_job(
+                target_kb,
+                source,
+                strategy_override=str(payload.get("strategy_override") or "").strip() or None,
+                force=bool(payload.get("force", False)),
+            )
+        else:
+            job = _submit_add_job(
+                target_kb,
+                source,
+                strategy_override=str(payload.get("strategy_override") or "").strip() or None,
+                force_gate_pass=bool(payload.get("force_gate_pass", False)),
+                force_gate_reject=bool(payload.get("force_gate_reject", False)),
+                gate_reason=str(payload.get("gate_reason") or "").strip(),
+                gate_operator=str(payload.get("gate_operator") or "").strip(),
+            )
+        return {"job": job.to_dict()}
+
+    @app.post("/api/documents/import")
+    def import_document(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            source = Path(str(payload["path"]))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        job = _submit_import_job(
             target_kb,
             source,
             strategy_override=str(payload.get("strategy_override") or "").strip() or None,
-            force_gate_pass=bool(payload.get("force_gate_pass", False)),
-            force_gate_reject=bool(payload.get("force_gate_reject", False)),
-            gate_reason=str(payload.get("gate_reason") or "").strip(),
-            gate_operator=str(payload.get("gate_operator") or "").strip(),
+            force=bool(payload.get("force", False)),
         )
+        return {"job": job.to_dict()}
+
+    @app.post("/api/documents/summarize")
+    def summarize_documents(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            file_hashes = payload.get("file_hashes")
+            if file_hashes is not None and not isinstance(file_hashes, list):
+                raise ValueError("file_hashes must be a list when provided.")
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            from openkb.workflows.summary_pipeline import summarize_documents as run_summarize_documents
+
+            job.raise_if_stopped()
+            job.add_log("Generating document summaries")
+            result = run_summarize_documents(
+                target_kb,
+                file_hashes=[str(item) for item in file_hashes] if file_hashes else None,
+                model=str(payload.get("model") or "").strip() or None,
+                force=bool(payload.get("force", False)),
+            )
+            if result["generated"]:
+                commit_kb_changes(target_kb, f"Summarize {result['generated']} document(s)")
+            job.raise_if_stopped()
+            job.add_log(
+                f"Generated {result['generated']} summary document(s), "
+                f"skipped {result['skipped']}, failed {result['failed']}"
+            )
+            return result
+
+        job = registry.submit("summarize", run, message="Queued document summarization")
+        return {"job": job.to_dict()}
+
+    @app.post("/api/documents/review-summary")
+    def review_summaries(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            reviews = payload.get("reviews")
+            if not isinstance(reviews, list):
+                raise ValueError("reviews must be a list.")
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            from openkb.workflows.summary_pipeline import update_summary_reviews
+
+            job.raise_if_stopped()
+            job.add_log("Updating summary review metadata")
+            result = update_summary_reviews(target_kb, reviews)
+            if result["updated"]:
+                commit_kb_changes(target_kb, f"Review {result['updated']} summary document(s)")
+            job.raise_if_stopped()
+            job.add_log(f"Updated {result['updated']} review record(s), failed {result['failed']}")
+            return result
+
+        job = registry.submit("review_summary", run, message="Queued summary review update")
+        return {"job": job.to_dict()}
+
+    @app.post("/api/documents/promote")
+    def promote_documents(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            file_hashes = payload.get("file_hashes")
+            if file_hashes is not None and not isinstance(file_hashes, list):
+                raise ValueError("file_hashes must be a list when provided.")
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            from openkb.workflows.promotion_pipeline import promote_summary_documents
+
+            job.raise_if_stopped()
+            job.add_log("Promoting approved summaries")
+            result = promote_summary_documents(
+                target_kb,
+                file_hashes=[str(item) for item in file_hashes] if file_hashes else None,
+                model=str(payload.get("model") or "").strip() or None,
+                force=bool(payload.get("force", False)),
+            )
+            if result["promoted"]:
+                commit_kb_changes(target_kb, f"Promote {result['promoted']} summary document(s)")
+            job.raise_if_stopped()
+            job.add_log(
+                f"Promoted {result['promoted']} summary document(s), "
+                f"skipped {result['skipped']}, failed {result['failed']}"
+            )
+            return result
+
+        job = registry.submit("promote", run, message="Queued summary promotion")
         return {"job": job.to_dict()}
 
     @app.post("/api/documents/upload")
@@ -640,6 +871,8 @@ def create_app(registry: JobRegistry | None = None):
         force_gate_reject: bool = False,
         gate_reason: str = "",
         gate_operator: str = "",
+        import_only: bool = False,
+        force: bool = False,
     ) -> dict[str, Any]:
         try:
             target_kb = _resolve_kb_dir(kb_dir)
@@ -661,17 +894,28 @@ def create_app(registry: JobRegistry | None = None):
                 destinations.append(destination)
         except Exception as exc:
             raise translate_error(exc) from exc
-        job = _submit_add_job(
-            target_kb,
-            destinations[0],
-            preset_files=destinations,
-            message_source=f"{len(destinations)} uploaded file(s)",
-            strategy_override=str(strategy_override or "").strip() or None,
-            force_gate_pass=force_gate_pass,
-            force_gate_reject=force_gate_reject,
-            gate_reason=str(gate_reason or "").strip(),
-            gate_operator=str(gate_operator or "").strip(),
-        )
+        if import_only:
+            job = _submit_import_job(
+                target_kb,
+                destinations[0],
+                preset_files=destinations,
+                message_source=f"{len(destinations)} uploaded file(s)",
+                strategy_override=str(strategy_override or "").strip() or None,
+                force=force,
+            )
+        else:
+            job = _submit_add_job(
+                target_kb,
+                destinations[0],
+                preset_files=destinations,
+                message_source=f"{len(destinations)} uploaded file(s)",
+                strategy_override=str(strategy_override or "").strip() or None,
+                force=force,
+                force_gate_pass=force_gate_pass,
+                force_gate_reject=force_gate_reject,
+                gate_reason=str(gate_reason or "").strip(),
+                gate_operator=str(gate_operator or "").strip(),
+            )
         return {"job": job.to_dict()}
 
     @app.delete("/api/documents/{selector}")

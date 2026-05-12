@@ -24,6 +24,7 @@ from openkb.client.kb import (
     update_config_data,
     write_wiki_file,
 )
+from openkb.document_ledger import upsert_document_ledger_record
 from openkb.pageindex_local.runtime import read_pageindex_local_manifest
 
 
@@ -126,6 +127,30 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
                     {"path": "concepts/retrieval.md", "page": "concepts/retrieval", "title": "retrieval", "shared": False}
                 ],
             },
+            "source_kind": "markdown",
+            "scan_detected": False,
+            "workflow_state": {
+                "ingest_state": "imported",
+                "ocr_state": "not_needed",
+                "source_state": "ready",
+                "summary_state": "ready",
+                "review_state": "approved",
+                "promotion_state": "promoted",
+            },
+            "review": {
+                "ingest_score": None,
+                "summary_score": None,
+                "promotion_score": None,
+                "review_notes": "",
+                "recommended_ingest_mode": "",
+                "approved_by": "",
+                "approved_at": None,
+            },
+            "execution": {
+                "last_error": "",
+                "retry_count": 0,
+                "updated_at": None,
+            },
         },
         {
             "hash": "hash-b",
@@ -147,11 +172,86 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
                 "industries": [],
                 "concepts": [],
             },
+            "source_kind": "pageindex_cloud",
+            "scan_detected": False,
+            "workflow_state": {
+                "ingest_state": "imported",
+                "ocr_state": "not_needed",
+                "source_state": "ready",
+                "summary_state": "not_started",
+                "review_state": "unreviewed",
+                "promotion_state": "not_selected",
+            },
+            "review": {
+                "ingest_score": None,
+                "summary_score": None,
+                "promotion_score": None,
+                "review_notes": "",
+                "recommended_ingest_mode": "",
+                "approved_by": "",
+                "approved_at": None,
+            },
+            "execution": {
+                "last_error": "",
+                "retry_count": 0,
+                "updated_at": None,
+            },
         },
     ]
     assert data["summaries"] == ["paper"]
     assert data["concepts"] == ["retrieval"]
     assert data["reports"] == ["lint.md"]
+
+
+def test_get_document_data_merges_persisted_ledger_state(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    upsert_document_ledger_record(
+        kb_dir,
+        "hash-a",
+        {
+            "name": "paper.pdf",
+            "stem": "paper",
+            "raw_path": "raw/paper.pdf",
+            "source_kind": "markdown",
+            "page_count": 12,
+            "scan_detected": True,
+            "workflow_state": {
+                "source_state": "failed",
+                "summary_state": "queued",
+                "review_state": "held",
+                "promotion_state": "not_selected",
+            },
+            "review": {
+                "summary_score": 72,
+                "review_notes": "needs source retry",
+            },
+            "execution": {
+                "last_error": "source conversion failed",
+                "retry_count": 1,
+            },
+        },
+    )
+
+    paper = next(document for document in get_document_data(kb_dir)["documents"] if document["hash"] == "hash-a")
+
+    assert paper["scan_detected"] is True
+    assert paper["workflow_state"]["source_state"] == "failed"
+    assert paper["workflow_state"]["summary_state"] == "queued"
+    assert paper["workflow_state"]["review_state"] == "held"
+    assert paper["review"]["summary_score"] == 72
+    assert paper["review"]["review_notes"] == "needs source retry"
+    assert paper["execution"]["last_error"] == "source conversion failed"
+    assert paper["execution"]["retry_count"] == 1
+
+
+def test_get_document_data_filters_by_query_and_workflow_state(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+
+    data = get_document_data(kb_dir, query="manual", summary_state="not_started")
+    assert [document["hash"] for document in data["documents"]] == ["hash-b"]
+
+    data = get_document_data(kb_dir, query="paper", review_state="unreviewed")
+    assert data["documents"] == []
 
 
 def test_source_document_data_and_delete_are_shared_with_client(tmp_path: Path):

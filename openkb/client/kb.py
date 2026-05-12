@@ -167,16 +167,32 @@ def get_status_data(kb_dir: Path) -> dict[str, Any]:
     }
 
 
-def get_document_data(kb_dir: Path) -> dict[str, Any]:
+def get_document_data(
+    kb_dir: Path,
+    *,
+    query: str = "",
+    ingest_state: str = "",
+    ocr_state: str = "",
+    source_state: str = "",
+    summary_state: str = "",
+    review_state: str = "",
+    promotion_state: str = "",
+) -> dict[str, Any]:
     """Return indexed documents and wiki page lists."""
     kb_dir = require_kb_dir(kb_dir)
+    from openkb.document_ledger import (
+        list_effective_document_ledger_records,
+    )
     from openkb.source_relations import get_source_documents
 
+    ledger_records = list_effective_document_ledger_records(kb_dir)
     documents = []
     for document in get_source_documents(kb_dir):
+        file_hash = str(document["hash"])
+        ledger_record = ledger_records[file_hash]
         documents.append(
             {
-                "hash": document["hash"],
+                "hash": file_hash,
                 "name": document["name"],
                 "type": _display_type(str(document.get("type", "unknown"))),
                 "pages": document.get("pages", ""),
@@ -190,8 +206,57 @@ def get_document_data(kb_dir: Path) -> dict[str, Any]:
                 "ingested_date": document.get("ingested_date"),
                 "related_count": document["related_count"],
                 "related_pages": document["related_pages"],
+                "source_kind": ledger_record["source_kind"],
+                "scan_detected": ledger_record["scan_detected"],
+                "workflow_state": ledger_record["workflow_state"],
+                "review": ledger_record["review"],
+                "execution": ledger_record["execution"],
             }
         )
+    known_hashes = {document["hash"] for document in documents}
+    for file_hash, ledger_record in ledger_records.items():
+        if file_hash in known_hashes:
+            continue
+        documents.append(
+            {
+                "hash": file_hash,
+                "name": ledger_record["name"],
+                "type": _display_type(str(ledger_record.get("source_kind") or "unknown")),
+                "pages": ledger_record.get("page_count") or "",
+                "stem": ledger_record["stem"],
+                "raw_path": ledger_record["raw_path"],
+                "raw_exists": bool(ledger_record["raw_path"] and (kb_dir / ledger_record["raw_path"]).exists()),
+                "source_path": None,
+                "source_summary": f"summaries/{ledger_record['stem']}.md" if ledger_record["stem"] else None,
+                "summary_exists": False,
+                "ingested_at": ledger_record.get("ingested_at"),
+                "ingested_date": _ingested_date_from_iso(ledger_record.get("ingested_at")),
+                "related_count": 0,
+                "related_pages": {
+                    "summaries": [],
+                    "companies": [],
+                    "industries": [],
+                    "concepts": [],
+                },
+                "source_kind": ledger_record["source_kind"],
+                "scan_detected": ledger_record["scan_detected"],
+                "workflow_state": ledger_record["workflow_state"],
+                "review": ledger_record["review"],
+                "execution": ledger_record["execution"],
+            }
+        )
+    documents = _filter_document_payloads(
+        documents,
+        query=query,
+        state_filters={
+            "ingest_state": ingest_state,
+            "ocr_state": ocr_state,
+            "source_state": source_state,
+            "summary_state": summary_state,
+            "review_state": review_state,
+            "promotion_state": promotion_state,
+        },
+    )
 
     wiki_dir = kb_dir / "wiki"
     return {
@@ -202,6 +267,63 @@ def get_document_data(kb_dir: Path) -> dict[str, Any]:
         "concepts": _list_stems(wiki_dir / "concepts"),
         "reports": _list_names(wiki_dir / "reports"),
     }
+
+
+def _filter_document_payloads(
+    documents: list[dict[str, Any]],
+    *,
+    query: str = "",
+    state_filters: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    filtered = list(documents)
+    needle = str(query or "").strip().casefold()
+    if needle:
+        filtered = [
+            document
+            for document in filtered
+            if _document_matches_query(document, needle)
+        ]
+
+    for state_name, raw_value in (state_filters or {}).items():
+        allowed = _split_filter_values(raw_value)
+        if not allowed:
+            continue
+        filtered = [
+            document
+            for document in filtered
+            if str(document.get("workflow_state", {}).get(state_name) or "").casefold() in allowed
+        ]
+    return filtered
+
+
+def _document_matches_query(document: dict[str, Any], needle: str) -> bool:
+    haystack = [
+        document.get("name"),
+        document.get("stem"),
+        document.get("type"),
+        document.get("source_kind"),
+        document.get("raw_path"),
+        document.get("source_path"),
+    ]
+    return any(needle in str(value or "").casefold() for value in haystack)
+
+
+def _split_filter_values(raw_value: str) -> set[str]:
+    return {
+        item.strip().casefold()
+        for item in str(raw_value or "").split(",")
+        if item.strip()
+    }
+
+
+def _ingested_date_from_iso(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
 
 
 def get_source_document_data(kb_dir: Path, selector: str) -> dict[str, Any]:

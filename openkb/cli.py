@@ -705,7 +705,6 @@ def add_single_file(
         compile_progress_callback,
     )
     from openkb.llm_usage import llm_usage_context
-    from openkb.state import HashRegistry
 
     logger = logging.getLogger(__name__)
     openkb_dir = kb_dir / ".openkb"
@@ -724,7 +723,6 @@ def add_single_file(
     _setup_llm_key(kb_dir, active_profile)
     compile_max_concurrency = max(int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])), 1)
     gate_config = ingest_gate_config(config)
-    registry = HashRegistry(openkb_dir / "hashes.json")
 
     def _run_compile(operation):
         with llm_usage_context(kb_dir, "compile"):
@@ -984,17 +982,16 @@ def add_single_file(
     # Register hash only after successful compilation
     if result.file_hash:
         _emit_progress(progress_callback, f"Registering document: {file_path.name}")
-        if result.local_long_doc:
-            doc_type = "local_long_pdf"
-        elif result.is_long_doc or result.selected_strategy == "ocr-pageindex-local":
-            doc_type = "long_pdf"
-        else:
-            doc_type = file_path.suffix.lstrip(".")
-        from openkb.source_relations import current_ingested_at
+        from openkb.workflows.import_pipeline import register_converted_document
 
-        registry.add(
-            result.file_hash,
-            {"name": file_path.name, "type": doc_type, "ingested_at": current_ingested_at()},
+        register_converted_document(
+            file_path,
+            kb_dir,
+            result,
+            summary_state="ready",
+            review_state="approved",
+            promotion_state="promoted",
+            source_state="ready",
         )
 
     with _kb_mutation_lock(kb_dir):
@@ -1233,9 +1230,10 @@ def init():
 @click.option("--force-reject", is_flag=True, default=False, help="Force the ingest gate to reject this document.")
 @click.option("--gate-reason", default="", help="Reason recorded for force-pass or force-reject.")
 @click.option("--gate-operator", default="", help="Operator name recorded in ingest gate audit.")
+@click.option("--import-only", is_flag=True, default=False, help="Only import raw/source artifacts; do not compile summaries or wiki pages.")
 @click.argument("path")
 @click.pass_context
-def add(ctx, force, force_pass, force_reject, gate_reason, gate_operator, path):
+def add(ctx, force, force_pass, force_reject, gate_reason, gate_operator, import_only, path):
     """Add a document or directory of documents at PATH to the knowledge base."""
     if force_pass and force_reject:
         click.echo("Cannot use --force-pass and --force-reject together.")
@@ -1262,6 +1260,9 @@ def add(ctx, force, force_pass, force_reject, gate_reason, gate_operator, path):
         if not files:
             click.echo(f"No supported files found in {path}.")
             return
+        if import_only:
+            _run_import_files(files, kb_dir, force=force, path_label=path)
+            return
         total = len(files)
         click.echo(f"Found {total} supported file(s) in {path}.")
         _add_directory_files(
@@ -1279,6 +1280,9 @@ def add(ctx, force, force_pass, force_reject, gate_reason, gate_operator, path):
                 f"Unsupported file type: {target.suffix}. "
                 f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
             )
+            return
+        if import_only:
+            _run_import_files([target], kb_dir, force=force, path_label=path)
             return
         if force:
             add_single_file(
@@ -1299,6 +1303,154 @@ def add(ctx, force, force_pass, force_reject, gate_reason, gate_operator, path):
                 gate_reason=gate_reason,
                 gate_operator=gate_operator,
             )
+
+
+def import_single_file(
+    file_path: Path,
+    kb_dir: Path,
+    *,
+    force: bool = False,
+    strict: bool = False,
+    strategy_override: str | None = None,
+    job=None,
+) -> dict[str, Any] | None:
+    """Import one document into raw/source inventory without wiki compilation."""
+    from openkb.workflows.import_pipeline import import_document_source
+
+    click.echo(f"Importing: {file_path.name}")
+    try:
+        result = import_document_source(
+            file_path,
+            kb_dir,
+            force=force,
+            strategy_override=strategy_override,
+            job=job,
+        )
+    except Exception as exc:
+        click.echo(f"  [ERROR] Import failed: {exc}")
+        if strict:
+            raise RuntimeError(f"Import failed: {exc}") from exc
+        return None
+
+    if result.get("skipped"):
+        click.echo(f"  [SKIP] Already in inventory: {file_path.name}")
+    else:
+        source_path = result.get("source_path") or "source pending"
+        click.echo(f"  [OK] Source ready: {source_path}")
+    return result
+
+
+def _run_import_files(
+    files: list[Path],
+    kb_dir: Path,
+    *,
+    force: bool = False,
+    strict: bool = False,
+    strategy_override: str | None = None,
+    path_label: str = "",
+) -> tuple[int, int, int]:
+    imported = 0
+    skipped = 0
+    failed = 0
+    if len(files) > 1:
+        click.echo(f"Found {len(files)} supported file(s) in {path_label or 'input'}.")
+    for index, file_path in enumerate(files, 1):
+        if len(files) > 1:
+            click.echo(f"\n[{index}/{len(files)}] ", nl=False)
+        try:
+            result = import_single_file(
+                file_path,
+                kb_dir,
+                force=force,
+                strict=strict,
+                strategy_override=strategy_override,
+            )
+        except RuntimeError:
+            raise
+        if result is None:
+            failed += 1
+        elif result.get("skipped"):
+            skipped += 1
+        else:
+            imported += 1
+
+    if imported:
+        with _kb_mutation_lock(kb_dir):
+            append_log(kb_dir / "wiki", "import", f"{imported} source document(s)")
+            commit_kb_changes(kb_dir, f"Import {imported} source document(s)")
+    click.echo(f"Import complete: {imported} imported, {skipped} skipped, {failed} failed.")
+    return imported, skipped, failed
+
+
+@cli.command(name="import")
+@click.option("--force", is_flag=True, default=False, help="Re-import even if the document hash is already indexed.")
+@click.option("--strict", is_flag=True, default=False, help="Stop on the first import failure.")
+@click.option("--strategy-override", default=None, help="Override PDF preparation strategy, for example ocr-local-long.")
+@click.argument("path")
+@click.pass_context
+def import_command(ctx, force, strict, strategy_override, path):
+    """Import documents into raw/source inventory without compiling wiki pages."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    _ensure_wiki_schema(kb_dir)
+
+    target = Path(path)
+    if not target.exists():
+        click.echo(f"Path does not exist: {path}")
+        return
+
+    if target.is_dir():
+        files = [
+            f for f in sorted(target.rglob("*"))
+            if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
+        ]
+        if not files:
+            click.echo(f"No supported files found in {path}.")
+            return
+    else:
+        if target.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            click.echo(
+                f"Unsupported file type: {target.suffix}. "
+                f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+            )
+            return
+        files = [target]
+
+    _run_import_files(
+        files,
+        kb_dir,
+        force=force,
+        strict=strict,
+        strategy_override=strategy_override,
+        path_label=path,
+    )
+
+
+@cli.command(name="backfill-ledger")
+@click.pass_context
+def backfill_ledger_command(ctx):
+    """Backfill staged document ledger records from the current KB state."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    _ensure_wiki_schema(kb_dir)
+
+    from openkb.document_ledger import backfill_document_ledger
+
+    result = backfill_document_ledger(kb_dir)
+    click.echo(
+        "Document ledger backfill complete: "
+        f"{result['added']} added, "
+        f"{result['updated']} updated, "
+        f"{result['unchanged']} unchanged, "
+        f"{result['total']} total."
+    )
+    if result["added"] or result["updated"]:
+        with _kb_mutation_lock(kb_dir):
+            commit_kb_changes(kb_dir, "Backfill document ledger")
 
 
 @cli.command()
@@ -1944,6 +2096,14 @@ def print_status(kb_dir: Path) -> None:
     if hashes_file.exists():
         hashes = json.loads(hashes_file.read_text(encoding="utf-8"))
         click.echo(f"\n  Total indexed: {len(hashes)} document(s)")
+    ledger_file = openkb_dir / "document_ledger.json"
+    if ledger_file.exists():
+        try:
+            ledger_payload = json.loads(ledger_file.read_text(encoding="utf-8") or "{}")
+            ledger_count = len(ledger_payload.get("documents", {})) if isinstance(ledger_payload, dict) else 0
+        except json.JSONDecodeError:
+            ledger_count = 0
+        click.echo(f"  Ledger records: {ledger_count} document(s)")
 
     # Last compile time: newest file in wiki/summaries/
     summaries_dir = wiki_dir / "summaries"

@@ -143,6 +143,59 @@ class TestAddCommand:
             result = runner.invoke(cli, ["add", "--force-reject", str(doc)])
             assert "--gate-reason is required" in result.output
 
+    def test_import_command_uses_source_only_pipeline(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.cli.import_single_file", return_value={"skipped": False, "source_path": "sources/test.md"}) as mock_import, \
+             patch("openkb.cli.commit_kb_changes") as mock_commit:
+            result = runner.invoke(cli, ["import", str(doc)])
+
+        assert result.exit_code == 0
+        assert "Import complete: 1 imported, 0 skipped, 0 failed." in result.output
+        mock_import.assert_called_once_with(
+            doc,
+            kb_dir,
+            force=False,
+            strict=False,
+            strategy_override=None,
+        )
+        mock_commit.assert_called_once()
+
+    def test_add_import_only_uses_source_only_pipeline(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.cli.import_single_file", return_value={"skipped": False, "source_path": "sources/test.md"}) as mock_import, \
+             patch("openkb.cli.add_single_file") as mock_add, \
+             patch("openkb.cli.commit_kb_changes"):
+            result = runner.invoke(cli, ["add", "--import-only", str(doc)])
+
+        assert result.exit_code == 0
+        assert "Import complete: 1 imported, 0 skipped, 0 failed." in result.output
+        mock_import.assert_called_once()
+        mock_add.assert_not_called()
+
+    def test_backfill_ledger_command_runs_compatibility_backfill(self, tmp_path):
+        kb_dir = self._setup_kb(tmp_path)
+
+        runner = CliRunner()
+        with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+             patch("openkb.document_ledger.backfill_document_ledger", return_value={"added": 2, "updated": 1, "unchanged": 3, "total": 6}) as mock_backfill, \
+             patch("openkb.cli.commit_kb_changes") as mock_commit:
+            result = runner.invoke(cli, ["backfill-ledger"])
+
+        assert result.exit_code == 0
+        assert "Document ledger backfill complete: 2 added, 1 updated, 3 unchanged, 6 total." in result.output
+        mock_backfill.assert_called_once_with(kb_dir)
+        mock_commit.assert_called_once_with(kb_dir, "Backfill document ledger")
+
     def test_add_directory_calls_helper_for_each_file(self, tmp_path):
         kb_dir = self._setup_kb(tmp_path)
         docs_dir = tmp_path / "docs"
