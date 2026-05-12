@@ -702,7 +702,7 @@ def _normalize_profiles(config: dict[str, Any]) -> tuple[list[dict[str, str]], s
             )
         )
 
-    active_id = _enabled_active_profile_id(
+    active_id = _configured_active_profile_id(
         profiles,
         str(config.get("active_llm_profile") or profiles[0]["id"]).strip() or profiles[0]["id"],
     )
@@ -711,6 +711,15 @@ def _normalize_profiles(config: dict[str, Any]) -> tuple[list[dict[str, str]], s
 
 def _find_profile(profiles: list[dict[str, str]], profile_id: str) -> dict[str, str] | None:
     return next((profile for profile in profiles if profile["id"] == profile_id), None)
+
+
+def _configured_active_profile_id(profiles: list[dict[str, Any]], preferred_id: str) -> str:
+    if not profiles:
+        return _DEFAULT_PROFILE_ID
+    preferred_id = str(preferred_id or "").strip()
+    if preferred_id and _find_profile(profiles, preferred_id) is not None:
+        return preferred_id
+    return profiles[0]["id"]
 
 
 def _enabled_active_profile_id(profiles: list[dict[str, Any]], preferred_id: str) -> str:
@@ -905,7 +914,7 @@ def save_model_pool_profile(kb_dir: Path, payload: dict[str, Any], profile_id: s
     if api_key:
         _write_profile_api_key(kb_dir, target, api_key)
 
-    active_id = _enabled_active_profile_id(profiles, active_id)
+    active_id = _configured_active_profile_id(profiles, active_id)
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)
     commit_kb_changes(kb_dir, f"Update model pool profile {target['id']}")

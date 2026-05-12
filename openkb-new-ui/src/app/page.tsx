@@ -8,11 +8,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Loader2 } from 'lucide-react';
 import { DocumentsTab } from './components/DocumentsTab';
-import { ChatSidebar } from './components/ChatSidebar';
 import { GlobalJobTracker } from './components/JobTracker';
 import { SessionsTab } from './components/SessionsTab';
 import { SettingsTab } from './components/SettingsTab';
 import { WikiTab } from './components/WikiTab';
+import { JobsTab } from './components/JobsTab';
 
 interface KnownKb {
   path: string;
@@ -122,6 +122,7 @@ export default function Home() {
             <TabsList className="w-fit mb-6 shrink-0">
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="documents">Workflow</TabsTrigger>
+              <TabsTrigger value="jobs">Jobs</TabsTrigger>
               <TabsTrigger value="sessions">Sessions</TabsTrigger>
               <TabsTrigger value="settings">Settings</TabsTrigger>
               <TabsTrigger value="wiki">Wiki</TabsTrigger>
@@ -174,6 +175,10 @@ export default function Home() {
               )}
             </TabsContent>
 
+            <TabsContent value="jobs" className="flex-1 overflow-hidden m-0 outline-none">
+              <JobsTab key={`jobs-${resolvedSelectedKb ?? 'none'}`} kbDir={resolvedSelectedKb} />
+            </TabsContent>
+
             <TabsContent value="sessions" className="flex-1 overflow-hidden m-0 outline-none">
               {resolvedSelectedKb ? (
                 <SessionsTab key={`sessions-${resolvedSelectedKb}`} kbDir={resolvedSelectedKb} />
@@ -204,10 +209,6 @@ export default function Home() {
           </Tabs>
         </div>
 
-        {/* Right Sidebar: Chat Assistant */}
-        <div className="w-[350px] border-l shrink-0 bg-background">
-          <ChatSidebar kbDir={resolvedSelectedKb || ''} />
-        </div>
       </div>
     </div>
   );

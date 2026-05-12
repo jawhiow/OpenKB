@@ -115,17 +115,30 @@ export interface JobPayload {
   id: string;
   type: string;
   status: string;
+  created_at?: string;
+  updated_at?: string;
   message?: string;
   error?: string | null;
   progress?: {
     current: number;
     total: number;
   };
+  logs?: Array<{
+    time: string;
+    level: string;
+    message: string;
+  }>;
   result?: unknown;
+  stop_requested?: boolean;
+  retry_of?: string | null;
 }
 
 export interface JobEnvelope {
   job: JobPayload;
+}
+
+export interface JobsResponse {
+  jobs: JobPayload[];
 }
 
 export interface ReviewUpdatePayload {
@@ -424,6 +437,23 @@ export const deleteDocument = async (kbDir: string, selector: string): Promise<J
 export const getJob = async (jobId: string): Promise<JobPayload | null> => {
   if (!jobId) return null;
   const response = await apiClient.get(`/jobs/${jobId}`);
+  return response.data;
+};
+
+export const getJobs = async (): Promise<JobsResponse> => {
+  const response = await apiClient.get('/jobs');
+  return {
+    jobs: Array.isArray(response.data?.jobs) ? response.data.jobs : [],
+  };
+};
+
+export const stopJob = async (jobId: string): Promise<JobPayload> => {
+  const response = await apiClient.post(`/jobs/${encodeURIComponent(jobId)}/stop`);
+  return response.data;
+};
+
+export const retryJob = async (jobId: string): Promise<JobEnvelope> => {
+  const response = await apiClient.post(`/jobs/${encodeURIComponent(jobId)}/retry`);
   return response.data;
 };
 
