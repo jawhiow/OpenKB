@@ -75,7 +75,7 @@ def _restore_initial_runtime_env() -> None:
             os.environ[key] = value
 
 
-def _normalized_llm_profile(raw: dict, fallback_id: str, config: dict) -> dict[str, str]:
+def _normalized_llm_profile(raw: dict, fallback_id: str, config: dict) -> dict[str, Any]:
     profile_id = str(raw.get("id") or fallback_id or "default").strip() or "default"
     return {
         "id": profile_id,
@@ -87,10 +87,11 @@ def _normalized_llm_profile(raw: dict, fallback_id: str, config: dict) -> dict[s
         "reasoning_effort": str(raw.get("reasoning_effort") or "").strip().lower(),
         "thinking_enabled": bool(raw.get("thinking_enabled", False)),
         "api_key_env": str(raw.get("api_key_env") or "").strip(),
+        "enabled": bool(raw.get("enabled", True)),
     }
 
 
-def _ordered_llm_profiles(config: dict) -> list[dict[str, str]]:
+def _ordered_llm_profiles(config: dict) -> list[dict[str, Any]]:
     raw_profiles = config.get("llm_profiles")
     profiles: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -116,6 +117,10 @@ def _ordered_llm_profiles(config: dict) -> list[dict[str, str]]:
 
     if not profiles:
         profiles.append(_normalized_llm_profile(config, "default", config))
+
+    profiles = [profile for profile in profiles if profile.get("enabled", True)]
+    if not profiles:
+        return []
 
     active_id = str(config.get("active_llm_profile") or profiles[0]["id"]).strip()
     active = [profile for profile in profiles if profile["id"] == active_id]
@@ -707,9 +712,16 @@ def add_single_file(
     config = load_config(openkb_dir / "config.yaml")
     profiles = _ordered_llm_profiles(config)
     if model_route is None:
-        _setup_llm_key(kb_dir, profiles[0])
+        if not profiles:
+            message = "No enabled LLM profiles available."
+            click.echo(f"  [ERROR] {message}")
+            if strict:
+                raise RuntimeError(message)
+            return
+        active_profile = profiles[0]
     else:
-        _setup_llm_key(kb_dir, _profile_from_model_route(model_route))
+        active_profile = _profile_from_model_route(model_route)
+    _setup_llm_key(kb_dir, active_profile)
     compile_max_concurrency = max(int(config.get("compile_max_concurrency", DEFAULT_CONFIG["compile_max_concurrency"])), 1)
     gate_config = ingest_gate_config(config)
     registry = HashRegistry(openkb_dir / "hashes.json")
@@ -738,7 +750,7 @@ def add_single_file(
         return
 
     if gate_is_active(gate_config, force_pass=force_gate_pass, force_reject=force_gate_reject):
-        gate_model = str(config.get("ingest_gate", {}).get("model") or profiles[0]["model"]).strip()
+        gate_model = str(config.get("ingest_gate", {}).get("model") or active_profile["model"]).strip()
         click.echo(f"  Pre-ingest gate evaluating: {file_path.name}")
         _emit_progress(progress_callback, f"Pre-ingest gate: {file_path.name}")
         try:
@@ -1345,6 +1357,9 @@ def query(ctx, question, save, raw):
     openkb_dir = kb_dir / ".openkb"
     config = load_config(openkb_dir / "config.yaml")
     profiles = _ordered_llm_profiles(config)
+    if not profiles:
+        click.echo("[ERROR] No enabled LLM profiles available.")
+        return
     _setup_llm_key(kb_dir, profiles[0])
     model = profiles[0]["model"]
 
@@ -1557,7 +1572,8 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
 
     config = load_config(openkb_dir / "config.yaml")
     profiles = _ordered_llm_profiles(config)
-    _setup_llm_key(kb_dir, profiles[0])
+    if profiles:
+        _setup_llm_key(kb_dir, profiles[0])
 
     legacy_placeholder_fix_report = ""
     if fix:
@@ -1603,18 +1619,21 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
                 knowledge_report = f"Knowledge lint failed: {exc}"
                 continue
     else:
-        for profile_index, profile in enumerate(profiles):
-            if profile_index > 0:
-                _safe_echo(f"Retrying knowledge lint with LLM profile {_profile_label(profile)}...")
-            _setup_llm_key(kb_dir, profile)
-            try:
-                with llm_usage_context(kb_dir, "lint"):
-                    knowledge_report = await run_knowledge_lint(kb_dir, profile["model"])
-                break
-            except Exception as exc:
-                if not _is_retryable_llm_failure(exc) or profile_index == len(profiles) - 1:
-                    knowledge_report = f"Knowledge lint failed: {exc}"
+        if not profiles:
+            knowledge_report = "Knowledge lint failed: No enabled LLM profiles available."
+        else:
+            for profile_index, profile in enumerate(profiles):
+                if profile_index > 0:
+                    _safe_echo(f"Retrying knowledge lint with LLM profile {_profile_label(profile)}...")
+                _setup_llm_key(kb_dir, profile)
+                try:
+                    with llm_usage_context(kb_dir, "lint"):
+                        knowledge_report = await run_knowledge_lint(kb_dir, profile["model"])
                     break
+                except Exception as exc:
+                    if not _is_retryable_llm_failure(exc) or profile_index == len(profiles) - 1:
+                        knowledge_report = f"Knowledge lint failed: {exc}"
+                        break
     _safe_echo(knowledge_report)
 
     coverage_candidates = extract_coverage_gap_concept_candidates(

@@ -385,6 +385,73 @@ def test_config_data_can_create_and_switch_llm_profiles_with_separate_keys(tmp_p
     assert "LLM_API_KEY=default-secret\n" in (kb_dir / ".env").read_text(encoding="utf-8")
 
 
+def test_config_update_disabling_non_active_profile_preserves_active_profile(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "active_llm_profile: primary\n"
+        "model: primary-model\n"
+        "wire_api: chat_completions\n"
+        "base_url: https://primary.example.com/v1\n"
+        "llm_profiles:\n"
+        "- id: primary\n"
+        "  name: Primary\n"
+        "  model: primary-model\n"
+        "  wire_api: chat_completions\n"
+        "  base_url: https://primary.example.com/v1\n"
+        "  enabled: true\n"
+        "- id: backup\n"
+        "  name: Backup\n"
+        "  model: backup-model\n"
+        "  wire_api: chat_completions\n"
+        "  base_url: https://backup.example.com/v1\n"
+        "  enabled: true\n",
+        encoding="utf-8",
+    )
+
+    updated = update_config_data(kb_dir, {"profile_id": "backup", "enabled": False})
+
+    assert updated["active_profile"] == "primary"
+    assert updated["model"] == "primary-model"
+    saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["active_llm_profile"] == "primary"
+    assert saved["llm_profiles"][1]["enabled"] is False
+
+
+def test_config_update_disabling_active_profile_selects_enabled_replacement(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "active_llm_profile: local\n"
+        "model: local-model\n"
+        "wire_api: chat_completions\n"
+        "base_url: http://localhost:6011/v1\n"
+        "llm_profiles:\n"
+        "- id: local\n"
+        "  name: Local\n"
+        "  model: local-model\n"
+        "  wire_api: chat_completions\n"
+        "  base_url: http://localhost:6011/v1\n"
+        "  enabled: true\n"
+        "- id: backup\n"
+        "  name: Backup\n"
+        "  model: backup-model\n"
+        "  wire_api: chat_completions\n"
+        "  base_url: https://backup.example.com/v1\n"
+        "  enabled: true\n",
+        encoding="utf-8",
+    )
+
+    updated = update_config_data(kb_dir, {"profile_id": "local", "enabled": False})
+
+    assert updated["active_profile"] == "backup"
+    assert updated["model"] == "backup-model"
+    assert updated["base_url"] == "https://backup.example.com/v1"
+    saved = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["active_llm_profile"] == "backup"
+    assert saved["model"] == "backup-model"
+    assert saved["base_url"] == "https://backup.example.com/v1"
+    assert saved["llm_profiles"][0]["enabled"] is False
+
+
 def test_config_data_roundtrips_deepseek_profile_fields(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".env").write_text("LLM_API_KEY=default-secret\n", encoding="utf-8")

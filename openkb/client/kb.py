@@ -580,14 +580,30 @@ def _normalize_profiles(config: dict[str, Any]) -> tuple[list[dict[str, str]], s
             )
         )
 
-    active_id = str(config.get("active_llm_profile") or profiles[0]["id"]).strip() or profiles[0]["id"]
-    if active_id not in {profile["id"] for profile in profiles}:
-        active_id = profiles[0]["id"]
+    active_id = _enabled_active_profile_id(
+        profiles,
+        str(config.get("active_llm_profile") or profiles[0]["id"]).strip() or profiles[0]["id"],
+    )
     return profiles, active_id
 
 
 def _find_profile(profiles: list[dict[str, str]], profile_id: str) -> dict[str, str] | None:
     return next((profile for profile in profiles if profile["id"] == profile_id), None)
+
+
+def _enabled_active_profile_id(profiles: list[dict[str, Any]], preferred_id: str) -> str:
+    if not profiles:
+        return _DEFAULT_PROFILE_ID
+    preferred_id = str(preferred_id or "").strip()
+    preferred = _find_profile(profiles, preferred_id) if preferred_id else None
+    if preferred is not None and preferred.get("enabled", True):
+        return preferred["id"]
+    enabled = next((profile for profile in profiles if profile.get("enabled", True)), None)
+    if enabled is not None:
+        return enabled["id"]
+    if preferred is not None:
+        return preferred["id"]
+    return profiles[0]["id"]
 
 
 def _profile_has_api_key(
@@ -767,6 +783,7 @@ def save_model_pool_profile(kb_dir: Path, payload: dict[str, Any], profile_id: s
     if api_key:
         _write_profile_api_key(kb_dir, target, api_key)
 
+    active_id = _enabled_active_profile_id(profiles, active_id)
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)
     commit_kb_changes(kb_dir, f"Update model pool profile {target['id']}")
@@ -783,6 +800,7 @@ def delete_model_pool_profile(kb_dir: Path, profile_id: str) -> dict[str, Any]:
     if len(remaining) == len(profiles):
         raise ClientError(f"Unknown LLM profile: {profile_id}")
     next_active = active_id if active_id != profile_id and any(profile["id"] == active_id for profile in remaining) else (remaining[0]["id"] if remaining else _DEFAULT_PROFILE_ID)
+    next_active = _enabled_active_profile_id(remaining, next_active)
     _persist_profiles(config, remaining, next_active)
     save_config(config_path, config)
 
@@ -1480,11 +1498,12 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
         profiles.append(target_profile)
         active_id = target_profile["id"]
     else:
-        target_id = requested_active or str(updates.get("profile_id") or active_id).strip() or active_id
+        target_id = str(updates.get("profile_id") or requested_active or active_id).strip() or active_id
         target_profile = profile_by_id.get(target_id)
         if target_profile is None:
             raise ClientError(f"Unknown LLM profile: {target_id}")
-        active_id = target_profile["id"]
+        if requested_active:
+            active_id = target_profile["id"]
 
     if not create_profile and updates.get("profile_name") is not None:
         profile_name = str(updates.get("profile_name") or "").strip()
@@ -1557,6 +1576,7 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
         _write_env_values(kb_dir, {_PADDLEOCR_TOKEN_ENV: str(updates.get("paddleocr_token") or "").strip()})
     _update_pageindex_local_runtime(kb_dir, updates)
 
+    active_id = _enabled_active_profile_id(profiles, active_id)
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)
     commit_kb_changes(kb_dir, "Update knowledge base config")

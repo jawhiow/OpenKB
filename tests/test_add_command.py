@@ -423,6 +423,99 @@ class TestAddCommand:
         assert gate_page.exists()
         assert "REJECT 42/100" in gate_page.read_text(encoding="utf-8")
 
+    def test_add_single_file_gate_skips_disabled_active_profile(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "active_llm_profile: disabled\n"
+            "model: disabled-model\n"
+            "wire_api: chat_completions\n"
+            "base_url: https://disabled.example.com/v1\n"
+            "model_pool:\n"
+            "  enabled: false\n"
+            "ingest_gate:\n"
+            "  enabled: true\n"
+            "llm_profiles:\n"
+            "- id: disabled\n"
+            "  name: Disabled\n"
+            "  model: disabled-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://disabled.example.com/v1\n"
+            "  enabled: false\n"
+            "- id: good\n"
+            "  name: Good\n"
+            "  model: good-model\n"
+            "  wire_api: chat_completions\n"
+            "  base_url: https://good.example.com/v1\n"
+            "  enabled: true\n",
+            encoding="utf-8",
+        )
+        doc = tmp_path / "test.md"
+        doc.write_text("# Hello")
+        source_path = kb_dir / "wiki" / "sources" / "test.md"
+        source_path.write_text("# Hello converted")
+        gate_models: list[str] = []
+
+        gate_result = {
+            "doc_title": "test.md",
+            "doc_type": "other",
+            "gate_enabled": True,
+            "raw_decision": "PASS",
+            "final_decision": "PASS",
+            "hard_reject": False,
+            "total_score": 88,
+            "one_line_verdict": "useful",
+            "recommended_ingest_mode": "full_ingest",
+            "dimension_scores": {
+                "relevance": {"score": 15, "max": 15, "reason": ""},
+                "authority_traceability": {"score": 15, "max": 15, "reason": ""},
+                "signal_density": {"score": 18, "max": 20, "reason": ""},
+                "novelty_vs_kb": {"score": 15, "max": 20, "reason": ""},
+                "durability": {"score": 8, "max": 10, "reason": ""},
+                "compilation_yield": {"score": 8, "max": 10, "reason": ""},
+                "actionability": {"score": 9, "max": 10, "reason": ""},
+            },
+            "primary_reasons": ["useful"],
+            "hard_reject_reasons": [],
+            "overlap_with_existing_kb": [],
+            "suggested_outputs_if_ingested": [],
+            "audit_trail": {"why_this_decision": "", "why_not_higher": "", "why_not_lower": ""},
+            "timestamp": "2026-05-12 09:48:47",
+            "source_info": f"file: {doc}",
+            "operator": "",
+            "force_reason": "",
+            "force_pass": False,
+            "force_reject": False,
+        }
+
+        def fake_evaluate(*_args, **kwargs):
+            gate_models.append(kwargs["model"])
+            return gate_result
+
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "test.md",
+            source_path=source_path,
+            is_long_doc=False,
+        )
+
+        with patch("openkb.cli.evaluate_candidate", side_effect=fake_evaluate), \
+             patch("openkb.cli.convert_document", return_value=mock_result), \
+             patch("openkb.agent.compiler.compile_short_doc", new_callable=AsyncMock) as mock_compile:
+            mock_compile.return_value = []
+            add_single_file(doc, kb_dir, strict=True)
+
+        assert gate_models == ["good-model"]
+        mock_compile.assert_awaited_once_with(
+            "test",
+            source_path,
+            kb_dir,
+            "good-model",
+            max_concurrency=2,
+            cleanup_existing=False,
+        )
+
     def test_add_single_file_force_pass_continues_after_gate(self, tmp_path):
         from openkb.cli import add_single_file
         from openkb.converter import ConvertResult
