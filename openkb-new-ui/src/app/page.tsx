@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getKbs } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -196,27 +196,29 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-background via-background to-muted/30">
+    <div className="flex flex-col h-screen bg-background">
       {/* Top Header */}
-      <header className="flex h-14 items-center justify-between px-4 sm:px-6 border-b bg-background/70 backdrop-blur-md shrink-0 supports-[backdrop-filter]:bg-background/60">
-        <div className="flex items-center gap-3">
+      <header className="flex h-14 items-center justify-between px-4 sm:px-6 border-b bg-background/50 backdrop-blur-xl sticky top-0 z-50 shrink-0">
+        <div className="flex items-center gap-4">
           <Button
             variant="ghost"
-            size="icon-sm"
+            size="icon"
             onClick={() => setSidebarCollapsed((v) => !v)}
             aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="h-9 w-9 rounded-xl hover:bg-accent/50"
           >
-            {sidebarCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+            {sidebarCollapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
           </Button>
-          <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary/70 text-primary-foreground shadow-sm">
-              <Sparkles className="h-4 w-4" />
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-lg shadow-primary/20">
+              <Sparkles className="h-5 w-5" />
             </div>
-            <h1 className="text-lg font-semibold tracking-tight">OpenKB</h1>
-            <span className="hidden sm:inline-flex text-[11px] uppercase tracking-wider font-medium text-muted-foreground px-2 py-0.5 bg-muted/70 rounded-full border">
-              Staged Workbench
-            </span>
+            <div className="flex flex-col leading-tight">
+              <h1 className="text-lg font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/70">OpenKB</h1>
+              <span className="text-[10px] uppercase tracking-[0.1em] font-bold text-primary/80">
+                Staged Workbench
+              </span>
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -239,28 +241,17 @@ export default function Home() {
           )}
           <Button
             type="button"
-            variant="outline"
+            variant="secondary"
             size="sm"
             onClick={() => openCommandPalette()}
-            className="hidden sm:inline-flex h-8 gap-2 px-2 text-xs text-muted-foreground"
+            className="hidden sm:inline-flex h-9 gap-2 px-3 text-xs font-medium bg-secondary/50 border-none hover:bg-secondary"
             aria-label="Open command palette"
-            title="Open command palette (Ctrl+K)"
           >
             <Search className="h-3.5 w-3.5" />
-            <span className="hidden lg:inline">Quick switch</span>
-            <kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-medium">
-              ⌘K
+            <span className="hidden lg:inline">Quick search...</span>
+            <kbd className="hidden xl:inline-flex h-5 items-center gap-1 rounded border bg-background px-1.5 font-mono text-[10px] font-medium opacity-100">
+              <span className="text-xs">⌘</span>K
             </kbd>
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => openCommandPalette()}
-            className="sm:hidden"
-            aria-label="Open command palette"
-          >
-            <Search className="h-4 w-4" />
           </Button>
           <ThemeToggle />
         </div>
@@ -272,38 +263,40 @@ export default function Home() {
         {/* Left Sidebar: KB Selection */}
         <aside
           className={cn(
-            'group/sidebar relative border-r bg-muted/30 backdrop-blur-sm flex flex-col shrink-0 transition-[width] duration-300 ease-in-out',
-            sidebarCollapsed ? 'w-14' : 'w-64',
+            'group/sidebar relative border-r bg-sidebar/30 backdrop-blur-xl flex flex-col shrink-0 transition-all duration-300 ease-in-out',
+            sidebarCollapsed ? 'w-[72px]' : 'w-72',
           )}
         >
           <div className={cn(
-            'flex items-center border-b shrink-0 h-14',
-            sidebarCollapsed ? 'justify-center px-2' : 'justify-between px-4',
+            'flex items-center shrink-0 h-16',
+            sidebarCollapsed ? 'justify-center px-2' : 'px-6',
           )}>
             {sidebarCollapsed ? (
-              <div className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground" title="Knowledge Bases">
-                <Database className="h-4 w-4" />
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/50 text-accent-foreground" title="Knowledge Bases">
+                <Database className="h-5 w-5" />
               </div>
             ) : (
-              <div className="flex items-center gap-2 min-w-0">
-                <Database className="h-4 w-4 text-muted-foreground shrink-0" />
-                <div className="min-w-0">
-                  <h2 className="font-semibold text-sm leading-tight truncate">Knowledge Bases</h2>
-                  <p className="text-[11px] text-muted-foreground truncate">Select a workspace</p>
+              <div className="flex items-center gap-3 w-full">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Database className="h-4 w-4" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <h2 className="font-bold text-sm tracking-tight truncate uppercase text-muted-foreground/80">Workspaces</h2>
+                  <p className="text-[11px] text-muted-foreground/60 font-medium truncate">Select context</p>
                 </div>
               </div>
             )}
           </div>
 
           {!sidebarCollapsed && availableKbs.length > 3 && (
-            <div className="border-b px-3 py-2 shrink-0">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <div className="px-4 py-2 shrink-0">
+              <div className="relative group">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50 transition-colors group-focus-within:text-primary" />
                 <Input
                   value={kbSearch}
                   onChange={(event) => setKbSearch(event.target.value)}
-                  placeholder="Search workspaces"
-                  className="h-8 pl-8 pr-2 text-xs"
+                  placeholder="Filter workspaces..."
+                  className="h-9 pl-9 pr-3 text-xs bg-accent/30 border-transparent hover:bg-accent/50 focus:bg-background focus:ring-1 focus:ring-primary/20 transition-all"
                   aria-label="Search knowledge bases"
                 />
               </div>
@@ -311,12 +304,15 @@ export default function Home() {
           )}
 
           <div className={cn(
-            'overflow-y-auto flex-1 min-h-0',
-            sidebarCollapsed ? 'p-2 space-y-1' : 'p-2',
+            'overflow-y-auto flex-1 min-h-0 custom-scrollbar',
+            sidebarCollapsed ? 'p-3 space-y-2' : 'px-3 py-2',
           )}>
             {availableKbs.length === 0 && !sidebarCollapsed && (
-              <div className="text-center text-xs text-muted-foreground px-2 py-8">
-                No knowledge bases found.
+              <div className="flex flex-col items-center justify-center text-center p-8 opacity-50">
+                <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center mb-3">
+                   <Database className="h-6 w-6" />
+                </div>
+                <p className="text-xs font-medium">No knowledge bases</p>
               </div>
             )}
 
@@ -350,7 +346,7 @@ export default function Home() {
                   </SidebarSection>
                 )}
                 {otherList.length > 0 && (
-                  <SidebarSection label={pinnedList.length > 0 ? 'All workspaces' : undefined}>
+                  <SidebarSection label={pinnedList.length > 0 ? 'All Workspaces' : undefined}>
                     {otherList.map((kb) => (
                       <KbSidebarItem
                         key={kb.path}
@@ -364,8 +360,8 @@ export default function Home() {
                   </SidebarSection>
                 )}
                 {searchQuery && pinnedList.length === 0 && otherList.length === 0 && (
-                  <div className="text-center text-xs text-muted-foreground px-2 py-6">
-                    No workspaces match &ldquo;{kbSearch}&rdquo;.
+                  <div className="text-center p-8 opacity-50">
+                    <p className="text-xs font-medium">No matches</p>
                   </div>
                 )}
               </>
@@ -373,149 +369,125 @@ export default function Home() {
           </div>
 
           {!sidebarCollapsed && availableKbs.length > 0 && (
-            <div className="border-t px-3 py-2 text-[11px] text-muted-foreground shrink-0 flex items-center justify-between">
-              <span>{availableKbs.length} workspace{availableKbs.length === 1 ? '' : 's'}</span>
-              {pinnedList.length > 0 && <span>{pinnedList.length} pinned</span>}
+            <div className="mt-auto border-t bg-accent/20 px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/60 flex items-center justify-between">
+              <span>{availableKbs.length} TOTAL</span>
+              {pinnedList.length > 0 && <span className="text-primary/70">{pinnedList.length} PINNED</span>}
             </div>
           )}
         </aside>
 
         {/* Middle Area: Main Content Tabs */}
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col p-4 sm:p-6 overflow-hidden">
-            <TabsList className="w-fit mb-5 shrink-0 gap-1 bg-muted/50 backdrop-blur-sm">
-              <TabsTrigger value="overview" className="gap-1.5">
-                <Gauge className="h-3.5 w-3.5" />
-                Overview
-              </TabsTrigger>
-              <TabsTrigger value="documents" className="gap-1.5">
-                <Workflow className="h-3.5 w-3.5" />
-                Workflow
-              </TabsTrigger>
-              <TabsTrigger value="ocr" className="gap-1.5">
-                <ScanLine className="h-3.5 w-3.5" />
-                OCR
-              </TabsTrigger>
-              <TabsTrigger value="jobs" className="gap-1.5">
-                <Briefcase className="h-3.5 w-3.5" />
-                Jobs
-              </TabsTrigger>
-              <TabsTrigger value="sessions" className="gap-1.5">
-                <MessageSquare className="h-3.5 w-3.5" />
-                Sessions
-              </TabsTrigger>
-              <TabsTrigger value="settings" className="gap-1.5">
-                <Settings className="h-3.5 w-3.5" />
-                Settings
-              </TabsTrigger>
-              <TabsTrigger value="quality" className="gap-1.5">
-                <ShieldCheck className="h-3.5 w-3.5" />
-                Quality
-              </TabsTrigger>
-              <TabsTrigger value="scoring" className="gap-1.5">
-                <SlidersHorizontal className="h-3.5 w-3.5" />
-                Scoring
-              </TabsTrigger>
-              <TabsTrigger value="usage" className="gap-1.5">
-                <Activity className="h-3.5 w-3.5" />
-                LLM Usage
-              </TabsTrigger>
-              <TabsTrigger value="wiki" className="gap-1.5">
-                <BookOpen className="h-3.5 w-3.5" />
-                Wiki
-              </TabsTrigger>
-            </TabsList>
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0 bg-background/50 backdrop-blur-sm">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
+            <div className="px-6 pt-6 pb-2 shrink-0 overflow-x-auto no-scrollbar">
+              <TabsList className="h-11 p-1 bg-accent/30 backdrop-blur-xl border border-border/50 rounded-2xl">
+                <TabTrigger value="overview" icon={<Gauge />} label="Overview" />
+                <TabTrigger value="documents" icon={<Workflow />} label="Workflow" />
+                <TabTrigger value="ocr" icon={<ScanLine />} label="OCR" />
+                <TabTrigger value="jobs" icon={<Briefcase />} label="Jobs" />
+                <TabTrigger value="sessions" icon={<MessageSquare />} label="Sessions" />
+                <TabTrigger value="settings" icon={<Settings />} label="Settings" />
+                <TabTrigger value="quality" icon={<ShieldCheck />} label="Quality" />
+                <TabTrigger value="scoring" icon={<SlidersHorizontal />} label="Scoring" />
+                <TabTrigger value="usage" icon={<Activity />} label="LLM Usage" />
+                <TabTrigger value="wiki" icon={<BookOpen />} label="Wiki" />
+              </TabsList>
+            </div>
 
-            <TabsContent value="overview" className="flex-1 overflow-hidden m-0 outline-none">
-              <OverviewTab kbDir={resolvedSelectedKb} onOpenTab={setActiveTab} />
-            </TabsContent>
+            <div className="flex-1 overflow-hidden px-6 pb-6">
+              <div className="h-full rounded-[2rem] border bg-card/50 backdrop-blur-xl shadow-2xl shadow-foreground/5 overflow-hidden relative">
+                <TabsContent value="overview" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <OverviewTab kbDir={resolvedSelectedKb} onOpenTab={setActiveTab} />
+                </TabsContent>
 
-            <TabsContent value="documents" className="flex-1 overflow-hidden m-0 outline-none">
-              {resolvedSelectedKb ? (
-                <DocumentsTab
-                  key={resolvedSelectedKb}
-                  kbDir={resolvedSelectedKb}
-                  onJobStarted={setGlobalActiveJobId}
-                  onNavigateToWiki={(path) => {
-                    setWikiInitialPath(path);
-                    setActiveTab('wiki');
-                  }}
-                />
-              ) : (
-                <EmptyState message="Select a knowledge base to use the workflow workbench." />
-              )}
-            </TabsContent>
+                <TabsContent value="documents" className="h-full m-0 outline-none data-[state=active]:flex">
+                  {resolvedSelectedKb ? (
+                    <DocumentsTab
+                      key={resolvedSelectedKb}
+                      kbDir={resolvedSelectedKb}
+                      onJobStarted={setGlobalActiveJobId}
+                      onNavigateToWiki={(path) => {
+                        setWikiInitialPath(path);
+                        setActiveTab('wiki');
+                      }}
+                    />
+                  ) : (
+                    <EmptyState message="Select a knowledge base to use the workflow workbench." />
+                  )}
+                </TabsContent>
 
-            <TabsContent value="jobs" className="flex-1 overflow-hidden m-0 outline-none">
-              <JobsTab key={`jobs-${resolvedSelectedKb ?? 'none'}`} kbDir={resolvedSelectedKb} />
-            </TabsContent>
+                <TabsContent value="jobs" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <JobsTab key={`jobs-${resolvedSelectedKb ?? 'none'}`} kbDir={resolvedSelectedKb} />
+                </TabsContent>
 
-            <TabsContent value="ocr" className="flex-1 overflow-hidden m-0 outline-none">
-              <OcrTab key={`ocr-${resolvedSelectedKb ?? 'none'}`} kbDir={resolvedSelectedKb} />
-            </TabsContent>
+                <TabsContent value="ocr" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <OcrTab key={`ocr-${resolvedSelectedKb ?? 'none'}`} kbDir={resolvedSelectedKb} />
+                </TabsContent>
 
-            <TabsContent value="sessions" keepMounted className="flex-1 overflow-hidden m-0 outline-none">
-              {resolvedSelectedKb ? (
-                <SessionsTab
-                  key={`sessions-${resolvedSelectedKb}`}
-                  kbDir={resolvedSelectedKb}
-                  onNavigateToWiki={(path) => {
-                    setWikiInitialPath(path);
-                    setActiveTab('wiki');
-                  }}
-                />
-              ) : (
-                <EmptyState message="Select a knowledge base to browse chat sessions." />
-              )}
-            </TabsContent>
+                <TabsContent value="sessions" keepMounted className="h-full m-0 outline-none data-[state=active]:flex">
+                  {resolvedSelectedKb ? (
+                    <SessionsTab
+                      key={`sessions-${resolvedSelectedKb}`}
+                      kbDir={resolvedSelectedKb}
+                      onNavigateToWiki={(path) => {
+                        setWikiInitialPath(path);
+                        setActiveTab('wiki');
+                      }}
+                    />
+                  ) : (
+                    <EmptyState message="Select a knowledge base to browse chat sessions." />
+                  )}
+                </TabsContent>
 
-            <TabsContent value="settings" className="flex-1 overflow-hidden m-0 outline-none">
-              <SettingsTab
-                key={`settings-${resolvedSelectedKb ?? 'none'}`}
-                kbDir={resolvedSelectedKb}
-                onKbChanged={(kbPath) => {
-                  setSelectedKb(kbPath);
-                  queryClient.invalidateQueries({ queryKey: ['kbs'] });
-                  queryClient.invalidateQueries({ queryKey: ['kbStats', kbPath] });
-                }}
-              />
-            </TabsContent>
+                <TabsContent value="settings" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <SettingsTab
+                    key={`settings-${resolvedSelectedKb ?? 'none'}`}
+                    kbDir={resolvedSelectedKb}
+                    onKbChanged={(kbPath) => {
+                      setSelectedKb(kbPath);
+                      queryClient.invalidateQueries({ queryKey: ['kbs'] });
+                      queryClient.invalidateQueries({ queryKey: ['kbStats', kbPath] });
+                    }}
+                  />
+                </TabsContent>
 
-            <TabsContent value="quality" className="flex-1 overflow-hidden m-0 outline-none">
-              <QualityTab
-                key={`quality-${resolvedSelectedKb ?? 'none'}`}
-                kbDir={resolvedSelectedKb}
-                onJobStarted={setGlobalActiveJobId}
-              />
-            </TabsContent>
+                <TabsContent value="quality" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <QualityTab
+                    key={`quality-${resolvedSelectedKb ?? 'none'}`}
+                    kbDir={resolvedSelectedKb}
+                    onJobStarted={setGlobalActiveJobId}
+                  />
+                </TabsContent>
 
-            <TabsContent value="scoring" className="flex-1 overflow-hidden m-0 outline-none">
-              <ScoringTab
-                key={`scoring-${resolvedSelectedKb ?? 'none'}`}
-                kbDir={resolvedSelectedKb}
-              />
-            </TabsContent>
+                <TabsContent value="scoring" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <ScoringTab
+                    key={`scoring-${resolvedSelectedKb ?? 'none'}`}
+                    kbDir={resolvedSelectedKb}
+                  />
+                </TabsContent>
 
-            <TabsContent value="usage" className="flex-1 overflow-hidden m-0 outline-none">
-              <LlmUsageTab
-                key={`usage-${resolvedSelectedKb ?? 'none'}`}
-                kbDir={resolvedSelectedKb}
-              />
-            </TabsContent>
+                <TabsContent value="usage" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <LlmUsageTab
+                    key={`usage-${resolvedSelectedKb ?? 'none'}`}
+                    kbDir={resolvedSelectedKb}
+                  />
+                </TabsContent>
 
-            <TabsContent value="wiki" className="flex-1 overflow-hidden m-0 outline-none">
-              {resolvedSelectedKb ? (
-                <WikiTab
-                  key={`wiki-${resolvedSelectedKb}`}
-                  kbDir={resolvedSelectedKb}
-                  initialPath={wikiInitialPath}
-                />
-              ) : (
-                <EmptyState message="Select a knowledge base to browse wiki files." />
-              )}
-            </TabsContent>
+                <TabsContent value="wiki" className="h-full m-0 outline-none data-[state=active]:flex">
+                  {resolvedSelectedKb ? (
+                    <WikiTab
+                      key={`wiki-${resolvedSelectedKb}`}
+                      kbDir={resolvedSelectedKb}
+                      initialPath={wikiInitialPath}
+                    />
+                  ) : (
+                    <EmptyState message="Select a knowledge base to browse wiki files." />
+                  )}
+                </TabsContent>
+              </div>
+            </div>
           </Tabs>
-        </div>
+        </main>
 
       </div>
 
@@ -524,14 +496,29 @@ export default function Home() {
   );
 }
 
+function TabTrigger({ value, icon, label }: { value: string; icon: React.ReactNode; label: string }) {
+  return (
+    <TabsTrigger
+      value={value}
+      className="gap-2 px-4 py-1.5 rounded-xl transition-all data-[state=active]:bg-background data-[state=active]:text-primary data-[state=active]:shadow-lg shadow-primary/10 text-xs font-bold uppercase tracking-wider"
+    >
+      {React.cloneElement(icon as React.ReactElement<any>, { className: "h-3.5 w-3.5" })}
+      {label}
+    </TabsTrigger>
+  );
+}
+
 function EmptyState({ message }: { message: string }) {
   return (
-    <div className="flex h-full items-center justify-center text-muted-foreground">
-      <div className="flex flex-col items-center gap-2 text-center">
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted">
-          <Sparkles className="h-4 w-4" />
+    <div className="flex h-full items-center justify-center text-muted-foreground p-12">
+      <div className="flex flex-col items-center gap-4 text-center max-w-xs">
+        <div className="flex h-16 w-16 items-center justify-center rounded-[1.5rem] bg-accent/50 text-primary shadow-xl shadow-primary/5">
+          <Sparkles className="h-8 w-8" />
         </div>
-        <p className="text-sm">{message}</p>
+        <div className="space-y-1">
+          <p className="text-sm font-bold text-foreground">Awaiting Context</p>
+          <p className="text-xs leading-relaxed opacity-60 font-medium">{message}</p>
+        </div>
       </div>
     </div>
   );
@@ -539,13 +526,13 @@ function EmptyState({ message }: { message: string }) {
 
 function SidebarSection({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
-    <div className="mb-2 last:mb-0">
+    <div className="mb-6 last:mb-0">
       {label ? (
-        <div className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+        <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground/40">
           {label}
         </div>
       ) : null}
-      <div className="space-y-0.5">{children}</div>
+      <div className="space-y-1">{children}</div>
     </div>
   );
 }
@@ -573,13 +560,13 @@ function KbSidebarItem({
       <Button
         variant={isActive ? 'default' : 'ghost'}
         className={cn(
-          'w-full h-9 px-0 justify-center transition-all',
-          isActive && 'shadow-sm',
+          'w-full h-12 px-0 justify-center rounded-xl transition-all',
+          isActive ? 'shadow-lg shadow-primary/20 scale-105' : 'hover:bg-accent/50',
         )}
         onClick={() => onSelect(kb.path)}
         title={`${name}\n${kb.path}`}
       >
-        <span className="font-semibold text-sm">{initial}</span>
+        <span className="font-bold text-base">{initial}</span>
       </Button>
     );
   }
@@ -589,25 +576,27 @@ function KbSidebarItem({
       <Button
         variant={isActive ? 'default' : 'ghost'}
         className={cn(
-          'w-full justify-start text-left truncate gap-2 h-9 pr-8 transition-all',
-          isActive && 'shadow-sm',
+          'w-full justify-start text-left truncate gap-3 h-10 pr-10 rounded-xl transition-all border border-transparent',
+          isActive
+            ? 'shadow-lg shadow-primary/10 font-bold scale-[1.02] border-primary/20'
+            : 'hover:bg-accent/50 font-medium text-muted-foreground hover:text-foreground',
         )}
         onClick={() => onSelect(kb.path)}
         title={kb.path}
       >
         <span
           className={cn(
-            'flex h-5 w-5 items-center justify-center rounded text-[10px] font-semibold shrink-0',
+            'flex h-6 w-6 items-center justify-center rounded-lg text-[10px] font-bold shrink-0 transition-colors',
             isActive
               ? 'bg-primary-foreground/20 text-primary-foreground'
-              : 'bg-muted text-muted-foreground',
+              : 'bg-accent/50 text-muted-foreground group-hover/kb:bg-accent group-hover/kb:text-foreground',
           )}
         >
           {initial}
         </span>
-        <span className="truncate flex-1">{name}</span>
+        <span className="truncate flex-1 tracking-tight">{name}</span>
         {kb.is_default && !isActive && (
-          <span className="text-[10px] text-muted-foreground/70 shrink-0">default</span>
+          <span className="text-[9px] uppercase tracking-tighter font-black opacity-30">DEF</span>
         )}
       </Button>
       <button
@@ -619,11 +608,10 @@ function KbSidebarItem({
         aria-label={isPinned ? `Unpin ${name}` : `Pin ${name}`}
         title={isPinned ? 'Unpin from top' : 'Pin to top'}
         className={cn(
-          'absolute right-1.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded transition-opacity',
-          'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+          'absolute right-2 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded-lg transition-all',
           isActive
-            ? 'text-primary-foreground/80 hover:bg-primary-foreground/15 opacity-80'
-            : 'text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
+            ? 'text-primary-foreground/60 hover:text-primary-foreground hover:bg-primary-foreground/10'
+            : 'text-muted-foreground/30 hover:text-primary hover:bg-primary/10',
           isPinned ? 'opacity-100' : 'opacity-0 group-hover/kb:opacity-100',
         )}
       >

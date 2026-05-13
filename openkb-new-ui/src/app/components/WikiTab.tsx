@@ -242,7 +242,14 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
   if (fileKey !== lastFileKey) {
     setLastFileKey(fileKey);
     setActiveHeadingId(toc[0]?.id ?? null);
-    setExpandedListGroups(new Set()); // collapse "Show more" expansions when navigating
+  }
+
+  // Only collapse "Show more" expansions when the knowledge base itself changes;
+  // navigating between files within the same KB should preserve the expanded list.
+  const [lastKbDir, setLastKbDir] = useState(kbDir);
+  if (kbDir !== lastKbDir) {
+    setLastKbDir(kbDir);
+    setExpandedListGroups(new Set());
   }
 
   // Scroll the markdown panel back to the top whenever the selected file changes.

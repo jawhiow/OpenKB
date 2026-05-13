@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Activity,
@@ -23,6 +23,7 @@ import {
   ModelPoolData,
 } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 
@@ -122,157 +123,136 @@ export function OverviewTab({
   }
 
   return (
-    <div className="h-full overflow-y-auto pr-1">
+    <div className="h-full overflow-y-auto pr-1 custom-scrollbar">
       {/* Stats Grid */}
-      <Card className="border-border/70 shadow-sm py-0 gap-0 overflow-hidden">
-        <CardHeader className="border-b bg-muted/20 py-4">
-          <CardTitle className="text-base">Knowledge Base Statistics</CardTitle>
-          <CardDescription className="text-xs">
-            {kbStats?.last_compile ? `Last compile: ${formatDate(kbStats.last_compile)}` : 'No compile yet'}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="p-4 sm:p-6">
-          {isLoadingStats && !kbStats ? (
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-              {Array.from({ length: 7 }).map((_, i) => (
-                <div key={i} className="rounded-xl border border-border/60 p-4">
-                  <Skeleton className="h-8 w-8 rounded-lg" />
-                  <Skeleton className="mt-3 h-8 w-16" />
-                  <Skeleton className="mt-1 h-3 w-20" />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-              <StatTile icon={<FileText className="h-4 w-4" />} label="Tracked" value={kbStats?.total_indexed ?? 0} tone="blue" />
-              <StatTile icon={<Inbox className="h-4 w-4" />} label="Raw" value={dirs.raw ?? 0} tone="amber" />
-              <StatTile icon={<Layers className="h-4 w-4" />} label="Summaries" value={dirs.summaries ?? 0} tone="emerald" />
-              <StatTile icon={<Files className="h-4 w-4" />} label="Reports" value={dirs.reports ?? 0} tone="violet" />
-              <StatTile icon={<Building2 className="h-4 w-4" />} label="Companies" value={dirs.companies ?? 0} tone="sky" />
-              <StatTile icon={<Landmark className="h-4 w-4" />} label="Industries" value={dirs.industries ?? 0} tone="teal" />
-              <StatTile icon={<Lightbulb className="h-4 w-4" />} label="Concepts" value={dirs.concepts ?? 0} tone="rose" />
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4 mb-6">
+        <StatTile icon={<FileText />} label="Tracked" value={kbStats?.total_indexed ?? 0} tone="blue" />
+        <StatTile icon={<Inbox />} label="Raw" value={dirs.raw ?? 0} tone="amber" />
+        <StatTile icon={<Layers />} label="Summaries" value={dirs.summaries ?? 0} tone="emerald" />
+        <StatTile icon={<Files />} label="Reports" value={dirs.reports ?? 0} tone="violet" />
+        <StatTile icon={<Building2 />} label="Companies" value={dirs.companies ?? 0} tone="sky" />
+        <StatTile icon={<Landmark />} label="Industries" value={dirs.industries ?? 0} tone="teal" />
+        <StatTile icon={<Lightbulb />} label="Concepts" value={dirs.concepts ?? 0} tone="rose" />
+      </div>
 
       {/* Three section grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Corpus / Recent Documents */}
-        <Card className="border-border/70 shadow-sm py-0 gap-0 overflow-hidden">
-          <CardHeader className="border-b bg-muted/20 py-3">
+        <Card className="lg:col-span-2 border-none bg-accent/20 shadow-none overflow-hidden rounded-[2rem]">
+          <CardHeader className="px-8 pt-8 pb-4">
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle className="text-sm">Corpus</CardTitle>
-                <CardDescription className="text-xs">Recent documents</CardDescription>
+                <CardTitle className="text-xl font-bold tracking-tight">Corpus</CardTitle>
+                <CardDescription className="text-sm font-medium opacity-60">Recent documents in workspace</CardDescription>
               </div>
-              <button
-                type="button"
-                className="text-xs text-muted-foreground hover:text-foreground"
+              <Button
+                variant="secondary"
+                size="sm"
+                className="rounded-xl font-bold text-xs uppercase tracking-wider"
                 onClick={() => onOpenTab?.('documents')}
               >
-                Open →
-              </button>
+                View All
+              </Button>
             </div>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="px-6 pb-8">
             {isLoadingDocs && documents.length === 0 ? (
-              <div className="p-4 space-y-2">
+              <div className="space-y-3">
                 {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-8 w-full" />
+                  <Skeleton key={i} className="h-16 w-full rounded-2xl" />
                 ))}
               </div>
             ) : recentDocuments.length === 0 ? (
-              <div className="p-6 text-xs text-center text-muted-foreground">No documents yet.</div>
+              <div className="py-12 flex flex-col items-center justify-center opacity-40">
+                <FileText className="h-12 w-12 mb-2" />
+                <p className="text-sm font-bold">No documents indexed</p>
+              </div>
             ) : (
-              <ul className="divide-y">
+              <div className="grid gap-3">
                 {recentDocuments.map((doc) => (
-                  <li key={doc.hash} className="px-4 py-2 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm truncate" title={doc.name}>{doc.name}</div>
-                      <div className="text-[10px] text-muted-foreground">
-                        {doc.type || 'unknown'} · {doc.pages || 0} page(s) · {doc.related_count} related
+                  <div key={doc.hash} className="group/doc px-5 py-4 rounded-2xl bg-background/50 border border-transparent hover:border-primary/20 hover:shadow-xl hover:shadow-primary/5 transition-all flex items-center justify-between gap-4">
+                    <div className="min-w-0 flex items-center gap-4">
+                      <div className="h-10 w-10 shrink-0 rounded-xl bg-primary/5 flex items-center justify-center text-primary group-hover/doc:bg-primary group-hover/doc:text-primary-foreground transition-colors">
+                        <FileText className="h-5 w-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold truncate tracking-tight" title={doc.name}>{doc.name}</div>
+                        <div className="text-[10px] uppercase font-black tracking-widest opacity-40 mt-0.5">
+                          {doc.type || 'unknown'} · {doc.pages || 0} PG · {doc.related_count} REL
+                        </div>
                       </div>
                     </div>
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                    <div className="shrink-0 text-[10px] font-bold opacity-30">
                       {doc.ingested_date || '—'}
-                    </span>
-                  </li>
+                    </div>
+                  </div>
                 ))}
-              </ul>
+              </div>
             )}
           </CardContent>
         </Card>
 
-        {/* Quality */}
-        <Card className="border-border/70 shadow-sm py-0 gap-0 overflow-hidden">
-          <CardHeader className="border-b bg-muted/20 py-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-sm flex items-center gap-1.5">
-                  <ShieldCheck className="h-3.5 w-3.5" /> Quality
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  {kbStats?.last_lint ? `Last lint: ${formatDate(kbStats.last_lint)}` : 'No lint yet'}
-                </CardDescription>
+        <div className="space-y-6">
+          {/* Quality */}
+          <Card className="border-none bg-primary/5 shadow-none overflow-hidden rounded-[2rem]">
+            <CardHeader className="px-8 pt-8 pb-4">
+              <CardTitle className="text-lg font-bold flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5 text-primary" /> Quality
+              </CardTitle>
+              <CardDescription className="text-xs font-medium opacity-60">
+                {kbStats?.last_lint ? `LINTED ${formatDate(kbStats.last_lint).toUpperCase()}` : 'NEVER LINTED'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="px-8 pb-8 space-y-4">
+              <div className="p-4 rounded-2xl bg-background/40 space-y-3">
+                <MetricRow label="Total Reports" value={reports.length} />
+                <MetricRow label="Last Report" value={reports.length ? reports[reports.length - 1] : 'None'} />
+                <MetricRow label="Index Count" value={kbStats?.total_indexed ?? 0} />
               </div>
-              <button
-                type="button"
-                className="text-xs text-muted-foreground hover:text-foreground"
+              <Button
+                variant="default"
+                className="w-full rounded-xl font-bold text-xs uppercase tracking-widest shadow-lg shadow-primary/20"
                 onClick={() => onOpenTab?.('quality')}
               >
-                Open →
-              </button>
-            </div>
-          </CardHeader>
-          <CardContent className="p-4 space-y-2">
-            <MetricRow label="Reports" value={reports.length} />
-            <MetricRow label="Latest" value={reports.length ? reports[reports.length - 1] : 'None'} />
-            <MetricRow label="Tracked Documents" value={kbStats?.total_indexed ?? 0} />
-          </CardContent>
-        </Card>
+                Run Diagnostics
+              </Button>
+            </CardContent>
+          </Card>
 
-        {/* Runtime */}
-        <Card className="border-border/70 shadow-sm py-0 gap-0 overflow-hidden lg:col-span-2">
-          <CardHeader className="border-b bg-muted/20 py-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-sm flex items-center gap-1.5">
-                  <Server className="h-3.5 w-3.5" /> Runtime
+          {/* Runtime */}
+          <Card className="border-none bg-accent/30 shadow-none overflow-hidden rounded-[2rem]">
+            <CardHeader className="px-8 pt-8 pb-4">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-lg font-bold flex items-center gap-2">
+                  <Server className="h-5 w-5 text-muted-foreground" /> Runtime
                 </CardTitle>
-                <CardDescription className="text-xs">
-                  {pool ? `${healthyRoutes} healthy route(s) in model pool` : 'Loading model pool…'}
-                </CardDescription>
+                <div className={cn(
+                  "h-2 w-2 rounded-full animate-pulse",
+                  pool?.enabled ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-muted-foreground/30"
+                )} />
               </div>
-              <span
-                className={cn(
-                  'text-[11px] uppercase tracking-wider px-2 py-1 rounded-md',
-                  pool?.enabled
-                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
-                    : 'bg-muted text-muted-foreground',
-                )}
-              >
-                {pool?.enabled ? 'Pool enabled' : 'Pool disabled'}
-              </span>
-            </div>
-          </CardHeader>
-          <CardContent className="p-4">
-            {isLoadingPool && !pool ? (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <Skeleton key={i} className="h-10" />
-                ))}
+              <CardDescription className="text-xs font-medium opacity-60">
+                {pool ? `${healthyRoutes} ACTIVE ROUTES` : 'CONNECTING...'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="px-8 pb-8">
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <MetricBox label="Profiles" value={pool?.summary?.total ?? pool?.profiles?.length ?? 0} />
+                <MetricBox label="Healthy" value={healthyRoutes} />
               </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <MetricBox icon={<Activity className="h-3.5 w-3.5" />} label="Profiles" value={pool?.summary?.total ?? pool?.profiles?.length ?? 0} />
-                <MetricBox label="Healthy Routes" value={healthyRoutes} />
-                <MetricBox label="Strategy" value={pool?.strategy || '—'} />
-                <MetricBox label="Active Profile" value={pool?.active_profile || '—'} />
+              <div className="p-4 rounded-2xl bg-background/40 space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-black uppercase tracking-widest opacity-40">Strategy</span>
+                  <span className="text-xs font-bold">{pool?.strategy || '—'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-black uppercase tracking-widest opacity-40">Active</span>
+                  <span className="text-xs font-bold truncate max-w-[100px]">{pool?.active_profile || '—'}</span>
+                </div>
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
@@ -293,21 +273,20 @@ function StatTile({
   return (
     <div
       className={cn(
-        'group relative rounded-xl border p-3 transition-all hover:shadow-md hover:-translate-y-0.5',
-        styles.tile,
+        'group relative rounded-3xl border-none p-5 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-default bg-card shadow-sm hover:shadow-xl hover:shadow-foreground/5',
       )}
     >
       <div
         className={cn(
-          'flex h-7 w-7 items-center justify-center rounded-lg',
+          'flex h-10 w-10 items-center justify-center rounded-2xl mb-4 transition-transform group-hover:rotate-6',
           styles.chip,
         )}
       >
-        {icon}
+        {React.cloneElement(icon as React.ReactElement<any>, { className: "h-5 w-5" })}
       </div>
-      <div className="mt-2">
-        <p className="text-2xl font-bold tracking-tight tabular-nums">{value}</p>
-        <p className="text-[11px] text-muted-foreground mt-0.5">{label}</p>
+      <div>
+        <p className="text-3xl font-black tracking-tighter tabular-nums">{value}</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest opacity-40 mt-1">{label}</p>
       </div>
     </div>
   );
@@ -315,31 +294,28 @@ function StatTile({
 
 function MetricRow({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="flex items-center justify-between text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <strong className="tabular-nums truncate ml-2 max-w-[60%] text-right" title={String(value)}>
+    <div className="flex items-center justify-between">
+      <span className="text-[11px] font-bold uppercase tracking-wider opacity-50">{label}</span>
+      <span className="text-xs font-bold tabular-nums truncate ml-4" title={String(value)}>
         {value}
-      </strong>
+      </span>
     </div>
   );
 }
 
 function MetricBox({
-  icon,
   label,
   value,
 }: {
-  icon?: React.ReactNode;
   label: string;
   value: string | number;
 }) {
   return (
-    <div className="rounded-md border bg-muted/30 px-3 py-2">
-      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-        {icon}
-        <span>{label}</span>
+    <div className="rounded-2xl bg-background/40 p-4 border border-transparent hover:border-primary/10 transition-colors">
+      <div className="text-[9px] font-black uppercase tracking-widest opacity-40 mb-1">
+        {label}
       </div>
-      <div className="mt-1 text-sm font-semibold truncate" title={String(value)}>
+      <div className="text-sm font-black truncate" title={String(value)}>
         {value}
       </div>
     </div>
