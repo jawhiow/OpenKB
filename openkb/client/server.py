@@ -6,6 +6,7 @@ import concurrent.futures
 import inspect
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -271,6 +272,40 @@ def _test_llm_config(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@contextmanager
+def _workflow_llm_context(target_kb: Path, *, model: str | None = None, feature: str = ""):
+    """Hydrate the active LLM profile for one staged workflow job."""
+    from openkb.cli import _ordered_llm_profiles, _runtime_context_for_profile, _setup_llm_key
+    from openkb.llm_runtime import llm_runtime_context
+    from openkb.llm_usage import llm_usage_context
+
+    config = load_config(target_kb / ".openkb" / "config.yaml")
+    profiles = _ordered_llm_profiles(config)
+    profile = profiles[0] if profiles else None
+    _setup_llm_key(target_kb, profile)
+    runtime_config = _runtime_context_for_profile(target_kb, profile or config)
+    if model:
+        selected_model = model
+    elif profile is not None:
+        selected_model = str(profile.get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip()
+    else:
+        selected_model = str(config.get("model") or DEFAULT_CONFIG["model"]).strip()
+    with llm_runtime_context(runtime_config), llm_usage_context(target_kb, feature):
+        yield selected_model
+
+
+def _cleanup_staged_upload(target_kb: Path, staged: Path) -> None:
+    uploads_root = (target_kb / ".openkb" / "uploads").resolve()
+    resolved = staged.resolve()
+    if not resolved.is_relative_to(uploads_root):
+        return
+    if resolved.exists() and resolved.is_file():
+        resolved.unlink()
+    parent = resolved.parent
+    if parent != uploads_root and parent.exists():
+        shutil.rmtree(parent, ignore_errors=True)
+
+
 def _probe_model_pool_profile(target_kb: Path, profile_id: str) -> dict[str, Any]:
     from openkb.model_pool import configured_routes, probe_model_route, record_route_failure, record_route_success
 
@@ -410,6 +445,7 @@ def create_app(registry: JobRegistry | None = None):
     def documents(
         kb_dir: str | None = Query(default=None),
         q: str | None = Query(default=None),
+        workflow_status: str | None = Query(default=None),
         ingest_state: str | None = Query(default=None),
         ocr_state: str | None = Query(default=None),
         source_state: str | None = Query(default=None),
@@ -421,6 +457,7 @@ def create_app(registry: JobRegistry | None = None):
             return kb_helpers.get_document_data(
                 _resolve_kb_dir(kb_dir),
                 query=q or "",
+                workflow_status=workflow_status or "",
                 ingest_state=ingest_state or "",
                 ocr_state=ocr_state or "",
                 source_state=source_state or "",
@@ -616,8 +653,7 @@ def create_app(registry: JobRegistry | None = None):
             job.raise_if_stopped()
             for staged in preset_files or []:
                 try:
-                    if staged.exists() and ".openkb-upload-" in staged.name:
-                        staged.unlink()
+                    _cleanup_staged_upload(target_kb, staged)
                 except OSError:
                     pass
             return {
@@ -712,8 +748,7 @@ def create_app(registry: JobRegistry | None = None):
                 commit_kb_changes(target_kb, f"Import {imported} source document(s)")
             for staged in preset_files or []:
                 try:
-                    if staged.exists() and ".openkb-upload-" in staged.name:
-                        staged.unlink()
+                    _cleanup_staged_upload(target_kb, staged)
                 except OSError:
                     pass
             return {
@@ -786,12 +821,17 @@ def create_app(registry: JobRegistry | None = None):
 
             job.raise_if_stopped()
             job.add_log("Generating document summaries")
-            result = run_summarize_documents(
+            with _workflow_llm_context(
                 target_kb,
-                file_hashes=[str(item) for item in file_hashes] if file_hashes else None,
                 model=str(payload.get("model") or "").strip() or None,
-                force=bool(payload.get("force", False)),
-            )
+                feature="summary",
+            ) as selected_model:
+                result = run_summarize_documents(
+                    target_kb,
+                    file_hashes=[str(item) for item in file_hashes] if file_hashes else None,
+                    model=selected_model,
+                    force=bool(payload.get("force", False)),
+                )
             if result["generated"]:
                 commit_kb_changes(target_kb, f"Summarize {result['generated']} document(s)")
             job.raise_if_stopped()
@@ -844,12 +884,17 @@ def create_app(registry: JobRegistry | None = None):
 
             job.raise_if_stopped()
             job.add_log("Promoting approved summaries")
-            result = promote_summary_documents(
+            with _workflow_llm_context(
                 target_kb,
-                file_hashes=[str(item) for item in file_hashes] if file_hashes else None,
                 model=str(payload.get("model") or "").strip() or None,
-                force=bool(payload.get("force", False)),
-            )
+                feature="promotion",
+            ) as selected_model:
+                result = promote_summary_documents(
+                    target_kb,
+                    file_hashes=[str(item) for item in file_hashes] if file_hashes else None,
+                    model=selected_model,
+                    force=bool(payload.get("force", False)),
+                )
             if result["promoted"]:
                 commit_kb_changes(target_kb, f"Promote {result['promoted']} summary document(s)")
             job.raise_if_stopped()
@@ -889,7 +934,8 @@ def create_app(registry: JobRegistry | None = None):
                 if suffix not in SUPPORTED_EXTENSIONS:
                     raise ValueError(f"Unsupported file type: {suffix}")
                 safe_name = Path(upload.filename or "upload").name
-                destination = staging_dir / f".openkb-upload-{next(tempfile._get_candidate_names())}-{safe_name}"
+                destination = staging_dir / f"upload-{next(tempfile._get_candidate_names())}" / safe_name
+                destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(await upload.read())
                 destinations.append(destination)
         except Exception as exc:
@@ -1072,11 +1118,17 @@ def create_app(registry: JobRegistry | None = None):
             try:
                 from openkb.agent.chat_session import ChatSession, load_session
                 from openkb.agent.query import format_query_exploration, run_query_session_stream
-                from openkb.cli import _setup_llm_key
+                from openkb.cli import _ordered_llm_profiles, _runtime_context_for_profile, _setup_llm_key
+                from openkb.llm_runtime import llm_runtime_context
 
                 config = load_config(target_kb / ".openkb" / "config.yaml")
-                _setup_llm_key(target_kb)
-                model = str(config.get("model", DEFAULT_CONFIG["model"]))
+                profiles = _ordered_llm_profiles(config)
+                active_profile = profiles[0] if profiles else None
+                _setup_llm_key(target_kb, active_profile)
+                runtime_config = _runtime_context_for_profile(target_kb, active_profile or config)
+                model = (
+                    str((active_profile or {}).get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip()
+                )
                 language = str(config.get("language", DEFAULT_CONFIG.get("language", "en")))
                 session_id = str(payload.get("session_id") or "").strip()
                 session = (
@@ -1090,6 +1142,9 @@ def create_app(registry: JobRegistry | None = None):
 
                 async def emit_delta(text: str) -> None:
                     await queue.put(_sse_event("delta", {"text": text}))
+
+                async def emit_status(message: str) -> None:
+                    await queue.put(_sse_event("status", {"message": message}))
 
                 async def run_query_task() -> None:
                     try:
@@ -1109,14 +1164,17 @@ def create_app(registry: JobRegistry | None = None):
                                 route = select_model_route(target_kb, exclude=excluded_routes)
                                 try:
                                     _setup_llm_key(target_kb, _route_profile_payload(route))
-                                    result = await run_query_session_stream(
-                                        question,
-                                        target_kb,
-                                        model,
-                                        session,
-                                        emit_delta,
-                                        route=route,
-                                    )
+                                    route_runtime_config = _runtime_context_for_profile(target_kb, _route_profile_payload(route))
+                                    with llm_runtime_context(route_runtime_config):
+                                        result = await run_query_session_stream(
+                                            question,
+                                            target_kb,
+                                            model,
+                                            session,
+                                            emit_delta,
+                                            on_status=emit_status,
+                                            route=route,
+                                        )
                                     record_route_success(target_kb, route.profile_id, route.model)
                                     break
                                 except Exception as exc:
@@ -1130,13 +1188,15 @@ def create_app(registry: JobRegistry | None = None):
                             if result is None:
                                 raise last_error or RuntimeError("Model pool query failed.")
                         else:
-                            result = await run_query_session_stream(
-                                question,
-                                target_kb,
-                                model,
-                                session,
-                                emit_delta,
-                            )
+                            with llm_runtime_context(runtime_config):
+                                result = await run_query_session_stream(
+                                    question,
+                                    target_kb,
+                                    model,
+                                    session,
+                                    emit_delta,
+                                    on_status=emit_status,
+                                )
                         answer = result["answer"]
                         if payload.get("save") and answer:
                             import re
@@ -1187,6 +1247,25 @@ def create_app(registry: JobRegistry | None = None):
             from openkb.agent.chat_session import list_sessions
 
             return {"sessions": list_sessions(_resolve_kb_dir(kb_dir))}
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+    @app.post("/api/chats")
+    def create_chat(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from openkb.agent.chat_session import ChatSession
+            from openkb.cli import _ordered_llm_profiles
+
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            config = load_config(target_kb / ".openkb" / "config.yaml")
+            profiles = _ordered_llm_profiles(config)
+            active_profile = profiles[0] if profiles else None
+            model = str((active_profile or {}).get("model") or config.get("model") or DEFAULT_CONFIG["model"]).strip()
+            language = str(config.get("language", DEFAULT_CONFIG.get("language", "en")))
+            session = ChatSession.new(target_kb, model, language)
+            session.save()
+            commit_kb_changes(target_kb, f"Create chat {session.id}")
+            return session.to_dict()
         except Exception as exc:
             raise translate_error(exc) from exc
 

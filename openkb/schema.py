@@ -36,7 +36,7 @@ AGENTS_MD = """\
 
 ## Index Page Format
 index.md lists all documents, companies, industries, concepts, and explorations with metadata:
-- Documents: name, one-liner description, type (short|pageindex|local-long), detail access path
+- Documents: name, one-liner description, type (short|pageindex), detail access path
 - Companies: company name, one-liner investment relevance
 - Industries: industry or value-chain segment, one-liner structure/relevance
 - Concepts: name, one-liner description

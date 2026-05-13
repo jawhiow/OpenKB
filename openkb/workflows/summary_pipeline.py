@@ -251,7 +251,7 @@ def _mark_summary_failed(kb_dir: Path, file_hash: str, error: Exception) -> None
 
 
 def _summary_doc_type(source_path: Path) -> str:
-    return "local-long" if source_path.suffix.lower() == ".json" else "short"
+    return "pageindex" if source_path.suffix.lower() == ".json" else "short"
 
 
 def _default_model(kb_dir: Path) -> str:

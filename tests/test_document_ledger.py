@@ -6,6 +6,7 @@ from pathlib import Path
 from openkb.document_ledger import (
     backfill_document_ledger,
     build_document_ledger_record,
+    delete_document_ledger_record,
     document_ledger_path,
     empty_document_ledger,
     get_document_ledger_record,
@@ -114,6 +115,19 @@ def test_upsert_and_get_document_ledger_record_merge_defaults_and_updates(tmp_pa
 
     found = get_document_ledger_record(kb_dir, "hash-a")
     assert found == created
+
+
+def test_delete_document_ledger_record_removes_existing_record(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    upsert_document_ledger_record(kb_dir, "hash-a", {"name": "paper.pdf"})
+
+    removed = delete_document_ledger_record(kb_dir, "hash-a")
+
+    assert removed is not None
+    assert removed["file_hash"] == "hash-a"
+    assert removed["name"] == "paper.pdf"
+    assert get_document_ledger_record(kb_dir, "hash-a") is None
+    assert delete_document_ledger_record(kb_dir, "hash-a") is None
 
 
 def test_update_document_workflow_state_and_select_filters_records(tmp_path: Path):

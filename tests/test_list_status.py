@@ -79,7 +79,7 @@ class TestListCommand:
         assert "pdf" in result.output
         assert "md" in result.output
 
-    def test_list_displays_local_long_documents(self, tmp_path):
+    def test_list_displays_legacy_local_long_documents_as_pageindex(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)
         hashes = {
             "abc123": {"name": "research.pdf", "type": "local_long_pdf"},
@@ -91,7 +91,7 @@ class TestListCommand:
             result = runner.invoke(cli, ["list"])
 
         assert "research.pdf" in result.output
-        assert "local-long" in result.output
+        assert "pageindex" in result.output
 
     def test_list_shows_concepts(self, tmp_path):
         kb_dir = _setup_kb(tmp_path)

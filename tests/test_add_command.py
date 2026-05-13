@@ -682,7 +682,7 @@ class TestAddCommand:
 
         mock_convert.assert_called_once_with(doc, kb_dir, force=False, strategy_override=None, job=job)
 
-    def test_add_single_file_falls_back_to_ocr_local_long_when_pageindex_local_fails(self, tmp_path):
+    def test_add_single_file_stops_when_pageindex_local_fails(self, tmp_path):
         from openkb.cli import add_single_file
         from openkb.converter import ConvertResult
 
@@ -717,18 +717,10 @@ class TestAddCommand:
             patch("openkb.agent.compiler.compile_long_doc", new_callable=AsyncMock) as mock_compile_long,
             patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock) as mock_compile_local,
         ):
-            mock_compile_local.return_value = []
             add_single_file(doc, kb_dir, strategy_override="ocr-pageindex-local")
 
         mock_compile_long.assert_not_called()
-        mock_compile_local.assert_awaited_once_with(
-            "scan",
-            source_path,
-            kb_dir,
-            "gpt-4o-mini",
-            max_concurrency=2,
-            cleanup_existing=False,
-        )
+        mock_compile_local.assert_not_called()
 
     def test_add_single_file_ocr_pageindex_local_success_runs_long_compiler_and_registers_pageindex(self, tmp_path):
         from openkb.cli import add_single_file

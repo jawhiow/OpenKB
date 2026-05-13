@@ -400,7 +400,7 @@ function handleJobTransitions(previousStatuses) {
       if (job.type === "lint_fix_apply") {
         state.lastFixApply = job.result || null;
       }
-      shouldRefresh = shouldRefresh || ["add", "delete_source", "lint", "query", "lint_fix_apply", "model_pool_probe"].includes(job.type);
+      shouldRefresh = shouldRefresh || ["add", "delete_source", "summarize", "promote", "lint", "query", "lint_fix_apply", "model_pool_probe"].includes(job.type);
     } else if (job.status === "failed") {
       notify(job.error || `${jobLabels[job.type] || job.type} failed`, "error");
     } else if (job.status === "stopped") {
@@ -1059,8 +1059,6 @@ function renderDocuments() {
             <label for="importStrategyInput">Import Strategy</label>
             <select id="importStrategyInput">
               <option value="">auto</option>
-              <option value="plain-local-long">plain-local-long</option>
-              <option value="ocr-local-long">ocr-local-long</option>
               <option value="ocr-pageindex-local">ocr-pageindex-local</option>
             </select>
           </div>
@@ -1967,7 +1965,7 @@ async function retryOcrCache(fileHash) {
   try {
     const result = await api(`/api/ocr/cache/${encodeURIComponent(fileHash)}/retry`, {
       method: "POST",
-      body: JSON.stringify({ kb_dir: state.kbDir, strategy_override: "ocr-local-long" }),
+      body: JSON.stringify({ kb_dir: state.kbDir, strategy_override: "ocr-pageindex-local" }),
     });
     trackJob(result.job, "OCR retry queued");
   } catch (error) {

@@ -216,31 +216,9 @@ def convert_document(
                     page_count=page_count,
                 )
 
-            logger.info(
-                "Long PDF detected but no compatible PageIndex long-doc backend is available; "
-                "using local page JSON fallback: %s",
-                src.name,
-            )
-            sources_dir = kb_dir / "wiki" / "sources"
-            sources_dir.mkdir(parents=True, exist_ok=True)
-            images_dir = kb_dir / "wiki" / "sources" / "images" / doc_name
-            images_dir.mkdir(parents=True, exist_ok=True)
-            pages = convert_pdf_to_pages(src, doc_name, images_dir)
-            dest_json = sources_dir / f"{doc_name}.json"
-            dest_json.write_text(
-                json.dumps(pages, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            return ConvertResult(
-                raw_path=raw_dest,
-                source_path=dest_json,
-                is_long_doc=True,
-                local_long_doc=True,
-                scan_detected=scan_detected,
-                recommended_strategy=recommended_strategy,
-                selected_strategy=selected_strategy,
-                file_hash=file_hash,
-                page_count=page_count,
+            raise RuntimeError(
+                "Long PDF requires PageIndex, but no compatible PageIndex backend is available. "
+                "Install/configure PageIndex or use OCR PageIndex for scanned PDFs."
             )
 
     # ------------------------------------------------------------------

@@ -103,6 +103,7 @@ export interface DocumentListResponse {
 
 export interface DocumentQueryParams {
   q?: string;
+  workflow_status?: string;
   ingest_state?: string;
   ocr_state?: string;
   source_state?: string;
@@ -194,6 +195,7 @@ export interface StreamQueryDonePayload {
 
 export interface StreamQueryCallbacks {
   onSession?: (sessionId: string) => void;
+  onStatus?: (message: string) => void;
   onDelta?: (text: string) => void;
   onDone?: (payload: StreamQueryDonePayload) => void;
 }
@@ -682,6 +684,11 @@ export const getChatSession = async (kbDir: string, sessionId: string): Promise<
   return normalizeChatSessionDetail(response.data);
 };
 
+export const createChatSession = async (kbDir: string): Promise<ChatSessionDetail> => {
+  const response = await apiClient.post('/chats', { kb_dir: kbDir });
+  return normalizeChatSessionDetail(response.data);
+};
+
 export const deleteChatSession = async (kbDir: string, sessionId: string): Promise<{ deleted: boolean }> => {
   const response = await apiClient.delete(`/chats/${encodeURIComponent(sessionId)}`, {
     params: { kb_dir: kbDir },
@@ -825,41 +832,64 @@ export async function streamQuery(
   const decoder = new TextDecoder();
   let buffer = '';
 
+  const handleRawEvent = (rawEvent: string): boolean => {
+    const parsed = parseSseEvent(rawEvent);
+    if (!parsed) return false;
+
+    if (parsed.event === 'session') {
+      callbacks.onSession?.(String(parsed.data?.session_id ?? ''));
+      return false;
+    }
+
+    if (parsed.event === 'delta') {
+      callbacks.onDelta?.(String(parsed.data?.text ?? ''));
+      return false;
+    }
+
+    if (parsed.event === 'status') {
+      callbacks.onStatus?.(String(parsed.data?.message ?? ''));
+      return false;
+    }
+
+    if (parsed.event === 'done') {
+      callbacks.onDone?.({
+        answer: String(parsed.data?.answer ?? ''),
+        session_id: String(parsed.data?.session_id ?? ''),
+        session: isRecord(parsed.data?.session) ? normalizeChatSessionDetail(parsed.data?.session) : undefined,
+        references: asChatReferences(parsed.data?.references),
+      });
+      return true;
+    }
+
+    if (parsed.event === 'error') {
+      throw new Error(String(parsed.data?.message ?? 'Query stream failed'));
+    }
+
+    return false;
+  };
+
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
+    buffer += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n');
     const events = buffer.split('\n\n');
     buffer = events.pop() ?? '';
 
     for (const rawEvent of events) {
-      const parsed = parseSseEvent(rawEvent);
-      if (!parsed) continue;
-
-      if (parsed.event === 'session') {
-        callbacks.onSession?.(String(parsed.data?.session_id ?? ''));
-        continue;
-      }
-
-      if (parsed.event === 'delta') {
-        callbacks.onDelta?.(String(parsed.data?.text ?? ''));
-        continue;
-      }
-
-      if (parsed.event === 'done') {
-        callbacks.onDone?.({
-          answer: String(parsed.data?.answer ?? ''),
-          session_id: String(parsed.data?.session_id ?? ''),
-          session: isRecord(parsed.data?.session) ? normalizeChatSessionDetail(parsed.data?.session) : undefined,
-          references: asChatReferences(parsed.data?.references),
-        });
+      if (handleRawEvent(rawEvent)) {
         return;
       }
+    }
+  }
 
-      if (parsed.event === 'error') {
-        throw new Error(String(parsed.data?.message ?? 'Query stream failed'));
-      }
+  buffer += decoder.decode().replaceAll('\r\n', '\n');
+  if (!buffer.trim()) {
+    return;
+  }
+  for (const rawEvent of buffer.split('\n\n')) {
+    if (handleRawEvent(rawEvent)) {
+      return;
     }
   }
 }

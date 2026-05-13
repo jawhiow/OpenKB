@@ -200,7 +200,7 @@ class TestConvertDocumentPdfShort:
         assert result.source_path is not None
         assert result.source_path.exists()
 
-    def test_short_scanned_pdf_uses_ocr_local_long_below_threshold(self, kb_dir, tmp_path):
+    def test_short_scanned_pdf_uses_ocr_pageindex_below_threshold(self, kb_dir, tmp_path):
         src = tmp_path / "short-scan.pdf"
         src.write_bytes(b"%PDF-1.4 fake scanned content")
         ocr_pages_path = tmp_path / "ocr-pages.json"
@@ -234,8 +234,9 @@ class TestConvertDocumentPdfShort:
         mock_prepare.assert_called_once()
         mock_cpwi.assert_not_called()
         assert result.is_long_doc is False
-        assert result.local_long_doc is True
-        assert result.selected_strategy == "ocr-local-long"
+        assert result.local_long_doc is False
+        assert result.selected_strategy == "ocr-pageindex-local"
+        assert result.pageindex_input_path == ocr_md_path
         assert result.source_path is not None
         assert result.source_path.suffix == ".json"
         assert "OCR short page" in result.source_path.read_text(encoding="utf-8")
@@ -338,21 +339,15 @@ class TestConvertDocumentPdfLong:
         assert result.skipped is False
         assert result.raw_path is not None
 
-    def test_long_pdf_falls_back_when_pageindex_unavailable(self, kb_dir, tmp_path):
-        """Long PDFs use a local page JSON fallback when PageIndex is unavailable."""
+    def test_long_pdf_requires_pageindex_backend(self, kb_dir, tmp_path):
+        """Long PDFs fail clearly instead of creating local-long documents."""
         src = tmp_path / "fallback.pdf"
         src.write_bytes(b"%PDF-1.4 fake long content")
 
         with (
             patch("openkb.converter.pymupdf.open") as mock_mu,
             patch("openkb.converter._pageindex_long_doc_available", return_value=False),
-            patch(
-                "openkb.converter.convert_pdf_to_pages",
-                return_value=[
-                    {"page": 1, "content": "Investment thesis page.", "images": []},
-                    {"page": 2, "content": "Valuation table page.", "images": []},
-                ],
-            ) as mock_pages,
+            patch("openkb.converter.convert_pdf_to_pages") as mock_pages,
         ):
             fake_doc = MagicMock()
             fake_doc.page_count = 200
@@ -360,15 +355,10 @@ class TestConvertDocumentPdfLong:
             fake_doc.__exit__ = MagicMock(return_value=False)
             mock_mu.return_value = fake_doc
 
-            result = convert_document(src, kb_dir)
+            with pytest.raises(RuntimeError, match="requires PageIndex"):
+                convert_document(src, kb_dir)
 
-        mock_pages.assert_called_once()
-        assert result.is_long_doc is True
-        assert result.local_long_doc is True
-        assert result.source_path is not None
-        assert result.source_path.exists()
-        assert result.source_path.suffix == ".json"
-        assert "Investment thesis page" in result.source_path.read_text(encoding="utf-8")
+        mock_pages.assert_not_called()
 
     def test_long_pdf_marks_scanned_recommendation_when_ocr_enabled(self, kb_dir, tmp_path):
         src = tmp_path / "scan-recommend.pdf"
@@ -398,8 +388,8 @@ class TestConvertDocumentPdfLong:
             result = convert_document(src, kb_dir)
 
         assert result.scan_detected is True
-        assert result.recommended_strategy == "ocr-local-long"
-        assert result.selected_strategy == "ocr-local-long"
+        assert result.recommended_strategy == "ocr-pageindex-local"
+        assert result.selected_strategy == "ocr-pageindex-local"
 
     def test_long_pdf_strategy_override_wins_over_recommendation(self, kb_dir, tmp_path):
         src = tmp_path / "scan-override.pdf"
@@ -430,7 +420,7 @@ class TestConvertDocumentPdfLong:
 
             result = convert_document(src, kb_dir, strategy_override="ocr-pageindex-local")
 
-        assert result.recommended_strategy == "ocr-local-long"
+        assert result.recommended_strategy == "ocr-pageindex-local"
         assert result.selected_strategy == "ocr-pageindex-local"
 
     def test_force_ocr_long_pdf_reruns_ocr_artifact_preparation(self, kb_dir, tmp_path):
@@ -572,7 +562,7 @@ class TestConvertDocumentPdfLong:
         assert result.is_long_doc is True
         assert result.local_long_doc is False
         assert result.selected_strategy == "ocr-pageindex-local"
-        assert result.recommended_strategy == "ocr-local-long"
+        assert result.recommended_strategy == "ocr-pageindex-local"
         assert result.pageindex_input_path == ocr_md_path
         assert result.source_path is not None
         assert "OCR PageIndex page" in result.source_path.read_text(encoding="utf-8")

@@ -154,8 +154,8 @@ def test_upload_document_endpoint_passes_strategy_override_to_add_job(tmp_path, 
     job = registry.wait(job_id, timeout=2)
     assert job is not None
     assert job.status == "succeeded"
-    assert calls["file_path"].parent == kb_dir / ".openkb" / "uploads"
-    assert calls["file_path"].name.endswith("-scan.pdf")
+    assert calls["file_path"].parent.parent == kb_dir / ".openkb" / "uploads"
+    assert calls["file_path"].name == "scan.pdf"
     assert calls["target_kb"] == kb_dir
     assert calls["strict"] is True
     assert calls["strategy_override"] == "ocr-local-long"

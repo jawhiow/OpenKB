@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
-from agents import RawResponsesStreamEvent
+from agents import RawResponsesStreamEvent, RunItemStreamEvent
 from openai.types.responses import ResponseTextDeltaEvent
 import yaml
 
@@ -137,6 +137,25 @@ def test_query_job_creates_persisted_chat_session_for_web_ask(tmp_path):
     assert mock_run.call_args.args[1] == [
         {"role": "user", "content": "first question"}
     ]
+
+
+def test_create_chat_endpoint_persists_empty_session(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    client = TestClient(create_app())
+
+    response = client.post("/api/chats", json={"kb_dir": str(kb_dir)})
+
+    assert response.status_code == 200
+    session = response.json()
+    assert session["id"]
+    assert session["turn_count"] == 0
+    assert session["history"] == []
+    session_path = kb_dir / ".openkb" / "chats" / f"{session['id']}.json"
+    saved = json.loads(session_path.read_text(encoding="utf-8"))
+    assert saved["id"] == session["id"]
+    listed = client.get("/api/chats", params={"kb_dir": str(kb_dir)}).json()["sessions"]
+    assert listed[0]["id"] == session["id"]
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == f"Create chat {session['id']}"
 
 
 def test_llm_usage_endpoints_support_list_search_pagination_and_export(tmp_path):
@@ -303,6 +322,13 @@ def test_query_stream_returns_delta_done_session_and_references(tmp_path):
         final_output = "Hello world"
 
         async def stream_events(self):
+            yield RunItemStreamEvent(
+                name="tool_called",
+                item=SimpleNamespace(
+                    type="tool_call_item",
+                    raw_item=SimpleNamespace(name="read_file", arguments='{"path":"index.md"}'),
+                ),
+            )
             yield RawResponsesStreamEvent(
                 data=ResponseTextDeltaEvent(
                     content_index=0,
@@ -346,6 +372,8 @@ def test_query_stream_returns_delta_done_session_and_references(tmp_path):
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     body = response.text
+    assert 'event: status\ndata: {"message":"Running query..."}' in body
+    assert 'event: status\ndata: {"message":"Reading wiki context..."}' in body
     assert 'event: delta\ndata: {"text":"Hello"}' in body
     assert 'event: delta\ndata: {"text":" world"}' in body
     done_payload = json.loads(body.split("event: done\ndata: ", 1)[1].split("\n\n", 1)[0])
@@ -451,6 +479,89 @@ def test_query_stream_uses_model_pool_and_retries_after_runtime_failure(tmp_path
     assert status["routes"]["backup:good-model"]["health"] == "healthy"
 
 
+def test_query_stream_uses_active_profile_runtime(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    config_path = kb_dir / ".openkb" / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config.update(
+        {
+            "active_llm_profile": "deepseek",
+            "llm_profiles": [
+                {
+                    "id": "deepseek",
+                    "model": "openai/deepseek-v3",
+                    "wire_api": "chat_completions",
+                    "base_url": "https://llm.example.test/v1",
+                    "provider": "deepseek",
+                    "reasoning_effort": "high",
+                    "thinking_enabled": True,
+                    "api_key_env": "OPENKB_TEST_PROFILE_KEY",
+                    "enabled": True,
+                }
+            ],
+        }
+    )
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    (kb_dir / ".env").write_text("OPENKB_TEST_PROFILE_KEY=sk-profile\n", encoding="utf-8")
+    client = TestClient(create_app())
+    calls: dict[str, object] = {}
+
+    class FakeStreamResult:
+        final_output = "profile answer"
+
+        async def stream_events(self):
+            yield RawResponsesStreamEvent(
+                data=ResponseTextDeltaEvent(
+                    content_index=0,
+                    delta="profile answer",
+                    item_id="item_1",
+                    logprobs=[],
+                    output_index=0,
+                    sequence_number=1,
+                    type="response.output_text.delta",
+                )
+            )
+
+        def to_input_list(self):
+            return [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "profile answer"},
+            ]
+
+    def fake_run_streamed(agent, message, **kwargs):
+        from openkb.llm_runtime import get_api_key, get_base_url, get_model_provider, get_reasoning_effort, get_wire_api
+        from openkb.llm_usage import get_llm_usage_context
+
+        calls["model"] = agent.model
+        calls["api_key"] = get_api_key()
+        calls["base_url"] = get_base_url("openai/deepseek-v3")
+        calls["wire_api"] = get_wire_api("openai/deepseek-v3")
+        calls["provider"] = get_model_provider()
+        calls["reasoning_effort"] = get_reasoning_effort()
+        calls["thinking_enabled"] = os.environ.get("OPENKB_DEEPSEEK_THINKING_ENABLED")
+        calls["usage_feature"] = get_llm_usage_context().feature if get_llm_usage_context() else None
+        return FakeStreamResult()
+
+    with patch("openkb.agent.query.Runner.run_streamed", side_effect=fake_run_streamed):
+        response = client.post(
+            "/api/query/stream",
+            json={"kb_dir": str(kb_dir), "question": "question"},
+        )
+
+    assert response.status_code == 200
+    assert 'event: done\ndata: {"answer":"profile answer"' in response.text
+    assert calls == {
+        "model": "litellm/custom_openai/deepseek-v3",
+        "api_key": "sk-profile",
+        "base_url": "https://llm.example.test/v1",
+        "wire_api": "chat_completions",
+        "provider": "deepseek",
+        "reasoning_effort": "high",
+        "thinking_enabled": "true",
+        "usage_feature": "query",
+    }
+
+
 def test_add_document_job_uses_strict_add_and_records_stage_logs(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     source = tmp_path / "doc.txt"
@@ -526,14 +637,22 @@ def test_import_document_job_uses_source_only_pipeline(tmp_path, monkeypatch):
 
 def test_summarize_document_job_uses_summary_pipeline(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".env").write_text("LLM_API_KEY=sk-test\n", encoding="utf-8")
     registry = JobRegistry()
     calls: dict[str, object] = {}
 
     def fake_summarize_documents(target_kb, *, file_hashes=None, model=None, force=False):
+        from openkb.llm_runtime import get_api_key, get_base_url, get_wire_api
+        from openkb.llm_usage import get_llm_usage_context
+
         calls["target_kb"] = target_kb
         calls["file_hashes"] = file_hashes
         calls["model"] = model
         calls["force"] = force
+        calls["api_key"] = get_api_key()
+        calls["base_url"] = get_base_url(model)
+        calls["wire_api"] = get_wire_api(model)
+        calls["usage_feature"] = get_llm_usage_context().feature if get_llm_usage_context() else None
         return {"generated": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []}
 
     monkeypatch.setattr("openkb.workflows.summary_pipeline.summarize_documents", fake_summarize_documents)
@@ -553,6 +672,66 @@ def test_summarize_document_job_uses_summary_pipeline(tmp_path, monkeypatch):
         "file_hashes": ["hash-a"],
         "model": "gpt-test",
         "force": True,
+        "api_key": "sk-test",
+        "base_url": None,
+        "wire_api": "responses",
+        "usage_feature": "summary",
+    }
+
+
+def test_summarize_document_job_uses_active_profile_runtime(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    config_path = kb_dir / ".openkb" / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config.update(
+        {
+            "active_llm_profile": "deepseek",
+            "llm_profiles": [
+                {
+                    "id": "deepseek",
+                    "model": "openai/deepseek-v3",
+                    "wire_api": "chat_completions",
+                    "base_url": "https://llm.example.test/v1",
+                    "api_key_env": "OPENKB_TEST_PROFILE_KEY",
+                    "enabled": True,
+                }
+            ],
+        }
+    )
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    (kb_dir / ".env").write_text("OPENKB_TEST_PROFILE_KEY=sk-profile\n", encoding="utf-8")
+    registry = JobRegistry()
+    calls: dict[str, object] = {}
+
+    def fake_summarize_documents(target_kb, *, file_hashes=None, model=None, force=False):
+        from openkb.llm_runtime import get_api_key, get_base_url, get_wire_api
+        from openkb.llm_usage import get_llm_usage_context
+
+        calls["target_kb"] = target_kb
+        calls["model"] = model
+        calls["api_key"] = get_api_key()
+        calls["base_url"] = get_base_url(model)
+        calls["wire_api"] = get_wire_api(model)
+        calls["usage_feature"] = get_llm_usage_context().feature if get_llm_usage_context() else None
+        return {"generated": 0, "skipped": 1, "failed": 0, "total": 1, "failures": [], "documents": []}
+
+    monkeypatch.setattr("openkb.workflows.summary_pipeline.summarize_documents", fake_summarize_documents)
+    monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
+
+    app = create_app(registry=registry)
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/summarize")
+    response = route.endpoint({"kb_dir": str(kb_dir), "file_hashes": ["hash-a"]})
+    job = registry.wait(response["job"]["id"], timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded"
+    assert calls == {
+        "target_kb": kb_dir,
+        "model": "openai/deepseek-v3",
+        "api_key": "sk-profile",
+        "base_url": "https://llm.example.test/v1",
+        "wire_api": "chat_completions",
+        "usage_feature": "summary",
     }
 
 
@@ -584,14 +763,18 @@ def test_review_summary_job_uses_summary_review_pipeline(tmp_path, monkeypatch):
 
 def test_promote_document_job_uses_promotion_pipeline(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".env").write_text("LLM_API_KEY=sk-test\n", encoding="utf-8")
     registry = JobRegistry()
     calls: dict[str, object] = {}
 
     def fake_promote_summary_documents(target_kb, *, file_hashes=None, model=None, force=False):
+        from openkb.llm_usage import get_llm_usage_context
+
         calls["target_kb"] = target_kb
         calls["file_hashes"] = file_hashes
         calls["model"] = model
         calls["force"] = force
+        calls["usage_feature"] = get_llm_usage_context().feature if get_llm_usage_context() else None
         return {"promoted": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []}
 
     monkeypatch.setattr("openkb.workflows.promotion_pipeline.promote_summary_documents", fake_promote_summary_documents)
@@ -611,6 +794,7 @@ def test_promote_document_job_uses_promotion_pipeline(tmp_path, monkeypatch):
         "file_hashes": ["hash-a"],
         "model": "gpt-test",
         "force": True,
+        "usage_feature": "promotion",
     }
 
 
@@ -840,8 +1024,8 @@ def test_upload_document_accepts_single_file_and_queues_add_job(tmp_path, monkey
 
     assert job is not None
     assert job.status == "succeeded"
-    assert calls["file_path"].parent == kb_dir / ".openkb" / "uploads"
-    assert calls["file_path"].name.endswith("-doc.txt")
+    assert calls["file_path"].parent.parent == kb_dir / ".openkb" / "uploads"
+    assert calls["file_path"].name == "doc.txt"
     assert calls["target_kb"] == kb_dir
     assert calls["strict"] is True
 
@@ -873,8 +1057,8 @@ def test_upload_document_accepts_multiple_files_in_one_add_job(tmp_path, monkeyp
 
     assert job is not None
     assert job.status == "succeeded"
-    assert [path.parent for path in calls] == [kb_dir / ".openkb" / "uploads", kb_dir / ".openkb" / "uploads"]
-    assert {path.name.split("-", 3)[-1] for path in calls} == {"a.txt", "b.txt"}
+    assert [path.parent.parent for path in calls] == [kb_dir / ".openkb" / "uploads", kb_dir / ".openkb" / "uploads"]
+    assert {path.name for path in calls} == {"a.txt", "b.txt"}
     assert job.result["added"] == 2
     assert job.result["failed"] == 0
     assert job.result["total"] == 2

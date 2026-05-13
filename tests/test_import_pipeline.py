@@ -89,7 +89,7 @@ def test_import_document_source_records_ocr_pdf_as_source_ready(kb_dir: Path, tm
     record = result["ledger_record"]
     assert result["skipped"] is False
     assert result["source_path"] == "wiki/sources/scan.json"
-    assert record["source_kind"] == "local_long_json"
+    assert record["source_kind"] == "page_json"
     assert record["scan_detected"] is True
     assert record["workflow_state"]["ocr_state"] == "ready"
     assert record["workflow_state"]["source_state"] == "ready"

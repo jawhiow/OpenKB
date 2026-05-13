@@ -194,7 +194,7 @@ def _mark_promotion_failed(kb_dir: Path, file_hash: str, error: Exception) -> No
 def _doc_type_for_document(document: dict[str, Any]) -> str:
     raw_type = str(document.get("type") or "").strip()
     if raw_type == "local_long_pdf":
-        return "local-long"
+        return "pageindex"
     if raw_type == "long_pdf":
         return "pageindex"
     return "short"

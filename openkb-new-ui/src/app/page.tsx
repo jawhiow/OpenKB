@@ -223,13 +223,16 @@ export default function Home() {
           {globalActiveJobId && (
             <GlobalJobTracker
               jobId={globalActiveJobId}
-              onComplete={() => {
-                // Auto-dismiss after 3s on success
-                setTimeout(() => setGlobalActiveJobId(null), 3000);
+              onTerminal={() => {
                 if (resolvedSelectedKb) {
                   queryClient.invalidateQueries({ queryKey: ['documents', resolvedSelectedKb] });
                   queryClient.invalidateQueries({ queryKey: ['kbStats', resolvedSelectedKb] });
+                  queryClient.invalidateQueries({ queryKey: ['llm-usage', resolvedSelectedKb] });
                 }
+              }}
+              onComplete={() => {
+                // Auto-dismiss after 3s on success
+                setTimeout(() => setGlobalActiveJobId(null), 3000);
               }}
               onDismiss={() => setGlobalActiveJobId(null)}
             />
@@ -451,7 +454,7 @@ export default function Home() {
               <OcrTab key={`ocr-${resolvedSelectedKb ?? 'none'}`} kbDir={resolvedSelectedKb} />
             </TabsContent>
 
-            <TabsContent value="sessions" className="flex-1 overflow-hidden m-0 outline-none">
+            <TabsContent value="sessions" keepMounted className="flex-1 overflow-hidden m-0 outline-none">
               {resolvedSelectedKb ? (
                 <SessionsTab
                   key={`sessions-${resolvedSelectedKb}`}

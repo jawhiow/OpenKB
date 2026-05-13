@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,10 @@ class PathSecurityError(ClientError, ValueError):
 
 _TYPE_DISPLAY_MAP = {
     "long_pdf": "pageindex",
-    "local_long_pdf": "local-long",
+    "local_long_pdf": "pageindex",
+    "page_json": "pageindex",
+    "pageindex_cloud": "pageindex",
+    "local_long_json": "pageindex",
 }
 
 _SHORT_DOC_TYPES = {"pdf", "docx", "md", "markdown", "html", "htm", "txt", "csv", "pptx", "xlsx"}
@@ -171,6 +175,7 @@ def get_document_data(
     kb_dir: Path,
     *,
     query: str = "",
+    workflow_status: str = "",
     ingest_state: str = "",
     ocr_state: str = "",
     source_state: str = "",
@@ -248,6 +253,7 @@ def get_document_data(
     documents = _filter_document_payloads(
         documents,
         query=query,
+        workflow_status=workflow_status,
         state_filters={
             "ingest_state": ingest_state,
             "ocr_state": ocr_state,
@@ -273,6 +279,7 @@ def _filter_document_payloads(
     documents: list[dict[str, Any]],
     *,
     query: str = "",
+    workflow_status: str = "",
     state_filters: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     filtered = list(documents)
@@ -293,7 +300,14 @@ def _filter_document_payloads(
             for document in filtered
             if str(document.get("workflow_state", {}).get(state_name) or "").casefold() in allowed
         ]
-    return filtered
+    workflow_allowed = _split_filter_values(workflow_status)
+    if workflow_allowed:
+        filtered = [
+            document
+            for document in filtered
+            if _document_matches_workflow_status(document, workflow_allowed)
+        ]
+    return sorted(filtered, key=_document_sort_key, reverse=True)
 
 
 def _document_matches_query(document: dict[str, Any], needle: str) -> bool:
@@ -306,6 +320,31 @@ def _document_matches_query(document: dict[str, Any], needle: str) -> bool:
         document.get("source_path"),
     ]
     return any(needle in str(value or "").casefold() for value in haystack)
+
+
+def _document_matches_workflow_status(document: dict[str, Any], allowed: set[str]) -> bool:
+    workflow_state = document.get("workflow_state") if isinstance(document.get("workflow_state"), dict) else {}
+    execution = document.get("execution") if isinstance(document.get("execution"), dict) else {}
+    values = {str(value or "").casefold() for value in workflow_state.values()}
+    if "failed" in allowed and ("failed" in values or str(execution.get("last_error") or "").strip()):
+        return True
+    if "new" in allowed:
+        if (
+            "failed" not in values
+            and str(workflow_state.get("ingest_state") or "").casefold() == "imported"
+            and str(workflow_state.get("summary_state") or "").casefold() == "not_started"
+            and str(workflow_state.get("review_state") or "").casefold() == "unreviewed"
+            and str(workflow_state.get("promotion_state") or "").casefold() == "not_selected"
+        ):
+            return True
+    return bool(values & allowed)
+
+
+def _document_sort_key(document: dict[str, Any]) -> tuple[str, str, str, str]:
+    execution = document.get("execution") if isinstance(document.get("execution"), dict) else {}
+    ingested_at = str(document.get("ingested_at") or "").strip()
+    updated_at = str(execution.get("updated_at") or "").strip()
+    return (ingested_at, updated_at, str(document.get("name") or "").casefold(), str(document.get("hash") or ""))
 
 
 def _split_filter_values(raw_value: str) -> set[str]:
@@ -339,12 +378,138 @@ def get_source_document_data(kb_dir: Path, selector: str) -> dict[str, Any]:
 def delete_source_document_data(kb_dir: Path, selector: str) -> dict[str, Any]:
     """Delete one indexed document and clean its generated wiki relations."""
     kb_dir = require_kb_dir(kb_dir)
+    from openkb.document_ledger import delete_document_ledger_record
     from openkb.source_relations import delete_source_document
 
-    result = delete_source_document(kb_dir, selector)
+    try:
+        result = delete_source_document(kb_dir, selector)
+    except ValueError as exc:
+        if not str(exc).startswith("No indexed source document matches:"):
+            raise
+        result = _delete_ledger_only_source_document_data(kb_dir, selector)
+    else:
+        delete_document_ledger_record(kb_dir, str(result["document"].get("hash") or ""))
     result["document"]["type"] = _display_type(str(result["document"].get("type", "unknown")))
     commit_kb_changes(kb_dir, f"Delete source {result['document'].get('name', selector)}")
     return result
+
+
+def _delete_ledger_only_source_document_data(kb_dir: Path, selector: str) -> dict[str, Any]:
+    from openkb.document_ledger import delete_document_ledger_record, list_document_ledger_records
+
+    file_hash, record = _resolve_ledger_source_record(list_document_ledger_records(kb_dir), selector)
+    stem = Path(str(record.get("stem") or Path(str(record.get("name") or "")).stem).strip()).name
+    name = str(record.get("name") or stem or selector).strip()
+    raw_path = str(record.get("raw_path") or "").strip()
+    page_count = record.get("page_count")
+    ingested_at = record.get("ingested_at")
+
+    removed_pages: list[str] = []
+    removed_files: list[str] = []
+
+    if stem:
+        summary_removed = _remove_kb_relative_path(kb_dir, f"wiki/summaries/{stem}.md")
+        if summary_removed:
+            removed_pages.append(_wiki_relative(summary_removed))
+
+    raw_candidates = []
+    normalized_raw_path = raw_path.replace("\\", "/").lstrip("/")
+    if normalized_raw_path.startswith("raw/"):
+        raw_candidates.append(normalized_raw_path)
+    if name:
+        raw_candidates.append(f"raw/{Path(name).name}")
+    for candidate in raw_candidates:
+        removed = _remove_kb_relative_path(kb_dir, candidate)
+        if removed and removed not in removed_files:
+            removed_files.append(removed)
+
+    if stem:
+        for candidate in (
+            f"wiki/sources/{stem}.md",
+            f"wiki/sources/{stem}.json",
+            f"wiki/sources/images/{stem}",
+        ):
+            removed = _remove_kb_relative_path(kb_dir, candidate)
+            if removed and removed not in removed_files:
+                removed_files.append(removed)
+
+    delete_document_ledger_record(kb_dir, file_hash)
+    return {
+        "document": {
+            "hash": file_hash,
+            "name": name,
+            "stem": stem,
+            "type": str(record.get("source_kind") or "unknown"),
+            "pages": page_count or "",
+            "ingested_at": ingested_at,
+            "ingested_date": _ingested_date_from_iso(ingested_at),
+            "raw_path": raw_path,
+            "raw_exists": bool(raw_path and (kb_dir / raw_path).exists()),
+            "source_path": f"sources/{stem}.md" if stem else None,
+            "source_summary": f"summaries/{stem}.md" if stem else None,
+            "summary_exists": False,
+            "related_count": 0,
+            "related_pages": {
+                "summaries": [],
+                "companies": [],
+                "industries": [],
+                "concepts": [],
+            },
+        },
+        "removed_pages": removed_pages,
+        "updated_pages": [],
+        "removed_files": removed_files,
+    }
+
+
+def _resolve_ledger_source_record(
+    records: dict[str, dict[str, Any]],
+    selector: str,
+) -> tuple[str, dict[str, Any]]:
+    needle = str(selector or "").strip()
+    if not needle:
+        raise ValueError("Source document selector is required.")
+    needle_fold = needle.casefold()
+    matches: list[tuple[str, dict[str, Any]]] = []
+    for file_hash, record in records.items():
+        candidates = [
+            file_hash,
+            record.get("file_hash"),
+            record.get("name"),
+            record.get("stem"),
+            record.get("raw_path"),
+            Path(str(record.get("raw_path") or "")).name,
+        ]
+        if file_hash.startswith(needle) or any(str(value or "").casefold() == needle_fold for value in candidates):
+            matches.append((file_hash, record))
+    if not matches:
+        raise ValueError(f"No indexed source document matches: {selector}")
+    if len(matches) > 1:
+        names = ", ".join(sorted(str(record.get("name") or file_hash) for file_hash, record in matches))
+        raise ValueError(f"Ambiguous source document selector {selector!r}: {names}")
+    return matches[0]
+
+
+def _remove_kb_relative_path(kb_dir: Path, relative_path: str) -> str | None:
+    raw = str(relative_path or "").strip().replace("\\", "/").lstrip("/")
+    if not raw:
+        return None
+    root = kb_dir.resolve()
+    full_path = (root / raw).resolve()
+    if not full_path.is_relative_to(root):
+        raise PathSecurityError("Path escapes knowledge base root.")
+    if not full_path.exists():
+        return None
+    rel = full_path.relative_to(root).as_posix()
+    if full_path.is_dir():
+        shutil.rmtree(full_path)
+        return f"{rel}/"
+    full_path.unlink()
+    return rel
+
+
+def _wiki_relative(relative_path: str) -> str:
+    return relative_path.removeprefix("wiki/")
 
 
 def _resolve_wiki_path(kb_dir: Path, relative_path: str) -> Path:

@@ -268,6 +268,61 @@ def test_deepseek_profile_injects_reasoning_and_thinking_into_chat_payload(monke
     assert payload["stream"] is False
 
 
+def test_deepseek_history_patch_preserves_reasoning_content_on_assistant_messages(monkeypatch):
+    from agents.models.chatcmpl_converter import Converter
+
+    messages = Converter.items_to_messages(
+        [
+            {"role": "user", "content": "first"},
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "private reasoning"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "answer"}],
+            },
+            {"role": "user", "content": "next"},
+        ],
+        model="deepseek-v4-pro",
+    )
+
+    assistant = next(message for message in messages if message["role"] == "assistant")
+    assert assistant["content"] == "answer"
+    assert assistant["reasoning_content"] == "private reasoning"
+
+
+def test_reasoning_history_patch_does_not_depend_on_deepseek_model_name_or_provider(monkeypatch):
+    monkeypatch.delenv("OPENKB_DEEPSEEK_THINKING_ENABLED", raising=False)
+    monkeypatch.setenv("OPENKB_MODEL_PROVIDER", "generic")
+    from agents.models.chatcmpl_converter import Converter
+
+    messages = Converter.items_to_messages(
+        [
+            {"role": "user", "content": "first"},
+            {
+                "type": "reasoning",
+                "provider_data": {
+                    "model": "litellm/custom_openai/yunzhou-glm",
+                    "response_id": "chatcmpl-test",
+                },
+                "summary": [{"type": "summary_text", "text": "gateway reasoning"}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "answer"}],
+            },
+            {"role": "user", "content": "next"},
+        ],
+        model="yunzhou-glm",
+    )
+
+    assistant = next(message for message in messages if message["role"] == "assistant")
+    assert assistant["reasoning_content"] == "gateway reasoning"
+
+
 def test_custom_gateway_completion_raises_clear_error_when_choices_is_null(monkeypatch):
     monkeypatch.setenv("OPENKB_WIRE_API", "chat_completions")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")

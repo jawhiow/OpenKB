@@ -24,7 +24,7 @@ from openkb.client.kb import (
     update_config_data,
     write_wiki_file,
 )
-from openkb.document_ledger import upsert_document_ledger_record
+from openkb.document_ledger import get_document_ledger_record, upsert_document_ledger_record
 from openkb.pageindex_local.runtime import read_pageindex_local_manifest
 
 
@@ -254,8 +254,51 @@ def test_get_document_data_filters_by_query_and_workflow_state(tmp_path: Path):
     assert data["documents"] == []
 
 
+def test_get_document_data_filters_new_and_any_failed_workflow_status(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    upsert_document_ledger_record(
+        kb_dir,
+        "hash-b",
+        {
+            "name": "manual.pdf",
+            "stem": "manual",
+            "raw_path": "raw/manual.pdf",
+            "ingested_at": "2026-05-11T08:00:00+08:00",
+            "workflow_state": {
+                "summary_state": "failed",
+                "review_state": "unreviewed",
+                "promotion_state": "not_selected",
+            },
+            "execution": {
+                "last_error": "summary timeout",
+                "updated_at": "2026-05-11T08:05:00+08:00",
+            },
+        },
+    )
+    upsert_document_ledger_record(
+        kb_dir,
+        "hash-c",
+        {
+            "name": "fresh.pdf",
+            "stem": "fresh",
+            "raw_path": "raw/fresh.pdf",
+            "ingested_at": "2026-05-12T08:00:00+08:00",
+            "execution": {
+                "updated_at": "2026-05-12T08:01:00+08:00",
+            },
+        },
+    )
+
+    failed = get_document_data(kb_dir, workflow_status="failed")
+    assert [document["hash"] for document in failed["documents"]] == ["hash-b"]
+
+    new = get_document_data(kb_dir, workflow_status="new")
+    assert [document["hash"] for document in new["documents"]] == ["hash-c"]
+
+
 def test_source_document_data_and_delete_are_shared_with_client(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
+    upsert_document_ledger_record(kb_dir, "hash-a", {"name": "paper.pdf", "stem": "paper"})
     (kb_dir / "wiki" / "companies").mkdir()
     (kb_dir / "wiki" / "sources" / "paper.md").write_text("# Full", encoding="utf-8")
     (kb_dir / "wiki" / "companies" / "TSMC.md").write_text(
@@ -286,6 +329,43 @@ def test_source_document_data_and_delete_are_shared_with_client(tmp_path: Path):
     assert "wiki/companies/TSMC.md" not in tracked
     assert not any(path.startswith("raw/") for path in tracked)
     assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Delete source paper.pdf"
+    assert get_document_ledger_record(kb_dir, "hash-a") is None
+
+
+def test_delete_source_document_data_removes_ledger_only_records(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / "raw" / "failed.pdf").write_bytes(b"%PDF")
+    (kb_dir / "wiki" / "sources" / "failed.md").write_text("# Failed source\n", encoding="utf-8")
+    (kb_dir / "wiki" / "sources" / "images" / "failed").mkdir(parents=True)
+    (kb_dir / "wiki" / "sources" / "images" / "failed" / "page-1.png").write_bytes(b"image")
+    (kb_dir / "wiki" / "summaries" / "failed.md").write_text("# Failed summary\n", encoding="utf-8")
+    upsert_document_ledger_record(
+        kb_dir,
+        "hash-z",
+        {
+            "name": "failed.pdf",
+            "stem": "failed",
+            "raw_path": "raw/failed.pdf",
+            "source_kind": "markdown",
+            "page_count": 3,
+            "workflow_state": {"source_state": "failed"},
+            "execution": {"last_error": "conversion failed"},
+        },
+    )
+
+    result = delete_source_document_data(kb_dir, "failed")
+
+    assert result["document"]["hash"] == "hash-z"
+    assert result["document"]["type"] == "short"
+    assert result["removed_pages"] == ["summaries/failed.md"]
+    assert "raw/failed.pdf" in result["removed_files"]
+    assert "wiki/sources/failed.md" in result["removed_files"]
+    assert "wiki/sources/images/failed/" in result["removed_files"]
+    assert get_document_ledger_record(kb_dir, "hash-z") is None
+    assert not (kb_dir / "raw" / "failed.pdf").exists()
+    assert not (kb_dir / "wiki" / "sources" / "failed.md").exists()
+    assert not (kb_dir / "wiki" / "sources" / "images" / "failed").exists()
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Delete source failed.pdf"
 
 
 def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):

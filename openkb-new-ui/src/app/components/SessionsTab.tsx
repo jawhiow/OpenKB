@@ -2,9 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   ChatReference,
   ChatSessionDetail,
+  createChatSession,
   deleteChatSession,
   getChatSession,
   getChats,
@@ -20,6 +23,7 @@ import { Bot, Copy, ExternalLink, Loader2, MessageSquare, Send, Trash2, User } f
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toaster';
 import { confirm as confirmDialog } from '@/components/ui/confirm-dialog';
+import { cn } from '@/lib/utils';
 
 interface SessionMessage {
   id: string;
@@ -32,7 +36,12 @@ function sessionTitle(session: { title?: string; id?: string }) {
   return String(session.title || session.id || 'Untitled session').trim();
 }
 
-function sessionMessages(session: ChatSessionDetail | null, pendingQuestion: string, streamingAnswer: string): SessionMessage[] {
+function sessionMessages(
+  session: ChatSessionDetail | null,
+  pendingQuestion: string,
+  streamingAnswer: string,
+  streamingStatus: string,
+): SessionMessage[] {
   const messages: SessionMessage[] = [];
   const questions = session?.user_turns ?? [];
   const answers = session?.assistant_texts ?? [];
@@ -67,6 +76,13 @@ function sessionMessages(session: ChatSessionDetail | null, pendingQuestion: str
       content: streamingAnswer,
       pending: true,
     });
+  } else if (streamingStatus) {
+    messages.push({
+      id: 'pending-assistant-status',
+      role: 'assistant',
+      content: streamingStatus,
+      pending: true,
+    });
   }
   return messages;
 }
@@ -86,6 +102,40 @@ function referenceLabel(reference: ChatReference): string {
   return reference.path || reference.type || 'reference';
 }
 
+const markdownComponents: Components = {
+  a: ({ children, href, ...props }) => (
+    <a href={href} target="_blank" rel="noreferrer" {...props}>
+      {children}
+    </a>
+  ),
+  pre: ({ children, ...props }) => (
+    <pre className="overflow-x-auto rounded-md border bg-background/80 p-3 text-xs" {...props}>
+      {children}
+    </pre>
+  ),
+  code: ({ children, className, ...props }) => (
+    <code className={cn('rounded bg-foreground/10 px-1 py-0.5 text-[0.92em]', className)} {...props}>
+      {children}
+    </code>
+  ),
+};
+
+function ChatMarkdown({ content, inverted }: { content: string; inverted: boolean }) {
+  return (
+    <div
+      className={cn(
+        'prose prose-sm max-w-none break-words prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-pre:my-2 prose-table:my-2',
+        'prose-headings:my-2 prose-headings:text-sm prose-blockquote:my-2 prose-blockquote:pl-3',
+        inverted ? 'prose-invert text-primary-foreground' : 'dark:prose-invert',
+      )}
+    >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 export function SessionsTab({
   kbDir,
   onNavigateToWiki,
@@ -95,16 +145,17 @@ export function SessionsTab({
 }) {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null | undefined>(undefined);
   const [draft, setDraft] = useState('');
   const [saveQuery, setSaveQuery] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState('');
   const [streamingAnswer, setStreamingAnswer] = useState('');
+  const [streamingStatus, setStreamingStatus] = useState('');
   const [activeReferences, setActiveReferences] = useState<ChatReference[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const threadRef = useRef<HTMLDivElement | null>(null);
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
 
   const sessionsQuery = useQuery({
     queryKey: ['chats', kbDir],
@@ -113,7 +164,7 @@ export function SessionsTab({
   });
 
   const sessions = useMemo(() => sessionsQuery.data?.sessions ?? [], [sessionsQuery.data?.sessions]);
-  const resolvedSessionId = activeSessionId ?? sessions[0]?.id ?? null;
+  const resolvedSessionId = activeSessionId === undefined ? sessions[0]?.id ?? null : activeSessionId;
 
   const sessionDetailQuery = useQuery({
     queryKey: ['chatSession', kbDir, resolvedSessionId],
@@ -124,8 +175,8 @@ export function SessionsTab({
   const deleteMutation = useMutation({
     mutationFn: (sessionId: string) => deleteChatSession(kbDir, sessionId),
     onSuccess: async (_data, sessionId) => {
-      if (activeSessionId === sessionId) {
-        setActiveSessionId(null);
+      if (resolvedSessionId === sessionId) {
+        setActiveSessionId(undefined);
         setActiveReferences([]);
       }
       await queryClient.invalidateQueries({ queryKey: ['chats', kbDir] });
@@ -134,6 +185,24 @@ export function SessionsTab({
     },
     onError: (error) => {
       toast.error('Failed to delete session', error instanceof Error ? error.message : undefined);
+    },
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () => createChatSession(kbDir),
+    onSuccess: async (session) => {
+      setActiveSessionId(session.id);
+      setActiveReferences([]);
+      setPendingQuestion('');
+      setStreamingAnswer('');
+      setStreamingStatus('');
+      setErrorMessage('');
+      setDraft('');
+      await queryClient.invalidateQueries({ queryKey: ['chats', kbDir] });
+      queryClient.setQueryData(['chatSession', kbDir, session.id], session);
+    },
+    onError: (error) => {
+      toast.error('Failed to create session', error instanceof Error ? error.message : undefined);
     },
   });
 
@@ -151,21 +220,29 @@ export function SessionsTab({
 
   const activeSession = sessionDetailQuery.data ?? null;
   const messages = useMemo(
-    () => sessionMessages(activeSession, pendingQuestion, streamingAnswer),
-    [activeSession, pendingQuestion, streamingAnswer],
+    () => sessionMessages(activeSession, pendingQuestion, streamingAnswer, streamingStatus),
+    [activeSession, pendingQuestion, streamingAnswer, streamingStatus],
   );
 
   useEffect(() => {
-    if (threadRef.current) {
-      threadRef.current.scrollTop = threadRef.current.scrollHeight;
-    }
-  }, [messages]);
+    const viewport = threadScrollRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    if (!viewport) return;
+    const frame = requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [messages, resolvedSessionId, sessionDetailQuery.isLoading]);
 
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
     };
   }, []);
+
+  const handleNewSession = () => {
+    abortRef.current?.abort();
+    createMutation.mutate();
+  };
 
   const handleSend = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -176,6 +253,7 @@ export function SessionsTab({
     setErrorMessage('');
     setPendingQuestion(question);
     setStreamingAnswer('');
+    setStreamingStatus('Starting query...');
     setIsStreaming(true);
 
     const controller = new AbortController();
@@ -186,24 +264,30 @@ export function SessionsTab({
         {
           kb_dir: kbDir,
           question,
-          session_id: activeSessionId ?? undefined,
+          session_id: resolvedSessionId ?? undefined,
           save: saveQuery,
         },
         {
           onSession: (sessionId) => {
             if (sessionId) setActiveSessionId(sessionId);
           },
+          onStatus: (message) => {
+            if (message) setStreamingStatus(message);
+          },
           onDelta: (text) => {
+            setStreamingStatus('');
             setStreamingAnswer((current) => current + text);
           },
           onDone: async (payload: StreamQueryDonePayload) => {
             setPendingQuestion('');
             setStreamingAnswer('');
+            setStreamingStatus('');
             setActiveReferences(payload.references ?? []);
             if (payload.session_id) {
               setActiveSessionId(payload.session_id);
             }
             await queryClient.invalidateQueries({ queryKey: ['chats', kbDir] });
+            await queryClient.invalidateQueries({ queryKey: ['llm-usage', kbDir] });
             if (payload.session_id) {
               await queryClient.invalidateQueries({ queryKey: ['chatSession', kbDir, payload.session_id] });
             }
@@ -218,9 +302,16 @@ export function SessionsTab({
     } finally {
       setPendingQuestion('');
       setStreamingAnswer('');
+      setStreamingStatus('');
       setIsStreaming(false);
       abortRef.current = null;
     }
+  };
+
+  const handleDraftKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   };
 
   const handleCopy = async () => {
@@ -255,11 +346,10 @@ export function SessionsTab({
               <Button
                 variant="outline"
                 className="w-full justify-start"
-                onClick={() => {
-                  setActiveSessionId(null);
-                  setActiveReferences([]);
-                }}
+                onClick={handleNewSession}
+                disabled={createMutation.isPending || isStreaming}
               >
+                {createMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 New Session
               </Button>
               {sessionsQuery.isLoading ? (
@@ -275,9 +365,13 @@ export function SessionsTab({
                 filteredSessions.map((session) => (
                   <Button
                     key={session.id}
-                    variant={activeSessionId === session.id ? 'secondary' : 'ghost'}
+                    variant={resolvedSessionId === session.id ? 'secondary' : 'ghost'}
                     className="h-auto w-full justify-start px-3 py-2 text-left"
-                    onClick={() => setActiveSessionId(session.id)}
+                    onClick={() => {
+                      setActiveSessionId(session.id);
+                      setActiveReferences([]);
+                      setErrorMessage('');
+                    }}
                   >
                     <div className="min-w-0">
                       <div className="truncate font-medium">{sessionTitle(session)}</div>
@@ -338,8 +432,8 @@ export function SessionsTab({
           ) : null}
 
           <div className="min-h-0 flex-1">
-            <ScrollArea className="h-full">
-              <div ref={threadRef} className="space-y-5 p-5">
+            <ScrollArea ref={threadScrollRef} className="h-full">
+              <div className="space-y-5 p-5">
                 {sessionDetailQuery.isLoading ? (
                   <div className="space-y-4">
                     {[0, 1, 2].map((i) => (
@@ -364,13 +458,13 @@ export function SessionsTab({
                         </div>
                       ) : null}
                       <div
-                        className={`max-w-[85%] rounded-xl px-4 py-3 text-sm whitespace-pre-wrap ${
+                        className={`max-w-[85%] rounded-xl px-4 py-3 text-sm ${
                           message.role === 'user'
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-muted/60 text-foreground'
                         }`}
                       >
-                        {message.content}
+                        <ChatMarkdown content={message.content} inverted={message.role === 'user'} />
                         {message.pending ? <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-current align-middle" /> : null}
                       </div>
                       {message.role === 'user' ? (
@@ -398,6 +492,7 @@ export function SessionsTab({
               rows={3}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleDraftKeyDown}
               placeholder="Ask this knowledge base"
               className="min-h-[88px] w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
               disabled={!kbDir || isStreaming}

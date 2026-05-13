@@ -480,10 +480,11 @@ async def run_query_session_stream(
     model: str,
     session: object,
     on_delta: Any,
+    on_status: Any | None = None,
     route: object | None = None,
 ) -> dict[str, Any]:
     """Run one streaming Q&A turn, persist it, and return answer metadata."""
-    from agents import RawResponsesStreamEvent, Runner
+    from agents import RawResponsesStreamEvent, RunItemStreamEvent, Runner
     from openai.types.responses import ResponseTextDeltaEvent
     from openkb.config import load_config
 
@@ -495,6 +496,19 @@ async def run_query_session_stream(
     new_input = getattr(session, "history", []) + [
         {"role": "user", "content": question}
     ]
+
+    async def _emit_status(message: str) -> None:
+        if on_status is not None:
+            await on_status(message)
+
+    def _tool_status(tool_name: str) -> str:
+        return {
+            "read_file": "Reading wiki context...",
+            "search_long_documents": "Searching long documents...",
+            "get_page_content": "Reading source pages...",
+            "get_image": "Inspecting source image...",
+        }.get(tool_name, f"Running {tool_name}...")
+
     async def _run_once(effective_model: str, _selected_route: Any) -> dict[str, Any]:
         agent = build_query_agent(
             wiki_root,
@@ -504,6 +518,7 @@ async def run_query_session_stream(
         )
         collected: list[str] = []
         with llm_usage_context(kb_dir, "query"):
+            await _emit_status("Running query...")
             result = Runner.run_streamed(agent, new_input, max_turns=MAX_TURNS)
             async for event in result.stream_events():
                 if isinstance(event, RawResponsesStreamEvent) and isinstance(
@@ -514,6 +529,12 @@ async def run_query_session_stream(
                     if text:
                         collected.append(text)
                         await on_delta(text)
+                elif isinstance(event, RunItemStreamEvent):
+                    item = event.item
+                    if item.type == "tool_call_item":
+                        raw_item = item.raw_item
+                        name = str(getattr(raw_item, "name", "") or "tool").strip()
+                        await _emit_status(_tool_status(name))
         answer = "".join(collected) if collected else result.final_output or ""
         session.record_turn(question, answer, result.to_input_list())
         return {

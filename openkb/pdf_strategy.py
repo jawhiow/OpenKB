@@ -20,8 +20,8 @@ def recommend_long_pdf_strategy(
     """Return the default long-PDF strategy for current document conditions."""
     del pageindex_local_enabled
     if is_scanned and ocr_enabled and ocr_auto_recommend:
-        return OCR_LOCAL_LONG
-    return PLAIN_LOCAL_LONG
+        return OCR_PAGEINDEX_LOCAL
+    return ""
 
 
 def resolve_long_pdf_strategy(recommended: str, override: str | None) -> str:

@@ -504,6 +504,119 @@ def _install_low_level_usage_wrappers() -> None:
     litellm.acompletion = _instrumented_litellm_acompletion
 
 
+def _extract_reasoning_content_text(item: Any) -> str:
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return ""
+    parts: list[str] = []
+    for summary in item.get("summary") or []:
+        if isinstance(summary, dict) and summary.get("text"):
+            parts.append(str(summary["text"]))
+    for content in item.get("content") or []:
+        if (
+            isinstance(content, dict)
+            and content.get("type") == "reasoning_text"
+            and content.get("text")
+        ):
+            parts.append(str(content["text"]))
+    return "\n".join(part for part in parts if part)
+
+
+def _reasoning_content_markers(items: list[Any]) -> list[str | None]:
+    """Map response-input history items to assistant-message reasoning payloads.
+
+    Some OpenAI-compatible thinking endpoints expose DeepSeek-style
+    ``reasoning_content`` through generic gateways. The Agents SDK only replays
+    that field when the model name/provider looks like DeepSeek and the message
+    has tool calls, so OpenKB preserves it based on the actual history item
+    shape instead of the configured profile type.
+    """
+    markers: list[str | None] = []
+    pending_reasoning: str | None = None
+    current_assistant_index: int | None = None
+
+    def flush_assistant() -> None:
+        nonlocal current_assistant_index
+        current_assistant_index = None
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        reasoning = _extract_reasoning_content_text(item)
+        if reasoning:
+            pending_reasoning = reasoning
+            continue
+
+        item_type = str(item.get("type") or "")
+        role = str(item.get("role") or "")
+
+        if role in {"user", "system", "developer"} or item_type == "function_call_output":
+            flush_assistant()
+            continue
+
+        if role == "assistant" or (item_type == "message" and role == "assistant"):
+            flush_assistant()
+            markers.append(pending_reasoning)
+            pending_reasoning = None
+            current_assistant_index = len(markers) - 1
+            continue
+
+        if item_type in {"function_call", "file_search_call", "computer_call"}:
+            if current_assistant_index is None:
+                markers.append(pending_reasoning)
+                current_assistant_index = len(markers) - 1
+            elif pending_reasoning and markers[current_assistant_index] is None:
+                markers[current_assistant_index] = pending_reasoning
+            pending_reasoning = None
+
+    return markers
+
+
+def _install_reasoning_content_history_patch() -> None:
+    try:
+        from agents.models.chatcmpl_converter import Converter
+    except Exception:
+        return
+
+    if getattr(Converter.items_to_messages, "__openkb_reasoning_content_patched__", False):
+        return
+
+    original = Converter.items_to_messages
+
+    def patched_items_to_messages(
+        cls,
+        items,
+        model: str | None = None,
+        preserve_thinking_blocks: bool = False,
+        preserve_tool_output_all_content: bool = False,
+    ):
+        item_list = None if isinstance(items, str) else list(items)
+        messages = original(
+            items if item_list is None else item_list,
+            model=model,
+            preserve_thinking_blocks=preserve_thinking_blocks,
+            preserve_tool_output_all_content=preserve_tool_output_all_content,
+        )
+        if item_list is None:
+            return messages
+
+        markers = _reasoning_content_markers(item_list)
+        if not any(markers):
+            return messages
+        assistant_index = 0
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            reasoning = markers[assistant_index] if assistant_index < len(markers) else None
+            if reasoning and not message.get("reasoning_content"):
+                message["reasoning_content"] = reasoning
+            assistant_index += 1
+        return messages
+
+    patched_items_to_messages.__openkb_reasoning_content_patched__ = True
+    Converter.items_to_messages = classmethod(patched_items_to_messages)
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name, "")
     if not value:
@@ -1041,3 +1154,4 @@ async def acompletion(model: str, messages: list[dict], **kwargs) -> CompletionR
 
 
 _install_low_level_usage_wrappers()
+_install_reasoning_content_history_patch()

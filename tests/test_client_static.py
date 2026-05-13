@@ -149,6 +149,7 @@ def test_client_renders_llm_usage_page_and_export_action():
     assert 'data-action="usage-page"' in script
     assert 'class="llm-usage-toolbar"' in script
     assert 'class="llm-usage-summary"' in script
+    assert '"summarize", "promote", "lint", "query"' in script
 
 
 def test_client_script_summarizes_partial_add_failures():

@@ -236,7 +236,7 @@ SUPPORTED_EXTENSIONS = {
 # Map raw doc types to display types
 _TYPE_DISPLAY_MAP = {
     "long_pdf": "pageindex",
-    "local_long_pdf": "local-long",
+    "local_long_pdf": "pageindex",
 }
 
 _SHORT_DOC_TYPES = {"pdf", "docx", "md", "markdown", "html", "htm", "txt", "csv", "pptx", "xlsx"}
@@ -862,27 +862,12 @@ def add_single_file(
                 fixed_route=model_route,
             )
         except Exception as exc:
-            click.echo(f"  [WARN] Local PageIndex failed; falling back to OCR local-long: {exc}")
+            click.echo(f"  [ERROR] Local PageIndex failed: {exc}")
             logger.debug("Local PageIndex traceback:", exc_info=True)
-            _emit_progress(progress_callback, f"Falling back to OCR local-long: {file_path.name}")
-            try:
-                with compile_progress_callback(progress_callback):
-                    removed_stale_pages = _run_compile(
-                        lambda model: compile_local_long_doc(
-                            doc_name,
-                            result.source_path,
-                            kb_dir,
-                            model,
-                            max_concurrency=compile_max_concurrency,
-                            cleanup_existing=force,
-                        )
-                    )
-            except Exception as fallback_exc:
-                click.echo(f"  [ERROR] Compilation failed: {fallback_exc}")
-                logger.debug("Fallback compilation traceback:", exc_info=True)
-                if strict:
-                    raise RuntimeError(f"Compilation failed: {fallback_exc}") from fallback_exc
-                return
+            _emit_progress(progress_callback, f"Local PageIndex failed: {file_path.name}: {exc}")
+            if strict:
+                raise RuntimeError(f"Indexing failed: {exc}") from exc
+            return
         else:
             summary_path = kb_dir / "wiki" / "summaries" / f"{doc_name}.md"
             click.echo(f"  Compiling local PageIndex doc (doc_id={index_result.doc_id})...")
@@ -1385,7 +1370,7 @@ def _run_import_files(
 @cli.command(name="import")
 @click.option("--force", is_flag=True, default=False, help="Re-import even if the document hash is already indexed.")
 @click.option("--strict", is_flag=True, default=False, help="Stop on the first import failure.")
-@click.option("--strategy-override", default=None, help="Override PDF preparation strategy, for example ocr-local-long.")
+@click.option("--strategy-override", default=None, help="Override PDF preparation strategy, for example ocr-pageindex-local.")
 @click.argument("path")
 @click.pass_context
 def import_command(ctx, force, strict, strategy_override, path):

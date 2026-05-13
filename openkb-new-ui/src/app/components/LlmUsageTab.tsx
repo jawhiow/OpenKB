@@ -77,12 +77,23 @@ export function LlmUsageTab({ kbDir }: { kbDir: string | null }) {
     queryKey: ['llm-usage', kbDir, search, page, pageSize],
     queryFn: () => getLlmUsage(kbDir!, { q: search, page, page_size: pageSize }),
     enabled: !!kbDir,
+    refetchInterval: 5000,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
   });
 
   const handleSearch = (event: React.FormEvent) => {
     event.preventDefault();
     setSearch(searchInput.trim());
     setPage(1);
+  };
+
+  const handleRefresh = () => {
+    if (page !== 1) {
+      setPage(1);
+      return;
+    }
+    refetch();
   };
 
   const handleExport = async () => {
@@ -123,7 +134,7 @@ export function LlmUsageTab({ kbDir }: { kbDir: string | null }) {
             <CardDescription className="text-xs">{total} record(s)</CardDescription>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+            <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isFetching}>
               {isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5" />}
               Refresh
             </Button>

@@ -10,10 +10,11 @@ import { notifyIfBackground } from '@/lib/notifications';
 interface JobTrackerProps {
   jobId: string | null;
   onComplete?: () => void;
+  onTerminal?: () => void;
   onDismiss?: () => void;
 }
 
-export function GlobalJobTracker({ jobId, onComplete, onDismiss }: JobTrackerProps) {
+export function GlobalJobTracker({ jobId, onComplete, onTerminal, onDismiss }: JobTrackerProps) {
   const completionNotifiedRef = useRef<string | null>(null);
 
   const { data: job, isError } = useQuery({
@@ -45,6 +46,7 @@ export function GlobalJobTracker({ jobId, onComplete, onDismiss }: JobTrackerPro
     if (!terminal) return;
 
     completionNotifiedRef.current = jobId;
+    onTerminal?.();
     const jobType = (job.type || 'Job').replace(/_/g, ' ');
     if (job.status === 'succeeded') {
       onComplete?.();
@@ -63,7 +65,7 @@ export function GlobalJobTracker({ jobId, onComplete, onDismiss }: JobTrackerPro
         tag: `openkb-job-${jobId}`,
       });
     }
-  }, [job?.status, job?.type, job?.message, job?.error, jobId, onComplete]);
+  }, [job?.status, job?.type, job?.message, job?.error, jobId, onComplete, onTerminal]);
 
   if (!jobId && !job) return null;
 

@@ -174,6 +174,19 @@ def upsert_document_ledger_record(
     return record
 
 
+def delete_document_ledger_record(kb_dir: Path, file_hash: str) -> dict[str, Any] | None:
+    """Remove one ledger record and return the normalized record when present."""
+    normalized_hash = str(file_hash or "").strip()
+    if not normalized_hash:
+        return None
+    ledger = load_document_ledger(kb_dir)
+    record = ledger["documents"].pop(normalized_hash, None)
+    if record is None:
+        return None
+    save_document_ledger(kb_dir, ledger)
+    return build_document_ledger_record(normalized_hash, stored=record)
+
+
 def update_document_workflow_state(
     kb_dir: Path,
     file_hash: str,

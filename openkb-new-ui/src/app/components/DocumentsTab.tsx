@@ -67,9 +67,10 @@ const SORT_ACCESSORS: Record<SortKey, (d: DocumentItem) => string> = {
 
 const INVENTORY_FILTERS: Array<{ label: string; value: string }> = [
   { label: 'All inventory', value: '' },
-  { label: 'Source ready', value: 'ready' },
-  { label: 'Source failed', value: 'failed' },
-  { label: 'Needs summary', value: 'not_started,failed' },
+  { label: 'New imports', value: 'new' },
+  { label: 'Ready to summarize', value: 'ready_to_summarize' },
+  { label: 'Needs summary', value: 'needs_summary' },
+  { label: 'Any failed', value: 'failed' },
 ];
 
 const REVIEW_FILTERS: Array<{ label: string; value: string }> = [
@@ -148,7 +149,7 @@ export function DocumentsTab({
         ?? inventorySourceState;
       chips.push({
         key: 'inv-state',
-        label: `Source: ${label}`,
+        label: `Inventory: ${label}`,
         onRemove: () => setInventorySourceState(''),
       });
     }
@@ -196,9 +197,33 @@ export function DocumentsTab({
 
   const queryParams = useMemo<DocumentQueryParams>(() => {
     if (stageView === 'inventory') {
+      if (inventorySourceState === 'new') {
+        return {
+          q: searchQuery,
+          workflow_status: 'new',
+        };
+      }
+      if (inventorySourceState === 'ready_to_summarize') {
+        return {
+          q: searchQuery,
+          source_state: 'ready',
+          summary_state: 'not_started,failed',
+        };
+      }
+      if (inventorySourceState === 'needs_summary') {
+        return {
+          q: searchQuery,
+          summary_state: 'not_started,failed',
+        };
+      }
+      if (inventorySourceState === 'failed') {
+        return {
+          q: searchQuery,
+          workflow_status: 'failed',
+        };
+      }
       return {
         q: searchQuery,
-        source_state: inventorySourceState,
       };
     }
     if (stageView === 'review') {
@@ -251,6 +276,9 @@ export function DocumentsTab({
   );
   const selectedHashes = documents.filter((document) => visibleSelection[document.hash]).map((document) => document.hash);
   const selectedDocuments = documents.filter((document) => visibleSelection[document.hash]);
+  const summarizableSelectedHashes = selectedDocuments
+    .filter((document) => document.workflow_state.source_state === 'ready')
+    .map((document) => document.hash);
 
   const invalidateDocumentQueries = () => {
     queryClient.invalidateQueries({ queryKey: ['documents', kbDir] });
@@ -268,6 +296,10 @@ export function DocumentsTab({
     mutationFn: (path: string) => importDocuments(kbDir, path),
     onSuccess: (data) => {
       setLocalPath('');
+      setStageView('inventory');
+      setInventorySourceState('');
+      setSearchQuery('');
+      setSelection({});
       handleJobStart(data?.job?.id);
       toast.success('Import job started');
     },
@@ -277,6 +309,10 @@ export function DocumentsTab({
   const uploadMutation = useMutation({
     mutationFn: (files: File[]) => uploadDocuments(kbDir, files, { import_only: true }),
     onSuccess: (data) => {
+      setStageView('inventory');
+      setInventorySourceState('');
+      setSearchQuery('');
+      setSelection({});
       handleJobStart(data?.job?.id);
       toast.success('Upload job started');
     },
@@ -368,7 +404,7 @@ export function DocumentsTab({
     mutationFn: (selector: string) => deleteDocument(kbDir, selector),
     onSuccess: (data) => {
       handleJobStart(data?.job?.id);
-      toast.success('Document removed');
+      toast.success('Delete job started');
     },
     onError: (error) => toast.error('Delete failed', errorMessage(error)),
   });
@@ -485,14 +521,14 @@ export function DocumentsTab({
             <StageToolbar
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
-              filterLabel="Source state"
+              filterLabel="Inventory filter"
               filterValue={inventorySourceState}
               onFilterChange={setInventorySourceState}
               filters={INVENTORY_FILTERS}
               rightSlot={
                 <Button
-                  onClick={() => summarizeMutation.mutate(selectedHashes)}
-                  disabled={!selectedHashes.length || summarizeMutation.isPending}
+                  onClick={() => summarizeMutation.mutate(summarizableSelectedHashes)}
+                  disabled={!summarizableSelectedHashes.length || summarizeMutation.isPending}
                   className="bg-[oklch(0.55_0.11_70)] text-white hover:bg-[oklch(0.5_0.11_70)]"
                 >
                   {summarizeMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
@@ -697,8 +733,8 @@ export function DocumentsTab({
         {stageView === 'inventory' && (
           <Button
             size="sm"
-            onClick={() => summarizeMutation.mutate(selectedHashes)}
-            disabled={summarizeMutation.isPending}
+            onClick={() => summarizeMutation.mutate(summarizableSelectedHashes)}
+            disabled={summarizeMutation.isPending || !summarizableSelectedHashes.length}
           >
             {summarizeMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
             Summarize
@@ -1115,7 +1151,7 @@ function DocumentDetailDialog({
 
   return (
     <Dialog open={!!document} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-h-[85vh] !w-[min(96vw,64rem)] !max-w-none overflow-y-auto sm:!max-w-none">
         <DialogHeader>
           <DialogTitle>{document?.name || 'Document detail'}</DialogTitle>
           <DialogDescription>
@@ -1125,7 +1161,7 @@ function DocumentDetailDialog({
 
         {document ? (
           <div className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 lg:grid-cols-2">
               <DetailBlock
                 title="Identity"
                 lines={[
