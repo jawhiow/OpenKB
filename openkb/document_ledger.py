@@ -27,6 +27,8 @@ REVIEW_DEFAULTS = {
     "ingest_score": None,
     "summary_score": None,
     "promotion_score": None,
+    "summary_score_source": "",
+    "summary_scorecard": None,
     "review_notes": "",
     "recommended_ingest_mode": "",
     "approved_by": "",
@@ -43,6 +45,8 @@ _TOP_LEVEL_DEFAULTS = {
     "name": "",
     "stem": "",
     "raw_path": "",
+    "source_path": "",
+    "review_summary_path": "",
     "ingested_at": None,
     "source_kind": "",
     "page_count": None,
@@ -311,6 +315,7 @@ def infer_document_ledger_defaults(document: Mapping[str, Any]) -> dict[str, Any
         "name": str(document.get("name") or "").strip(),
         "stem": str(document.get("stem") or "").strip(),
         "raw_path": str(document.get("raw_path") or "").strip(),
+        "source_path": source_path,
         "ingested_at": _normalized_optional_text(document.get("ingested_at")),
         "source_kind": source_kind,
         "page_count": _normalized_optional_int(document.get("pages")),
@@ -354,6 +359,8 @@ def _overlay_document_record(target: dict[str, Any], source: Mapping[str, Any]) 
                 continue
             if key.endswith("_score"):
                 target["review"][key] = _normalized_optional_int(review.get(key))
+            elif key == "summary_scorecard":
+                target["review"][key] = _normalized_summary_scorecard(review.get(key))
             elif key == "approved_at":
                 target["review"][key] = _normalized_optional_text(review.get(key))
             else:
@@ -395,6 +402,33 @@ def _normalized_optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalized_summary_scorecard(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    dimensions_raw = value.get("dimensions") if isinstance(value.get("dimensions"), Mapping) else {}
+    dimensions: dict[str, dict[str, Any]] = {}
+    for name, raw_dimension in dimensions_raw.items():
+        key = str(name or "").strip()
+        if not key or not isinstance(raw_dimension, Mapping):
+            continue
+        dimensions[key] = {
+            "label": str(raw_dimension.get("label") or key).strip() or key,
+            "score": _normalized_optional_int(raw_dimension.get("score")),
+            "max": _normalized_optional_int(raw_dimension.get("max")),
+            "reason": str(raw_dimension.get("reason") or "").strip(),
+        }
+
+    normalized = {
+        "method": str(value.get("method") or "").strip(),
+        "overall_assessment": str(value.get("overall_assessment") or "").strip(),
+        "total_score": _normalized_optional_int(value.get("total_score")),
+        "dimensions": dimensions,
+    }
+    if normalized["method"] or normalized["overall_assessment"] or normalized["total_score"] is not None or dimensions:
+        return normalized
+    return None
 
 
 def _infer_source_kind(raw_type: str, source_path: str) -> str:

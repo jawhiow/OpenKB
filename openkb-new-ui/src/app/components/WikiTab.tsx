@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import axios from 'axios';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,6 +21,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { usePersistentState } from '@/lib/use-persistent-state';
+import { getReviewSummaryFile, getWikiFile } from '@/lib/api';
 
 interface WikiFileNode {
   path: string;
@@ -163,6 +163,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
   const { data: treeData, isLoading: isLoadingTree } = useQuery({
     queryKey: ['wikiTree', kbDir],
     queryFn: async () => {
+      const { default: axios } = await import('axios');
       const res = await axios.get('/api/wiki/tree', { params: { kb_dir: kbDir } });
       return res.data;
     },
@@ -173,15 +174,30 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
     queryKey: ['wikiFile', kbDir, selectedFilePath],
     queryFn: async () => {
       if (!selectedFilePath) return null;
-      const res = await axios.get('/api/wiki/file', {
-        params: { kb_dir: kbDir, path: selectedFilePath },
-      });
-      return res.data;
+      if (selectedFilePath.startsWith('review_summaries/')) {
+        return getReviewSummaryFile(kbDir, selectedFilePath);
+      }
+      return getWikiFile(kbDir, selectedFilePath);
     },
     enabled: !!kbDir && !!selectedFilePath,
   });
 
-  const allFiles: WikiFileNode[] = useMemo(() => treeData?.files ?? [], [treeData?.files]);
+  const allFiles: WikiFileNode[] = useMemo(() => {
+    const files = treeData?.files ?? [];
+    if (!selectedFilePath?.startsWith('review_summaries/')) {
+      return files;
+    }
+    const syntheticFile: WikiFileNode = {
+      path: selectedFilePath,
+      name: selectedFilePath.split('/').pop() || selectedFilePath,
+      directory: selectedFilePath.split('/').slice(0, -1).join('/'),
+      depth: Math.max(selectedFilePath.split('/').length - 1, 0),
+      extension: '.md',
+      size: 0,
+      modified: '',
+    };
+    return files.some((file: WikiFileNode) => file.path === selectedFilePath) ? files : [syntheticFile, ...files];
+  }, [selectedFilePath, treeData?.files]);
   const trimmedSearch = search.trim().toLowerCase();
   const filteredFiles = useMemo(() => {
     if (!trimmedSearch) return allFiles;

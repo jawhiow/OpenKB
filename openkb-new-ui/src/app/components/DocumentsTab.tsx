@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
@@ -53,12 +53,13 @@ type StageView = 'inventory' | 'review' | 'promotion';
 
 type SelectionState = Record<string, boolean>;
 
-type SortKey = 'name' | 'type' | 'source_state' | 'summary_state' | 'review_state' | 'promotion_state';
+type SortKey = 'name' | 'type' | 'summary_score' | 'source_state' | 'summary_state' | 'review_state' | 'promotion_state';
 type SortDir = 'asc' | 'desc';
 
-const SORT_ACCESSORS: Record<SortKey, (d: DocumentItem) => string> = {
+const SORT_ACCESSORS: Record<SortKey, (d: DocumentItem) => string | number> = {
   name: (d) => d.name.toLowerCase(),
   type: (d) => d.type.toLowerCase(),
+  summary_score: (d) => d.review.summary_score ?? -1,
   source_state: (d) => d.workflow_state.source_state,
   summary_state: (d) => d.workflow_state.summary_state,
   review_state: (d) => d.workflow_state.review_state,
@@ -77,6 +78,15 @@ const REVIEW_FILTERS: Array<{ label: string; value: string }> = [
   { label: 'Needs review', value: 'unreviewed,held,scored' },
   { label: 'Approved', value: 'approved' },
   { label: 'Rejected', value: 'rejected' },
+];
+
+const SCORE_FILTERS: Array<{ label: string; value: string }> = [
+  { label: 'All scores', value: '' },
+  { label: 'Has score', value: 'scored' },
+  { label: 'High score 85+', value: 'high' },
+  { label: 'Strong score 70-84', value: 'strong' },
+  { label: 'Needs attention <70', value: 'attention' },
+  { label: 'Unscored', value: 'unscored' },
 ];
 
 const PROMOTION_REVIEW_FILTERS: Array<{ label: string; value: string }> = [
@@ -105,6 +115,9 @@ export function DocumentsTab({
   const [reviewStateFilter, setReviewStateFilter] = useState('unreviewed,held,scored');
   const [promotionReviewFilter, setPromotionReviewFilter] = useState('approved');
   const [promotionStateFilter, setPromotionStateFilter] = useState('not_selected,failed');
+  const [scoreFilter, setScoreFilter] = useState('');
+  const [minScore, setMinScore] = useState('');
+  const [maxScore, setMaxScore] = useState('');
   const [localPath, setLocalPath] = useState('');
   const [selection, setSelection] = useState<SelectionState>({});
   const [approvedBy, setApprovedBy] = useState('');
@@ -118,7 +131,7 @@ export function DocumentsTab({
   const [stageKey, setStageKey] = useState<string>(`${stageView}|`);
 
   // Reset page when stage/filters change (derived-state pattern, avoids set-state-in-effect).
-  const currentStageKey = `${stageView}|${searchQuery}|${inventorySourceState}|${reviewStateFilter}|${promotionReviewFilter}|${promotionStateFilter}`;
+  const currentStageKey = `${stageView}|${searchQuery}|${inventorySourceState}|${reviewStateFilter}|${promotionReviewFilter}|${promotionStateFilter}|${scoreFilter}|${minScore}|${maxScore}`;
   if (currentStageKey !== stageKey) {
     setStageKey(currentStageKey);
     setPage(1);
@@ -182,11 +195,36 @@ export function DocumentsTab({
         });
       }
     }
+    if (scoreFilter) {
+      const label = SCORE_FILTERS.find((f) => f.value === scoreFilter)?.label ?? scoreFilter;
+      chips.push({
+        key: 'score-filter',
+        label: `Score: ${label}`,
+        onRemove: () => setScoreFilter(''),
+      });
+    }
+    if (minScore.trim()) {
+      chips.push({
+        key: 'min-score',
+        label: `Min score: ${minScore.trim()}`,
+        onRemove: () => setMinScore(''),
+      });
+    }
+    if (maxScore.trim()) {
+      chips.push({
+        key: 'max-score',
+        label: `Max score: ${maxScore.trim()}`,
+        onRemove: () => setMaxScore(''),
+      });
+    }
     return chips;
   })();
 
   const clearAllFilters = () => {
     setSearchQuery('');
+    setScoreFilter('');
+    setMinScore('');
+    setMaxScore('');
     if (stageView === 'inventory') setInventorySourceState('');
     if (stageView === 'review') setReviewStateFilter('unreviewed,held,scored');
     if (stageView === 'promotion') {
@@ -246,7 +284,17 @@ export function DocumentsTab({
     enabled: !!kbDir,
   });
 
-  const documents = useMemo(() => data?.documents ?? [], [data?.documents]);
+  const serverDocuments = useMemo(() => data?.documents ?? [], [data?.documents]);
+
+  const documents = useMemo(() => {
+    const minValue = parseOptionalScore(minScore);
+    const maxValue = parseOptionalScore(maxScore);
+    return serverDocuments.filter((document) => matchesScoreFilters(document, {
+      scoreFilter,
+      minScore: minValue,
+      maxScore: maxValue,
+    }));
+  }, [maxScore, minScore, scoreFilter, serverDocuments]);
 
   const sortedDocuments = useMemo(() => {
     if (!sortKey) return documents;
@@ -255,6 +303,9 @@ export function DocumentsTab({
     return [...documents].sort((a, b) => {
       const av = accessor(a);
       const bv = accessor(b);
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return (av - bv) * direction;
+      }
       if (av < bv) return -direction;
       if (av > bv) return direction;
       return 0;
@@ -441,8 +492,8 @@ export function DocumentsTab({
   };
 
   return (
-    <Card className="relative h-full flex flex-col rounded-none border-t-0 border-b-0 border-x-0 sm:border-x sm:rounded-lg overflow-hidden min-h-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(249,247,242,0.95))]">
-      <CardHeader className="border-b bg-[linear-gradient(135deg,rgba(27,52,42,0.06),rgba(186,151,91,0.12))]">
+    <Card className="relative h-full flex flex-col rounded-none border-t-0 border-b-0 border-x-0 sm:border-x sm:rounded-lg overflow-hidden min-h-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(249,247,242,0.95))] dark:bg-[linear-gradient(180deg,rgba(24,24,27,0.96),rgba(33,33,36,0.96))]">
+      <CardHeader className="border-b bg-[linear-gradient(135deg,rgba(27,52,42,0.06),rgba(186,151,91,0.12))] dark:bg-[linear-gradient(135deg,rgba(16,28,24,0.82),rgba(79,58,24,0.38))]">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <CardTitle className="text-xl">Staged Document Workbench</CardTitle>
@@ -456,7 +507,7 @@ export function DocumentsTab({
                 placeholder="Absolute local path"
                 value={localPath}
                 onChange={(event) => setLocalPath(event.target.value)}
-                className="w-full min-w-[260px] bg-white/80 xl:w-80"
+                className="w-full min-w-[260px] bg-background/80 dark:bg-input/30 xl:w-80"
                 disabled={busy}
               />
               <Button
@@ -475,7 +526,7 @@ export function DocumentsTab({
                   onChange={handleFileUpload}
                   disabled={busy}
                 />
-                <Button variant="secondary" disabled={busy} className="bg-white/90">
+                <Button variant="secondary" disabled={busy} className="bg-background/90 dark:bg-input/30">
                   {uploadMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileUp className="mr-2 h-4 w-4" />}
                   Import Files
                 </Button>
@@ -505,7 +556,7 @@ export function DocumentsTab({
           className="flex h-full flex-col"
         >
           <div className="border-b px-6 pt-4">
-            <TabsList className="grid w-full max-w-2xl grid-cols-3 bg-[oklch(0.96_0.01_95)]">
+            <TabsList className="grid w-full max-w-2xl grid-cols-3 bg-muted/70 dark:bg-muted/40">
               <TabsTrigger value="inventory">Inventory</TabsTrigger>
               <TabsTrigger value="review">Summary Review</TabsTrigger>
               <TabsTrigger value="promotion">Promotion</TabsTrigger>
@@ -525,6 +576,12 @@ export function DocumentsTab({
               filterValue={inventorySourceState}
               onFilterChange={setInventorySourceState}
               filters={INVENTORY_FILTERS}
+              scoreFilter={scoreFilter}
+              onScoreFilterChange={setScoreFilter}
+              minScore={minScore}
+              onMinScoreChange={setMinScore}
+              maxScore={maxScore}
+              onMaxScoreChange={setMaxScore}
               rightSlot={
                 <Button
                   onClick={() => summarizeMutation.mutate(summarizableSelectedHashes)}
@@ -577,25 +634,31 @@ export function DocumentsTab({
               filterValue={reviewStateFilter}
               onFilterChange={setReviewStateFilter}
               filters={REVIEW_FILTERS}
+              scoreFilter={scoreFilter}
+              onScoreFilterChange={setScoreFilter}
+              minScore={minScore}
+              onMinScoreChange={setMinScore}
+              maxScore={maxScore}
+              onMaxScoreChange={setMaxScore}
               rightSlot={
                 <div className="flex flex-wrap items-center gap-2">
                   <Input
                     placeholder="Reviewer"
                     value={approvedBy}
                     onChange={(event) => setApprovedBy(event.target.value)}
-                    className="w-36 bg-white"
+                    className="w-36 bg-background dark:bg-input/30"
                   />
                   <Input
                     placeholder="Score"
                     value={summaryScore}
                     onChange={(event) => setSummaryScore(event.target.value)}
-                    className="w-24 bg-white"
+                    className="w-24 bg-background dark:bg-input/30"
                   />
                   <Input
                     placeholder="Review notes"
                     value={reviewNotes}
                     onChange={(event) => setReviewNotes(event.target.value)}
-                    className="w-48 bg-white"
+                    className="w-48 bg-background dark:bg-input/30"
                   />
                   <Button
                     onClick={() => approveMutation.mutate(selectedHashes)}
@@ -637,6 +700,7 @@ export function DocumentsTab({
               onHold={(hash) => holdMutation.mutate([hash])}
               onReject={(hash) => rejectMutation.mutate([hash])}
               onViewDetail={setDetailDocument}
+              inlineScorecard
             />
             <Pagination
               page={page}
@@ -652,19 +716,19 @@ export function DocumentsTab({
           </TabsContent>
 
           <TabsContent value="promotion" className="m-0 flex min-h-0 flex-1 flex-col">
-            <div className="border-b bg-[rgba(186,151,91,0.08)] px-6 py-4">
+            <div className="border-b bg-amber-100/40 px-6 py-4 dark:bg-amber-500/10">
               <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex flex-1 flex-wrap items-center gap-2">
                   <Input
                     placeholder="Search approved documents"
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
-                    className="w-full bg-white xl:w-72"
+                    className="w-full bg-background dark:bg-input/30 xl:w-72"
                   />
                   <select
                     value={promotionReviewFilter}
                     onChange={(event) => setPromotionReviewFilter(event.target.value)}
-                    className="h-9 rounded-md border border-border bg-white px-3 text-sm"
+                    className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground dark:bg-input/30"
                   >
                     {PROMOTION_REVIEW_FILTERS.map((filter) => (
                       <option key={filter.label} value={filter.value}>
@@ -675,7 +739,7 @@ export function DocumentsTab({
                   <select
                     value={promotionStateFilter}
                     onChange={(event) => setPromotionStateFilter(event.target.value)}
-                    className="h-9 rounded-md border border-border bg-white px-3 text-sm"
+                    className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground dark:bg-input/30"
                   >
                     {PROMOTION_STATE_FILTERS.map((filter) => (
                       <option key={filter.label} value={filter.value}>
@@ -724,7 +788,7 @@ export function DocumentsTab({
       </CardContent>
 
       {stageView === 'review' && selectedDocuments.length > 0 ? (
-        <div className="border-t bg-[rgba(27,52,42,0.04)] px-6 py-3 text-xs text-muted-foreground">
+        <div className="border-t bg-muted/40 px-6 py-3 text-xs text-muted-foreground dark:bg-muted/20">
           Selected review set: {selectedDocuments.map((document) => document.stem).join(', ')}
         </div>
       ) : null}
@@ -800,6 +864,12 @@ function StageToolbar({
   filterValue,
   onFilterChange,
   filters,
+  scoreFilter,
+  onScoreFilterChange,
+  minScore,
+  onMinScoreChange,
+  maxScore,
+  onMaxScoreChange,
   rightSlot,
 }: {
   searchQuery: string;
@@ -808,17 +878,23 @@ function StageToolbar({
   filterValue: string;
   onFilterChange: (value: string) => void;
   filters: Array<{ label: string; value: string }>;
+  scoreFilter: string;
+  onScoreFilterChange: (value: string) => void;
+  minScore: string;
+  onMinScoreChange: (value: string) => void;
+  maxScore: string;
+  onMaxScoreChange: (value: string) => void;
   rightSlot?: React.ReactNode;
 }) {
   return (
-    <div className="border-b bg-[rgba(27,52,42,0.03)] px-6 py-4">
+    <div className="border-b bg-muted/30 px-6 py-4 dark:bg-muted/15">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex flex-1 flex-wrap items-center gap-2">
           <Input
             placeholder="Search documents, paths, or source kind"
             value={searchQuery}
             onChange={(event) => onSearchChange(event.target.value)}
-            className="w-full bg-white xl:w-80"
+            className="w-full bg-background dark:bg-input/30 xl:w-80"
           />
           <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
             {filterLabel}
@@ -826,7 +902,7 @@ function StageToolbar({
           <select
             value={filterValue}
             onChange={(event) => onFilterChange(event.target.value)}
-            className="h-9 rounded-md border border-border bg-white px-3 text-sm"
+            className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground dark:bg-input/30"
           >
             {filters.map((filter) => (
               <option key={filter.label} value={filter.value}>
@@ -834,6 +910,34 @@ function StageToolbar({
               </option>
             ))}
           </select>
+          <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            Score
+          </label>
+          <select
+            value={scoreFilter}
+            onChange={(event) => onScoreFilterChange(event.target.value)}
+            className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground dark:bg-input/30"
+          >
+            {SCORE_FILTERS.map((filter) => (
+              <option key={filter.label} value={filter.value}>
+                {filter.label}
+              </option>
+            ))}
+          </select>
+          <Input
+            placeholder="Min"
+            inputMode="numeric"
+            value={minScore}
+            onChange={(event) => onMinScoreChange(event.target.value)}
+            className="w-20 bg-background dark:bg-input/30"
+          />
+          <Input
+            placeholder="Max"
+            inputMode="numeric"
+            value={maxScore}
+            onChange={(event) => onMaxScoreChange(event.target.value)}
+            className="w-20 bg-background dark:bg-input/30"
+          />
         </div>
         {rightSlot}
       </div>
@@ -859,6 +963,7 @@ function DocumentStageTable({
   onReject,
   onPromote,
   onViewDetail,
+  inlineScorecard = false,
   showDelete = false,
 }: {
   documents: DocumentItem[];
@@ -878,6 +983,7 @@ function DocumentStageTable({
   onReject?: (hash: string) => void;
   onPromote?: (hash: string) => void;
   onViewDetail?: (document: DocumentItem) => void;
+  inlineScorecard?: boolean;
   showDelete?: boolean;
 }) {
   const allSelected = documents.length > 0 && documents.every((document) => selection[document.hash]);
@@ -885,11 +991,11 @@ function DocumentStageTable({
   return (
     <div className="flex-1 overflow-auto px-6 py-4">
       {isLoading ? (
-        <div className="overflow-hidden rounded-2xl border bg-white/85 p-4 shadow-sm dark:bg-card/40">
-          <TableSkeleton rows={6} columns={6} />
+        <div className="overflow-hidden rounded-2xl border bg-background/85 p-4 shadow-sm dark:bg-card/40">
+          <TableSkeleton rows={6} columns={7} />
         </div>
       ) : documents.length === 0 ? (
-        <div className="flex h-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-[rgba(255,255,255,0.65)] px-6 py-12 text-center dark:bg-card/40">
+        <div className="flex h-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-background/65 px-6 py-12 text-center dark:bg-card/40">
           <AlertCircle className="h-8 w-8 text-muted-foreground" />
           <div>
             <p className="font-medium">No matching documents</p>
@@ -906,15 +1012,18 @@ function DocumentStageTable({
           ) : null}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border bg-white/85 shadow-sm">
+        <div className="overflow-hidden rounded-2xl border bg-background/85 shadow-sm dark:bg-card/40">
           <Table>
             <TableHeader>
-              <TableRow className="bg-[rgba(27,52,42,0.04)]">
+              <TableRow className="bg-muted/40 dark:bg-muted/20">
                 <TableHead className="w-10">
                   <input type="checkbox" checked={allSelected} onChange={onToggleAll} aria-label="Select all visible rows" />
                 </TableHead>
                 <TableHead>
                   <SortableHeader label="Name" sortKey="name" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
+                </TableHead>
+                <TableHead>
+                  <SortableHeader label="Score" sortKey="summary_score" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
                 </TableHead>
                 <TableHead>
                   <SortableHeader label="Source" sortKey="source_state" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
@@ -931,131 +1040,152 @@ function DocumentStageTable({
             </TableHeader>
             <TableBody>
               {documents.map((document) => (
-                <TableRow key={document.hash}>
-                  <TableCell>
-                    <input
-                      type="checkbox"
-                      checked={!!selection[document.hash]}
-                      onChange={() => onToggleSelection(document.hash)}
-                      aria-label={`Select ${document.name}`}
-                    />
-                  </TableCell>
-                  <TableCell className="max-w-[280px] whitespace-normal">
-                    <div className="font-medium">{document.name}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">{document.raw_path || document.stem}</div>
-                  </TableCell>
-                  <TableCell className="max-w-[220px] whitespace-normal text-xs">
-                    <div>{document.type}</div>
-                    <div className="mt-1 text-muted-foreground">
-                      {document.source_path || document.source_kind || 'source pending'}
-                    </div>
-                    {document.pages ? <div className="mt-1 text-muted-foreground">{document.pages} pages</div> : null}
-                  </TableCell>
-                  <TableCell className="max-w-[220px] whitespace-normal text-xs">
-                    <WorkflowPipeline state={document.workflow_state} />
-                  </TableCell>
-                  <TableCell className="max-w-[200px] whitespace-normal text-xs">
-                    <div className="font-medium">{document.workflow_state.review_state}</div>
-                    {document.review.summary_score !== null ? (
-                      <div className="mt-1 text-muted-foreground">score {document.review.summary_score}</div>
-                    ) : null}
-                    {document.review.review_notes ? (
-                      <div className="mt-1 text-muted-foreground">{document.review.review_notes}</div>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="max-w-[240px] whitespace-normal text-xs">
-                    {document.execution.last_error ? (
-                      <div className="rounded-lg bg-red-50 px-2 py-1 text-red-700">
-                        {document.execution.last_error}
+                <Fragment key={document.hash}>
+                  <TableRow key={document.hash}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        checked={!!selection[document.hash]}
+                        onChange={() => onToggleSelection(document.hash)}
+                        aria-label={`Select ${document.name}`}
+                      />
+                    </TableCell>
+                    <TableCell className="max-w-[280px] whitespace-normal">
+                      <div className="font-medium">{document.name}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">{document.raw_path || document.stem}</div>
+                    </TableCell>
+                    <TableCell className="w-[120px] whitespace-normal text-xs">
+                      {document.review.summary_score !== null ? (
+                        <div>
+                          <div className="font-semibold text-sm">{document.review.summary_score}</div>
+                          <div className="mt-1 text-muted-foreground">
+                            {document.review.summary_score_source === 'manual' ? 'manual' : 'auto'}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-muted-foreground">n/a</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="max-w-[220px] whitespace-normal text-xs">
+                      <div>{document.type}</div>
+                      <div className="mt-1 text-muted-foreground">
+                        {document.source_path || document.source_kind || 'source pending'}
                       </div>
-                    ) : (
-                      <div className="text-muted-foreground">clean</div>
-                    )}
-                    {document.execution.retry_count ? (
-                      <div className="mt-1 text-muted-foreground">retries {document.execution.retry_count}</div>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => onViewDetail?.(document)}
-                        title="View detail"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
-                      {onSummarize && document.workflow_state.source_state === 'ready' ? (
+                      {document.pages ? <div className="mt-1 text-muted-foreground">{document.pages} pages</div> : null}
+                    </TableCell>
+                    <TableCell className="max-w-[220px] whitespace-normal text-xs">
+                      <WorkflowPipeline state={document.workflow_state} />
+                    </TableCell>
+                    <TableCell className="max-w-[200px] whitespace-normal text-xs">
+                      <div className="font-medium">{document.workflow_state.review_state}</div>
+                      {document.review.summary_score !== null ? (
+                        <div className="mt-1 text-muted-foreground">score {document.review.summary_score}</div>
+                      ) : null}
+                      {document.review.review_notes ? (
+                        <div className="mt-1 text-muted-foreground">{document.review.review_notes}</div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="max-w-[240px] whitespace-normal text-xs">
+                      {document.execution.last_error ? (
+                        <div className="rounded-lg bg-red-50 px-2 py-1 text-red-700 dark:bg-red-500/10 dark:text-red-300">
+                          {document.execution.last_error}
+                        </div>
+                      ) : (
+                        <div className="text-muted-foreground">clean</div>
+                      )}
+                      {document.execution.retry_count ? (
+                        <div className="mt-1 text-muted-foreground">retries {document.execution.retry_count}</div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          onClick={() => onSummarize(document.hash)}
-                          title="Summarize"
+                          onClick={() => onViewDetail?.(document)}
+                          title="View detail"
                         >
-                          <Sparkles className="h-4 w-4 text-amber-700" />
+                          <Eye className="h-4 w-4" />
                         </Button>
-                      ) : null}
-                      {onApprove && document.workflow_state.summary_state === 'ready' ? (
+                        {onSummarize && document.workflow_state.source_state === 'ready' ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => onSummarize(document.hash)}
+                            title="Summarize"
+                          >
+                            <Sparkles className="h-4 w-4 text-amber-700 dark:text-amber-300" />
+                          </Button>
+                        ) : null}
+                        {onApprove && document.workflow_state.summary_state === 'ready' ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => onApprove(document.hash)}
+                            title="Approve"
+                          >
+                            <ShieldCheck className="h-4 w-4 text-emerald-700 dark:text-emerald-300" />
+                          </Button>
+                        ) : null}
+                        {onHold && document.workflow_state.summary_state === 'ready' ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => onHold(document.hash)}
+                            title="Hold"
+                          >
+                            <AlertCircle className="h-4 w-4 text-amber-700 dark:text-amber-300" />
+                          </Button>
+                        ) : null}
+                        {onReject && document.workflow_state.summary_state === 'ready' ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => onReject(document.hash)}
+                            title="Reject"
+                          >
+                            <Trash2 className="h-4 w-4 text-red-700 dark:text-red-300" />
+                          </Button>
+                        ) : null}
+                        {onPromote && document.workflow_state.review_state === 'approved' ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => onPromote(document.hash)}
+                            title="Promote"
+                          >
+                            <CheckCircle2 className="h-4 w-4 text-emerald-700 dark:text-emerald-300" />
+                          </Button>
+                        ) : null}
+                        {showDelete ? (
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          onClick={() => onApprove(document.hash)}
-                          title="Approve"
+                          className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-300 dark:hover:bg-red-500/10 dark:hover:text-red-200"
+                          onClick={async () => {
+                            const ok = await confirmDialog({
+                              title: 'Remove document?',
+                              description: `"${document.name}" will be removed from inventory.`,
+                              confirmLabel: 'Remove',
+                              variant: 'danger',
+                            });
+                            if (ok) onDelete?.(document.hash);
+                          }}
                         >
-                          <ShieldCheck className="h-4 w-4 text-emerald-700" />
+                          <Trash2 className="h-4 w-4" />
                         </Button>
-                      ) : null}
-                      {onHold && document.workflow_state.summary_state === 'ready' ? (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => onHold(document.hash)}
-                          title="Hold"
-                        >
-                          <AlertCircle className="h-4 w-4 text-amber-700" />
-                        </Button>
-                      ) : null}
-                      {onReject && document.workflow_state.summary_state === 'ready' ? (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => onReject(document.hash)}
-                          title="Reject"
-                        >
-                          <Trash2 className="h-4 w-4 text-red-700" />
-                        </Button>
-                      ) : null}
-                      {onPromote && document.workflow_state.review_state === 'approved' ? (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => onPromote(document.hash)}
-                          title="Promote"
-                        >
-                          <CheckCircle2 className="h-4 w-4 text-emerald-700" />
-                        </Button>
-                      ) : null}
-                      {showDelete ? (
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                        onClick={async () => {
-                          const ok = await confirmDialog({
-                            title: 'Remove document?',
-                            description: `"${document.name}" will be removed from inventory.`,
-                            confirmLabel: 'Remove',
-                            variant: 'danger',
-                          });
-                          if (ok) onDelete?.(document.hash);
-                        }}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                      ) : null}
-                    </div>
-                  </TableCell>
-                </TableRow>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  {inlineScorecard && document.review.summary_scorecard ? (
+                    <TableRow key={`${document.hash}-scorecard`} className="bg-muted/10">
+                      <TableCell colSpan={8} className="px-4 py-3">
+                        <CompactSummaryScorecard scorecard={document.review.summary_scorecard} />
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </Fragment>
               ))}
             </TableBody>
           </Table>
@@ -1169,7 +1299,8 @@ function DocumentDetailDialog({
                   `stem: ${document.stem}`,
                   `raw: ${document.raw_path || 'n/a'}`,
                   `source: ${document.source_path || 'n/a'}`,
-                  `summary: ${document.source_summary || 'n/a'}`,
+                  `formal summary: ${document.summary_exists ? document.source_summary || 'n/a' : 'not promoted'}`,
+                  `review summary: ${document.review_summary_exists ? document.review_summary_path || 'n/a' : 'missing'}`,
                 ]}
               />
               <DetailBlock
@@ -1187,6 +1318,7 @@ function DocumentDetailDialog({
                 title="Review"
                 lines={[
                   `summary score: ${document.review.summary_score ?? 'n/a'}`,
+                  `score source: ${document.review.summary_score_source || 'n/a'}`,
                   `approved by: ${document.review.approved_by || 'n/a'}`,
                   `approved at: ${document.review.approved_at || 'n/a'}`,
                   `notes: ${document.review.review_notes || 'n/a'}`,
@@ -1202,6 +1334,31 @@ function DocumentDetailDialog({
                 ]}
               />
             </div>
+
+            {document.review_summary_exists && document.review_summary_path ? (
+              <div className="rounded-xl border bg-muted/30 p-4">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  Review Summary
+                </div>
+                <button
+                  type="button"
+                  className="group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted/70"
+                  onClick={() => onNavigateToWiki?.(document.review_summary_path!)}
+                  disabled={!onNavigateToWiki}
+                  title={document.review_summary_path}
+                >
+                  <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-50 group-hover:opacity-100" />
+                  <span className="min-w-0">
+                    <div className="font-medium">Open staged review summary</div>
+                    <div className="truncate text-xs text-muted-foreground">{document.review_summary_path}</div>
+                  </span>
+                </button>
+              </div>
+            ) : null}
+
+            {document.review.summary_scorecard ? (
+              <SummaryScorecardPanel scorecard={document.review.summary_scorecard} />
+            ) : null}
 
             <RelatedPagesPanel
               groups={relatedGroups.map((group) => ({
@@ -1298,6 +1455,112 @@ function DetailBlock({ title, lines }: { title: string; lines: string[] }) {
       </div>
     </div>
   );
+}
+
+function SummaryScorecardPanel({ scorecard }: { scorecard: NonNullable<DocumentItem['review']['summary_scorecard']> }) {
+  const dimensions = Object.entries(scorecard.dimensions);
+  return (
+    <div className="rounded-xl border bg-muted/30 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Summary Scorecard
+          </div>
+          <div className="mt-1 text-sm text-muted-foreground">{scorecard.method || 'scoring rubric'}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-semibold">{scorecard.total_score ?? 'n/a'}</div>
+          <div className="text-xs text-muted-foreground">/ 100</div>
+        </div>
+      </div>
+      {scorecard.overall_assessment ? (
+        <div className="mb-3 text-sm text-muted-foreground">{scorecard.overall_assessment}</div>
+      ) : null}
+      <div className="grid gap-2 md:grid-cols-2">
+        {dimensions.map(([key, dimension]) => (
+          <div key={key} className="rounded-lg border bg-background/70 p-3 dark:bg-background/20">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">{dimension.label}</div>
+              <div className="text-xs text-muted-foreground">
+                {dimension.score ?? 'n/a'} / {dimension.max ?? 'n/a'}
+              </div>
+            </div>
+            {dimension.reason ? (
+              <div className="mt-1 text-xs text-muted-foreground">{dimension.reason}</div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CompactSummaryScorecard({ scorecard }: { scorecard: NonNullable<DocumentItem['review']['summary_scorecard']> }) {
+  const dimensions = Object.entries(scorecard.dimensions);
+  return (
+    <div className="rounded-xl border bg-background/70 p-4 dark:bg-background/20">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Auto Scorecard
+          </div>
+          <div className="mt-1 text-sm text-muted-foreground">
+            {scorecard.overall_assessment || scorecard.method || 'Scored during summary generation.'}
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <div className="text-xl font-semibold">{scorecard.total_score ?? 'n/a'}</div>
+          <div className="text-[11px] text-muted-foreground">/ 100</div>
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 lg:grid-cols-3">
+        {dimensions.map(([key, dimension]) => (
+          <div key={key} className="rounded-lg border bg-muted/30 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-medium">{dimension.label}</div>
+              <div className="text-[11px] text-muted-foreground">
+                {dimension.score ?? 'n/a'} / {dimension.max ?? 'n/a'}
+              </div>
+            </div>
+            {dimension.reason ? (
+              <div className="mt-1 text-[11px] text-muted-foreground">{dimension.reason}</div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function parseOptionalScore(value: string): number | null {
+  const text = value.trim();
+  if (!text) return null;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed;
+}
+
+function matchesScoreFilters(
+  document: DocumentItem,
+  {
+    scoreFilter,
+    minScore,
+    maxScore,
+  }: {
+    scoreFilter: string;
+    minScore: number | null;
+    maxScore: number | null;
+  },
+): boolean {
+  const score = document.review.summary_score;
+  if (scoreFilter === 'scored' && score === null) return false;
+  if (scoreFilter === 'unscored' && score !== null) return false;
+  if (scoreFilter === 'high' && (score === null || score < 85)) return false;
+  if (scoreFilter === 'strong' && (score === null || score < 70 || score > 84)) return false;
+  if (scoreFilter === 'attention' && (score === null || score >= 70)) return false;
+  if (minScore !== null && (score === null || score < minScore)) return false;
+  if (maxScore !== null && (score === null || score > maxScore)) return false;
+  return true;
 }
 
 function errorMessage(error: unknown): string | undefined {

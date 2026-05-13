@@ -998,6 +998,13 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
+    @app.get("/api/review-summary/file")
+    def review_summary_file(path: str, kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            return kb_helpers.read_review_summary_file(_resolve_kb_dir(kb_dir), path)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
     @app.put("/api/wiki/file")
     def save_wiki_file(payload: dict[str, Any]) -> dict[str, Any]:
         try:

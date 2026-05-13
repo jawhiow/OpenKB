@@ -52,14 +52,14 @@ interface OcrActionResponse {
 type OcrAction = 'invalidate' | 'rerun' | 'retry';
 
 const STATUS_TONE: Record<string, string> = {
-  ready: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-  completed: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-  success: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-  failed: 'border-red-200 bg-red-50 text-red-700',
-  error: 'border-red-200 bg-red-50 text-red-700',
-  invalid_manifest: 'border-red-200 bg-red-50 text-red-700',
-  invalidated: 'border-amber-200 bg-amber-50 text-amber-700',
-  unknown: 'border-slate-200 bg-slate-50 text-slate-600',
+  ready: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',
+  completed: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',
+  success: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',
+  failed: 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300',
+  error: 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300',
+  invalid_manifest: 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300',
+  invalidated: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300',
+  unknown: 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-300',
 };
 
 export function OcrTab({ kbDir }: { kbDir: string | null }) {
@@ -172,8 +172,8 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
   }
 
   return (
-    <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-none border-x-0 border-b-0 border-t-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(249,247,242,0.95))] sm:rounded-lg sm:border-x">
-      <CardHeader className="border-b bg-[linear-gradient(135deg,rgba(27,52,42,0.06),rgba(186,151,91,0.12))]">
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-none border-x-0 border-b-0 border-t-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(249,247,242,0.95))] dark:bg-[linear-gradient(180deg,rgba(24,24,27,0.96),rgba(33,33,36,0.96))] sm:rounded-lg sm:border-x">
+      <CardHeader className="border-b bg-[linear-gradient(135deg,rgba(27,52,42,0.06),rgba(186,151,91,0.12))] dark:bg-[linear-gradient(135deg,rgba(16,28,24,0.82),rgba(79,58,24,0.38))]">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <CardTitle className="flex items-center gap-2 text-xl">
@@ -192,13 +192,13 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                   placeholder="Search document, hash, model"
-                  className="w-full bg-white/85 pl-9 xl:w-72"
+                  className="w-full bg-background/85 pl-9 dark:bg-input/30 xl:w-72"
                 />
               </div>
               <select
                 value={statusFilter}
                 onChange={(event) => setStatusFilter(event.target.value)}
-                className="h-9 rounded-md border border-border bg-white/85 px-3 text-sm"
+                className="h-9 rounded-md border border-border bg-background/85 px-3 text-sm text-foreground dark:bg-input/30"
               >
                 {statuses.map((status) => (
                   <option key={status} value={status}>
@@ -235,13 +235,13 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
       ) : null}
 
       {actionMessage ? (
-        <div className="border-b bg-[rgba(27,52,42,0.04)] px-6 py-3 text-sm text-muted-foreground">
+        <div className="border-b bg-muted/40 px-6 py-3 text-sm text-muted-foreground dark:bg-muted/20">
           {actionMessage}
         </div>
       ) : null}
 
       {error ? (
-        <div className="border-b bg-red-50 px-6 py-3 text-sm text-red-700">
+        <div className="border-b bg-red-50 px-6 py-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">
           <AlertCircle className="mr-2 inline h-4 w-4" />
           {getErrorMessage(error)}
         </div>
@@ -254,14 +254,14 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
           </div>
         ) : filteredEntries.length === 0 ? (
           <div className="flex h-full items-center justify-center p-6">
-            <div className="rounded-lg border border-dashed bg-white/70 px-8 py-10 text-center text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed bg-background/70 px-8 py-10 text-center text-sm text-muted-foreground dark:bg-card/40">
               {entries.length === 0 ? 'No OCR cache entries found.' : 'No OCR cache entries match the current filters.'}
             </div>
           </div>
         ) : (
           <div className="h-full overflow-auto">
             <Table>
-              <TableHeader className="sticky top-0 z-10 bg-[oklch(0.98_0.01_95)]">
+              <TableHeader className="sticky top-0 z-10 bg-muted/70 dark:bg-muted/40">
                 <TableRow>
                   <TableHead>Document</TableHead>
                   <TableHead>Status</TableHead>
@@ -396,7 +396,9 @@ function normalizeOcrCacheEntry(value: unknown): OcrCacheEntry {
 
 function StatusBadge({ status }: { status: string }) {
   const normalized = normalizeStatus(status);
-  const className = STATUS_TONE[normalized] ?? 'border-slate-200 bg-slate-50 text-slate-600';
+  const className =
+    STATUS_TONE[normalized]
+    ?? 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-300';
   return (
     <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${className}`}>
       {formatStatus(normalized)}
@@ -408,7 +410,9 @@ function ArtifactBadge({ enabled, label }: { enabled: boolean; label: string }) 
   return (
     <span
       className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
-        enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'
+        enabled
+          ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300'
+          : 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-300'
       }`}
     >
       {enabled ? <CheckCircle2 className="mr-1 h-3 w-3" /> : null}

@@ -12,7 +12,9 @@ from openkb.workflows.promotion_pipeline import promote_summary_document, promot
 
 def _add_reviewed_summary(kb_dir: Path, *, review_state: str = "approved") -> None:
     (kb_dir / "wiki" / "sources" / "report.md").write_text("# Report\n\nSource text.", encoding="utf-8")
-    (kb_dir / "wiki" / "summaries" / "report.md").write_text(
+    review_summary_path = kb_dir / ".openkb" / "review_summaries" / "2026-05-10" / "report.md"
+    review_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    review_summary_path.write_text(
         "---\ndoc_type: short\nfull_text: sources/report.md\n---\n\n# Summary",
         encoding="utf-8",
     )
@@ -27,6 +29,8 @@ def _add_reviewed_summary(kb_dir: Path, *, review_state: str = "approved") -> No
             "name": "report.md",
             "stem": "report",
             "raw_path": "raw/report.md",
+            "ingested_at": "2026-05-10T09:30:00+08:00",
+            "review_summary_path": "review_summaries/2026-05-10/report.md",
             "source_kind": "markdown",
             "workflow_state": {
                 "source_state": "ready",
@@ -56,6 +60,7 @@ def test_promote_summary_document_updates_promotion_state(kb_dir: Path):
 
     assert result["skipped"] is False
     assert mock_compile.await_count == 1
+    assert (kb_dir / "wiki" / "summaries" / "report.md").exists()
     record = get_document_ledger_record(kb_dir, "hash-report")
     assert record["workflow_state"]["promotion_state"] == "promoted"
     assert record["execution"]["last_error"] == ""

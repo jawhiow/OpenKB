@@ -114,6 +114,8 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
             "source_path": None,
             "source_summary": "summaries/paper.md",
             "summary_exists": True,
+            "review_summary_path": "review_summaries/2026-05-10/paper.md",
+            "review_summary_exists": False,
             "ingested_at": "2026-05-10T09:30:00+08:00",
             "ingested_date": "2026-05-10",
             "related_count": 2,
@@ -141,6 +143,8 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
                 "ingest_score": None,
                 "summary_score": None,
                 "promotion_score": None,
+                "summary_score_source": "",
+                "summary_scorecard": None,
                 "review_notes": "",
                 "recommended_ingest_mode": "",
                 "approved_by": "",
@@ -158,11 +162,13 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
             "type": "pageindex",
             "pages": 80,
             "stem": "manual",
-            "raw_path": "raw/manual.pdf",
+            "raw_path": ".openkb/raw/2026-05-09/manual.pdf",
             "raw_exists": False,
             "source_path": None,
             "source_summary": "summaries/manual.md",
             "summary_exists": False,
+            "review_summary_path": "review_summaries/2026-05-09/manual.md",
+            "review_summary_exists": False,
             "ingested_at": "2026-05-09T17:20:00+08:00",
             "ingested_date": "2026-05-09",
             "related_count": 0,
@@ -186,6 +192,8 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
                 "ingest_score": None,
                 "summary_score": None,
                 "promotion_score": None,
+                "summary_score_source": "",
+                "summary_scorecard": None,
                 "review_notes": "",
                 "recommended_ingest_mode": "",
                 "approved_by": "",
@@ -223,6 +231,15 @@ def test_get_document_data_merges_persisted_ledger_state(tmp_path: Path):
             },
             "review": {
                 "summary_score": 72,
+                "summary_score_source": "auto",
+                "summary_scorecard": {
+                    "method": "llm_summary_value_v1",
+                    "overall_assessment": "Useful but incomplete.",
+                    "total_score": 72,
+                    "dimensions": {
+                        "source_coverage": {"label": "Source Coverage", "score": 18, "max": 25, "reason": "some gaps"},
+                    },
+                },
                 "review_notes": "needs source retry",
             },
             "execution": {
@@ -239,6 +256,8 @@ def test_get_document_data_merges_persisted_ledger_state(tmp_path: Path):
     assert paper["workflow_state"]["summary_state"] == "queued"
     assert paper["workflow_state"]["review_state"] == "held"
     assert paper["review"]["summary_score"] == 72
+    assert paper["review"]["summary_score_source"] == "auto"
+    assert paper["review"]["summary_scorecard"]["total_score"] == 72
     assert paper["review"]["review_notes"] == "needs source retry"
     assert paper["execution"]["last_error"] == "source conversion failed"
     assert paper["execution"]["retry_count"] == 1
@@ -262,7 +281,7 @@ def test_get_document_data_filters_new_and_any_failed_workflow_status(tmp_path: 
         {
             "name": "manual.pdf",
             "stem": "manual",
-            "raw_path": "raw/manual.pdf",
+            "raw_path": ".openkb/raw/2026-05-09/manual.pdf",
             "ingested_at": "2026-05-11T08:00:00+08:00",
             "workflow_state": {
                 "summary_state": "failed",

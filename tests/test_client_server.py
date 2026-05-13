@@ -1171,6 +1171,24 @@ def test_document_detail_endpoint_returns_related_pages(tmp_path):
     assert body["related_pages"]["concepts"][0]["path"] == "concepts/Retrieval.md"
 
 
+def test_review_summary_file_endpoint_reads_review_staging_area(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    review_summary = kb_dir / ".openkb" / "review_summaries" / "2026-05-10" / "paper.md"
+    review_summary.parent.mkdir(parents=True, exist_ok=True)
+    review_summary.write_text("# Review Summary", encoding="utf-8")
+
+    client = TestClient(create_app())
+    response = client.get(
+        "/api/review-summary/file",
+        params={"kb_dir": str(kb_dir), "path": "review_summaries/2026-05-10/paper.md"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == "review_summaries/2026-05-10/paper.md"
+    assert body["content"] == "# Review Summary"
+
+
 def test_delete_document_endpoint_runs_cleanup_job(tmp_path):
     kb_dir = _make_kb(tmp_path)
     registry = JobRegistry()

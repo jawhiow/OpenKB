@@ -25,6 +25,13 @@ from openkb.llm_runtime import model_prefers_responses_api
 from openkb.kb_git import commit_kb_changes, ensure_kb_git
 from openkb.model_pool import model_pool_config
 from openkb.schema import AGENTS_MD, LEGACY_WIKI_DIRS
+from openkb.source_relations import (
+    formal_raw_relative_path,
+    normalize_kb_relative_path,
+    resolve_source_artifact_path,
+    review_summary_storage_relative_path,
+    source_images_dir_for_source_path,
+)
 
 
 UTC = timezone.utc
@@ -152,8 +159,14 @@ def get_status_data(kb_dir: Path) -> dict[str, Any]:
         path = wiki_dir / name
         directories[name] = len(list(path.glob("*.md"))) if path.exists() else 0
 
+    raw_count = 0
     raw_dir = kb_dir / "raw"
-    directories["raw"] = len([p for p in raw_dir.iterdir() if p.is_file()]) if raw_dir.exists() else 0
+    if raw_dir.exists():
+        raw_count += len([p for p in raw_dir.iterdir() if p.is_file()])
+    staged_raw_root = kb_dir / ".openkb" / "raw"
+    if staged_raw_root.exists():
+        raw_count += len([p for p in staged_raw_root.glob("*/*") if p.is_file()])
+    directories["raw"] = raw_count
 
     hashes = _read_hashes(kb_dir)
     summaries = list((wiki_dir / "summaries").glob("*.md")) if (wiki_dir / "summaries").exists() else []
@@ -207,6 +220,14 @@ def get_document_data(
                 "source_path": document.get("source_path"),
                 "source_summary": document.get("source_summary"),
                 "summary_exists": document.get("summary_exists", False),
+                "review_summary_path": (
+                    str(ledger_record.get("review_summary_path") or "")
+                    or document.get("review_summary_path")
+                ),
+                "review_summary_exists": bool(
+                    str(ledger_record.get("review_summary_path") or "")
+                    or document.get("review_summary_exists", False)
+                ),
                 "ingested_at": document.get("ingested_at"),
                 "ingested_date": document.get("ingested_date"),
                 "related_count": document["related_count"],
@@ -230,10 +251,22 @@ def get_document_data(
                 "pages": ledger_record.get("page_count") or "",
                 "stem": ledger_record["stem"],
                 "raw_path": ledger_record["raw_path"],
-                "raw_exists": bool(ledger_record["raw_path"] and (kb_dir / ledger_record["raw_path"]).exists()),
-                "source_path": None,
+                "raw_exists": bool(
+                    ledger_record["raw_path"]
+                    and (kb_dir / normalize_kb_relative_path(ledger_record["raw_path"])).exists()
+                ),
+                "source_path": str(ledger_record.get("source_path") or "") or None,
                 "source_summary": f"summaries/{ledger_record['stem']}.md" if ledger_record["stem"] else None,
                 "summary_exists": False,
+                "review_summary_path": str(ledger_record.get("review_summary_path") or "") or None,
+                "review_summary_exists": bool(
+                    review_summary_storage_relative_path(ledger_record.get("review_summary_path"))
+                    and (
+                        kb_dir
+                        / ".openkb"
+                        / review_summary_storage_relative_path(ledger_record.get("review_summary_path"))
+                    ).exists()
+                ),
                 "ingested_at": ledger_record.get("ingested_at"),
                 "ingested_date": _ingested_date_from_iso(ledger_record.get("ingested_at")),
                 "related_count": 0,
@@ -400,7 +433,8 @@ def _delete_ledger_only_source_document_data(kb_dir: Path, selector: str) -> dic
     file_hash, record = _resolve_ledger_source_record(list_document_ledger_records(kb_dir), selector)
     stem = Path(str(record.get("stem") or Path(str(record.get("name") or "")).stem).strip()).name
     name = str(record.get("name") or stem or selector).strip()
-    raw_path = str(record.get("raw_path") or "").strip()
+    raw_path = normalize_kb_relative_path(record.get("raw_path"))
+    source_path = normalize_kb_relative_path(record.get("source_path"))
     page_count = record.get("page_count")
     ingested_at = record.get("ingested_at")
 
@@ -412,21 +446,38 @@ def _delete_ledger_only_source_document_data(kb_dir: Path, selector: str) -> dic
         if summary_removed:
             removed_pages.append(_wiki_relative(summary_removed))
 
-    raw_candidates = []
-    normalized_raw_path = raw_path.replace("\\", "/").lstrip("/")
-    if normalized_raw_path.startswith("raw/"):
-        raw_candidates.append(normalized_raw_path)
+    raw_candidates: list[str] = []
+    if raw_path:
+        raw_candidates.append(raw_path)
     if name:
-        raw_candidates.append(f"raw/{Path(name).name}")
+        raw_candidates.append(formal_raw_relative_path(name))
     for candidate in raw_candidates:
         removed = _remove_kb_relative_path(kb_dir, candidate)
         if removed and removed not in removed_files:
             removed_files.append(removed)
 
+    source_candidates: list[str] = []
+    if source_path:
+        source_candidates.append(source_path)
     if stem:
+        source_candidates.extend(
+            (
+                f"wiki/sources/{stem}.md",
+                f"wiki/sources/{stem}.json",
+            )
+        )
+    for candidate in source_candidates:
+        removed = _remove_kb_relative_path(kb_dir, candidate)
+        if removed and removed not in removed_files:
+            removed_files.append(removed)
+
+    images_dir = source_images_dir_for_source_path(source_path) if source_path else None
+    if images_dir:
+        removed = _remove_kb_relative_path(kb_dir, images_dir)
+        if removed and removed not in removed_files:
+            removed_files.append(removed)
+    elif stem:
         for candidate in (
-            f"wiki/sources/{stem}.md",
-            f"wiki/sources/{stem}.json",
             f"wiki/sources/images/{stem}",
         ):
             removed = _remove_kb_relative_path(kb_dir, candidate)
@@ -445,9 +496,18 @@ def _delete_ledger_only_source_document_data(kb_dir: Path, selector: str) -> dic
             "ingested_date": _ingested_date_from_iso(ingested_at),
             "raw_path": raw_path,
             "raw_exists": bool(raw_path and (kb_dir / raw_path).exists()),
-            "source_path": f"sources/{stem}.md" if stem else None,
+            "source_path": source_path or (f"sources/{stem}.md" if stem else None),
             "source_summary": f"summaries/{stem}.md" if stem else None,
             "summary_exists": False,
+            "review_summary_path": str(record.get("review_summary_path") or "") or None,
+            "review_summary_exists": bool(
+                review_summary_storage_relative_path(record.get("review_summary_path"))
+                and (
+                    kb_dir
+                    / ".openkb"
+                    / review_summary_storage_relative_path(record.get("review_summary_path"))
+                ).exists()
+            ),
             "related_count": 0,
             "related_pages": {
                 "summaries": [],
@@ -556,6 +616,24 @@ def read_wiki_file(kb_dir: Path, relative_path: str) -> dict[str, str]:
         raise FileNotFoundError(relative_path)
     return {
         "path": full_path.relative_to((Path(kb_dir).resolve() / "wiki").resolve()).as_posix(),
+        "content": full_path.read_text(encoding="utf-8"),
+    }
+
+
+def read_review_summary_file(kb_dir: Path, relative_path: str) -> dict[str, str]:
+    """Read a file from `.openkb/review_summaries/` after path validation."""
+    kb_dir = require_kb_dir(kb_dir)
+    raw = str(relative_path or "").strip().replace("\\", "/").lstrip("/")
+    if not raw.startswith("review_summaries/"):
+        raise PathSecurityError("Review summary path must be under .openkb/review_summaries.")
+    root = (kb_dir / ".openkb").resolve()
+    full_path = (root / raw).resolve()
+    if not full_path.is_relative_to(root):
+        raise PathSecurityError("Path escapes .openkb root.")
+    if not full_path.exists() or not full_path.is_file():
+        raise FileNotFoundError(relative_path)
+    return {
+        "path": full_path.relative_to(root).as_posix(),
         "content": full_path.read_text(encoding="utf-8"),
     }
 
@@ -1500,7 +1578,8 @@ def source_path_for_ocr_cache_entry(kb_dir: Path, file_hash: str) -> Path:
     meta = hashes.get(file_hash)
     if not meta:
         raise FileNotFoundError(f"Source document not found for OCR cache entry: {file_hash}")
-    raw_path = kb_dir / "raw" / Path(str(meta.get("name") or "")).name
+    raw_rel = normalize_kb_relative_path(meta.get("raw_path")) or formal_raw_relative_path(str(meta.get("name") or ""))
+    raw_path = kb_dir / raw_rel
     if not raw_path.exists():
         raise FileNotFoundError(f"Raw source file not found: {raw_path}")
     return raw_path

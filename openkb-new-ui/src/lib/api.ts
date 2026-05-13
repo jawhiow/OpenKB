@@ -48,10 +48,26 @@ export interface DocumentReviewState {
   ingest_score: number | null;
   summary_score: number | null;
   promotion_score: number | null;
+  summary_score_source: string;
+  summary_scorecard: SummaryScorecard | null;
   review_notes: string;
   recommended_ingest_mode: string;
   approved_by: string;
   approved_at: string | null;
+}
+
+export interface SummaryScorecardDimension {
+  label: string;
+  score: number | null;
+  max: number | null;
+  reason: string;
+}
+
+export interface SummaryScorecard {
+  method: string;
+  overall_assessment: string;
+  total_score: number | null;
+  dimensions: Record<string, SummaryScorecardDimension>;
 }
 
 export interface DocumentExecutionState {
@@ -78,6 +94,8 @@ export interface DocumentItem {
   source_path: string | null;
   source_summary: string | null;
   summary_exists: boolean;
+  review_summary_path: string | null;
+  review_summary_exists: boolean;
   ingested_at: string | null;
   ingested_date: string | null;
   related_count: number;
@@ -313,6 +331,8 @@ const DEFAULT_REVIEW_STATE: DocumentReviewState = {
   ingest_score: null,
   summary_score: null,
   promotion_score: null,
+  summary_score_source: '',
+  summary_scorecard: null,
   review_notes: '',
   recommended_ingest_mode: '',
   approved_by: '',
@@ -515,6 +535,13 @@ export const applyLintFixes = async (
 
 export const getWikiFile = async (kbDir: string, path: string): Promise<WikiFileResponse> => {
   const response = await apiClient.get('/wiki/file', {
+    params: { kb_dir: kbDir, path },
+  });
+  return response.data;
+};
+
+export const getReviewSummaryFile = async (kbDir: string, path: string): Promise<WikiFileResponse> => {
+  const response = await apiClient.get('/review-summary/file', {
     params: { kb_dir: kbDir, path },
   });
   return response.data;
@@ -916,6 +943,16 @@ function normalizeDocument(raw: Record<string, unknown>): DocumentItem {
   const review = {
     ...DEFAULT_REVIEW_STATE,
     ...(isRecord(raw.review) ? raw.review : {}),
+    summary_score: isRecord(raw.review) && raw.review.summary_score !== undefined && raw.review.summary_score !== null && raw.review.summary_score !== ''
+      ? Number(raw.review.summary_score)
+      : DEFAULT_REVIEW_STATE.summary_score,
+    ingest_score: isRecord(raw.review) && raw.review.ingest_score !== undefined && raw.review.ingest_score !== null && raw.review.ingest_score !== ''
+      ? Number(raw.review.ingest_score)
+      : DEFAULT_REVIEW_STATE.ingest_score,
+    promotion_score: isRecord(raw.review) && raw.review.promotion_score !== undefined && raw.review.promotion_score !== null && raw.review.promotion_score !== ''
+      ? Number(raw.review.promotion_score)
+      : DEFAULT_REVIEW_STATE.promotion_score,
+    summary_scorecard: normalizeSummaryScorecard(isRecord(raw.review) ? raw.review.summary_scorecard : null),
   };
   const execution = {
     ...DEFAULT_EXECUTION_STATE,
@@ -939,6 +976,8 @@ function normalizeDocument(raw: Record<string, unknown>): DocumentItem {
     source_path: nullableString(raw.source_path),
     source_summary: nullableString(raw.source_summary),
     summary_exists: Boolean(raw.summary_exists),
+    review_summary_path: nullableString(raw.review_summary_path),
+    review_summary_exists: Boolean(raw.review_summary_exists),
     ingested_at: nullableString(raw.ingested_at),
     ingested_date: nullableString(raw.ingested_date),
     related_count: Number(raw.related_count ?? 0),
@@ -951,6 +990,31 @@ function normalizeDocument(raw: Record<string, unknown>): DocumentItem {
     workflow_state,
     review,
     execution,
+  };
+}
+
+function normalizeSummaryScorecard(value: unknown): SummaryScorecard | null {
+  if (!isRecord(value)) return null;
+  const rawDimensions = isRecord(value.dimensions) ? value.dimensions : {};
+  const dimensions = Object.fromEntries(
+    Object.entries(rawDimensions).map(([key, dimension]) => {
+      const raw = isRecord(dimension) ? dimension : {};
+      return [
+        key,
+        {
+          label: String(raw.label ?? key),
+          score: raw.score === null || raw.score === undefined || raw.score === '' ? null : Number(raw.score),
+          max: raw.max === null || raw.max === undefined || raw.max === '' ? null : Number(raw.max),
+          reason: String(raw.reason ?? ''),
+        } satisfies SummaryScorecardDimension,
+      ];
+    }),
+  );
+  return {
+    method: String(value.method ?? ''),
+    overall_assessment: String(value.overall_assessment ?? ''),
+    total_score: value.total_score === null || value.total_score === undefined || value.total_score === '' ? null : Number(value.total_score),
+    dimensions,
   };
 }
 

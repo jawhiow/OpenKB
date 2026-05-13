@@ -7,13 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from openkb.agent.compiler import (
-    _LOCAL_LONG_DOC_SUMMARY_USER,
-    _SUMMARY_USER,
     _SYSTEM_TEMPLATE,
     _build_local_long_doc_context,
     _llm_call,
     _parse_json,
-    _write_summary,
 )
 from openkb.config import DEFAULT_CONFIG, load_config
 from openkb.document_ledger import (
@@ -25,7 +22,181 @@ from openkb.document_ledger import (
     upsert_document_ledger_record,
 )
 from openkb.schema import get_agents_md
-from openkb.source_relations import resolve_source_document
+from openkb.source_relations import (
+    normalize_kb_relative_path,
+    resolve_source_artifact_path,
+    resolve_source_document,
+    review_summary_full_path,
+    review_summary_relative_path,
+)
+
+
+_SUMMARY_SCORE_DIMENSIONS: tuple[tuple[str, str, int], ...] = (
+    ("source_coverage", "Source Coverage", 25),
+    ("factual_density", "Factual Density", 20),
+    ("structure_clarity", "Structure & Clarity", 15),
+    ("retrieval_value", "Retrieval Value", 20),
+    ("actionability", "Actionability", 10),
+    ("cross_linking", "Cross-linking", 10),
+)
+
+_SUMMARY_SCORE_DIMENSION_MAX = {name: max_score for name, _label, max_score in _SUMMARY_SCORE_DIMENSIONS}
+
+_SUMMARY_WITH_SCORE_USER = """\
+New document: {doc_name}
+
+Full text:
+{content}
+
+Write a review-stage summary page for this document in Markdown, and score the
+document's summary value for the knowledge base.
+
+Scoring intent:
+- This is NOT an ingest gate score.
+- Judge the document on how valuable, information-rich, well-structured, and
+  reusable it is after summarization for a long-lived KB.
+- Reward concrete facts, durable insights, monitoring indicators, and strong
+  traceability.
+- Penalize vague, repetitive, low-signal, poorly structured, or weakly
+  evidenced content.
+
+For investment research reports, use an investment-research structure when the
+source supports it:
+- Core thesis and conclusion
+- Ratings / top ideas / company table when available
+- Key numbers, assumptions, forecasts, and valuation context
+- Industry chain map and bottlenecks
+- Catalysts and monitoring indicators
+- Risks, bear-case evidence, and disconfirming signals
+- Source evidence with page references when page markers are present
+
+Keep all material claims traceable to the source text. Preserve important
+numbers, dates, companies, and units. Use [[concepts/...]] only for concepts
+that deserve durable cross-document pages.
+
+Return a JSON object with these keys:
+- "brief": A single sentence (under 100 chars) describing the document's main contribution
+- "content": The full summary in Markdown
+- "scorecard": an object with:
+  - "method": short label for the scoring method
+  - "overall_assessment": one short paragraph explaining the score
+  - "total_score": integer 0-100
+  - "dimensions": object with exactly these keys:
+    - "source_coverage": {{"score": 0-25, "reason": ""}}
+    - "factual_density": {{"score": 0-20, "reason": ""}}
+    - "structure_clarity": {{"score": 0-15, "reason": ""}}
+    - "retrieval_value": {{"score": 0-20, "reason": ""}}
+    - "actionability": {{"score": 0-10, "reason": ""}}
+    - "cross_linking": {{"score": 0-10, "reason": ""}}
+
+Scoring rubric:
+- source_coverage: how completely the summary captures the source's major sections and claims
+- factual_density: how many concrete numbers, entities, dates, assumptions, and source-backed facts it preserves
+- structure_clarity: whether the summary is easy to scan and logically organized
+- retrieval_value: whether future querying and recall will benefit from the summary
+- actionability: whether it preserves decisions, indicators, risks, catalysts, or next-step value
+- cross_linking: whether it identifies durable concepts suitable for KB reuse
+
+Return ONLY valid JSON, no fences.
+"""
+
+_LOCAL_LONG_DOC_SUMMARY_WITH_SCORE_USER = """\
+This is a page-indexed local extraction for long document "{doc_name}".
+
+{content}
+
+Based on this page-indexed extraction, write a high-signal review-stage summary
+page and score the document's summary value for the knowledge base.
+
+Scoring intent:
+- This is NOT an ingest gate score.
+- Focus on how useful the resulting summary will be for long-term knowledge
+  retrieval, synthesis, and downstream wiki generation.
+- Reward coverage, factual precision, durable insights, and good structure.
+- Penalize thin, repetitive, generic, or poorly evidenced summaries.
+
+For investment research reports, preserve ratings, company names, forecasts,
+valuation context, key numbers, catalysts, risks, and monitoring indicators.
+Use page references like "p.12" where evidence is available.
+
+Return a JSON object with these keys:
+- "brief": A single sentence (under 100 chars) describing the document's main contribution
+- "content": The full summary in Markdown with durable [[concepts/...]] links
+- "scorecard": an object with:
+  - "method": short label for the scoring method
+  - "overall_assessment": one short paragraph explaining the score
+  - "total_score": integer 0-100
+  - "dimensions": object with exactly these keys:
+    - "source_coverage": {{"score": 0-25, "reason": ""}}
+    - "factual_density": {{"score": 0-20, "reason": ""}}
+    - "structure_clarity": {{"score": 0-15, "reason": ""}}
+    - "retrieval_value": {{"score": 0-20, "reason": ""}}
+    - "actionability": {{"score": 0-10, "reason": ""}}
+    - "cross_linking": {{"score": 0-10, "reason": ""}}
+
+Return ONLY valid JSON, no fences.
+"""
+
+
+def _strip_summary_frontmatter(summary: str) -> str:
+    if summary.startswith("---"):
+        end = summary.find("---", 3)
+        if end != -1:
+            return summary[end + 3:].lstrip("\n")
+    return summary
+
+
+def _review_summary_doc_type(source_path: Path) -> str:
+    return "pageindex" if source_path.suffix.lower() == ".json" else "short"
+
+
+def _review_summary_text(summary: str, *, doc_type: str, full_text_path: str) -> str:
+    frontmatter = "---\n" + "\n".join(
+        [
+            f"doc_type: {doc_type}",
+            f"full_text: {normalize_kb_relative_path(full_text_path)}",
+        ]
+    ) + "\n---\n\n"
+    return frontmatter + _strip_summary_frontmatter(summary)
+
+
+def write_review_summary(
+    kb_dir: Path,
+    stem: str,
+    summary: str,
+    *,
+    doc_type: str,
+    full_text_path: str,
+    ingested_at: object = None,
+) -> str:
+    path = review_summary_full_path(kb_dir, stem, ingested_at)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _review_summary_text(summary, doc_type=doc_type, full_text_path=full_text_path),
+        encoding="utf-8",
+    )
+    return review_summary_relative_path(stem, ingested_at)
+
+
+def read_review_summary(
+    kb_dir: Path,
+    *,
+    stem: str,
+    ingested_at: object = None,
+    review_summary_path: str = "",
+) -> tuple[str, str]:
+    candidates: list[tuple[Path, str]] = []
+    stored_rel = str(review_summary_path or "").strip().replace("\\", "/").lstrip("/")
+    if stored_rel:
+        candidates.append((Path(kb_dir) / ".openkb" / stored_rel, stored_rel))
+    generated_rel = review_summary_relative_path(stem, ingested_at)
+    candidates.append((review_summary_full_path(kb_dir, stem, ingested_at), generated_rel))
+    legacy_rel = f"summaries/{stem}.md"
+    candidates.append((Path(kb_dir) / "wiki" / legacy_rel, legacy_rel))
+    for path, relative in candidates:
+        if path.exists():
+            return path.read_text(encoding="utf-8"), relative
+    raise RuntimeError(f"Review summary is missing for {stem}")
 
 
 def summarize_document_source(
@@ -52,36 +223,49 @@ def summarize_document_source(
             "file_hash": file_hash,
             "name": document["name"],
             "skipped": True,
-            "summary_path": f"summaries/{stem}.md",
+            "summary_path": str(ledger_record.get("review_summary_path") or review_summary_relative_path(stem, document.get("ingested_at"))),
         }
     if workflow_state.get("source_state") not in {"ready", None, ""} and not force:
         raise RuntimeError(f"Source is not ready for summarization: {document['name']}")
 
     update_document_workflow_state(kb_dir, file_hash, {"summary_state": "running"})
     try:
-        source_rel = str(document.get("source_path") or "").strip()
+        source_rel = normalize_kb_relative_path(document.get("source_path"))
         if not source_rel:
             raise RuntimeError(f"No source artifact found for {document['name']}")
-        source_path = kb_dir / "wiki" / source_rel
+        source_path = resolve_source_artifact_path(kb_dir, source_rel)
         if not source_path.exists():
             raise RuntimeError(f"Source artifact is missing: {source_rel}")
         selected_model = model or _default_model(kb_dir)
-        summary = _generate_summary_only(kb_dir, stem, source_path, selected_model)
-        doc_type = _summary_doc_type(source_path)
-        _write_summary(kb_dir / "wiki", stem, summary, doc_type=doc_type)
+        generated = _generate_summary_only(kb_dir, stem, source_path, selected_model)
+        summary = generated["content"]
+        doc_type = _review_summary_doc_type(source_path)
+        summary_rel = write_review_summary(
+            kb_dir,
+            stem,
+            summary,
+            doc_type=doc_type,
+            full_text_path=source_rel,
+            ingested_at=document.get("ingested_at"),
+        )
     except Exception as exc:
         _mark_summary_failed(kb_dir, file_hash, exc)
         raise
 
-    summary_rel = f"summaries/{stem}.md"
     upsert_document_ledger_record(
         kb_dir,
         file_hash,
         {
+            "review_summary_path": summary_rel,
             "workflow_state": {
                 "summary_state": "ready",
                 "review_state": "unreviewed",
                 "promotion_state": "not_selected",
+            },
+            "review": {
+                "summary_score": generated["scorecard"].get("total_score"),
+                "summary_score_source": "auto",
+                "summary_scorecard": generated["scorecard"],
             },
             "execution": {
                 "last_error": "",
@@ -148,6 +332,7 @@ def update_summary_review(
     }
     if summary_score is not None:
         updates["review"]["summary_score"] = summary_score
+        updates["review"]["summary_score_source"] = "manual"
     if approved_by:
         updates["review"]["approved_by"] = approved_by
     if review_state == "approved":
@@ -189,7 +374,7 @@ def update_summary_reviews(
     }
 
 
-def _generate_summary_only(kb_dir: Path, doc_name: str, source_path: Path, model: str) -> str:
+def _generate_summary_only(kb_dir: Path, doc_name: str, source_path: Path, model: str) -> dict[str, Any]:
     wiki_dir = kb_dir / "wiki"
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     language = str(config.get("language") or DEFAULT_CONFIG["language"])
@@ -201,23 +386,36 @@ def _generate_summary_only(kb_dir: Path, doc_name: str, source_path: Path, model
         content = _build_local_long_doc_context(source_path)
         doc_msg = {
             "role": "user",
-            "content": _LOCAL_LONG_DOC_SUMMARY_USER.format(doc_name=doc_name, content=content),
+            "content": _LOCAL_LONG_DOC_SUMMARY_WITH_SCORE_USER.format(doc_name=doc_name, content=content),
         }
+        step_name = "local-long-summary"
     else:
         content = source_path.read_text(encoding="utf-8")
         doc_msg = {
             "role": "user",
-            "content": _SUMMARY_USER.format(doc_name=doc_name, content=content),
+            "content": _SUMMARY_WITH_SCORE_USER.format(doc_name=doc_name, content=content),
         }
+        step_name = "summary-only"
 
-    raw = _llm_call(model, [system_msg, doc_msg], "summary-only")
+    raw = _llm_call(model, [system_msg, doc_msg], step_name)
     try:
         parsed = _parse_json(raw)
         if isinstance(parsed, dict):
-            return str(parsed.get("content") or raw)
+            summary = str(parsed.get("content") or raw)
+            scorecard = _normalize_summary_scorecard(parsed.get("scorecard"), summary)
+            return {
+                "brief": str(parsed.get("brief") or "").strip(),
+                "content": summary,
+                "scorecard": scorecard,
+            }
     except (json.JSONDecodeError, ValueError):
         pass
-    return raw
+    summary = raw
+    return {
+        "brief": "",
+        "content": summary,
+        "scorecard": _fallback_summary_scorecard(summary),
+    }
 
 
 def _selected_summary_hashes(kb_dir: Path, *, file_hashes: list[str] | None) -> list[str]:
@@ -250,10 +448,104 @@ def _mark_summary_failed(kb_dir: Path, file_hash: str, error: Exception) -> None
     )
 
 
-def _summary_doc_type(source_path: Path) -> str:
-    return "pageindex" if source_path.suffix.lower() == ".json" else "short"
+def _normalize_summary_scorecard(raw: Any, summary: str) -> dict[str, Any]:
+    fallback = _fallback_summary_scorecard(summary)
+    if not isinstance(raw, dict):
+        return fallback
+    dimensions_raw = raw.get("dimensions") if isinstance(raw.get("dimensions"), dict) else {}
+    dimensions: dict[str, dict[str, Any]] = {}
+    total = 0
+    for name, label, max_score in _SUMMARY_SCORE_DIMENSIONS:
+        dimension_raw = dimensions_raw.get(name) if isinstance(dimensions_raw.get(name), dict) else {}
+        score = _bounded_int(dimension_raw.get("score"), minimum=0, maximum=max_score)
+        reason = str(dimension_raw.get("reason") or "").strip()
+        dimensions[name] = {
+            "label": label,
+            "score": score,
+            "max": max_score,
+            "reason": reason,
+        }
+        total += score
+
+    stated_total = _bounded_int(raw.get("total_score"), minimum=0, maximum=100)
+    overall = str(raw.get("overall_assessment") or "").strip()
+    method = str(raw.get("method") or "").strip() or "llm_summary_value_v1"
+    if not overall:
+        overall = fallback["overall_assessment"]
+    return {
+        "method": method,
+        "overall_assessment": overall,
+        "total_score": total if stated_total != total else stated_total,
+        "dimensions": dimensions,
+    }
 
 
+def _fallback_summary_scorecard(summary: str) -> dict[str, Any]:
+    text = str(summary or "")
+    line_count = len([line for line in text.splitlines() if line.strip()])
+    bullet_count = text.count("\n- ") + text.count("\n* ")
+    wiki_link_count = text.count("[[")
+    digit_count = sum(char.isdigit() for char in text)
+    heading_count = sum(1 for line in text.splitlines() if line.strip().startswith("#"))
+    sentences = [part.strip() for part in text.replace("\n", " ").split("。")]
+    sentences = [part for part in sentences if part]
+
+    dimensions = {
+        "source_coverage": {
+            "label": "Source Coverage",
+            "score": min(25, 8 + min(line_count, 24) // 2 + min(heading_count, 3) * 2),
+            "max": 25,
+            "reason": "Heuristic estimate based on summary breadth, sectioning, and coverage signals.",
+        },
+        "factual_density": {
+            "label": "Factual Density",
+            "score": min(20, 4 + min(digit_count, 32) // 3),
+            "max": 20,
+            "reason": "Heuristic estimate based on preserved numeric and concrete source-backed detail.",
+        },
+        "structure_clarity": {
+            "label": "Structure & Clarity",
+            "score": min(15, 5 + min(heading_count, 4) * 2 + min(bullet_count, 8) // 2),
+            "max": 15,
+            "reason": "Heuristic estimate based on headings, list structure, and scanability.",
+        },
+        "retrieval_value": {
+            "label": "Retrieval Value",
+            "score": min(20, 6 + min(line_count, 18) // 2 + min(len(sentences), 10) // 2),
+            "max": 20,
+            "reason": "Heuristic estimate of how useful the summary will be for later recall and querying.",
+        },
+        "actionability": {
+            "label": "Actionability",
+            "score": min(10, 2 + min(bullet_count, 10) // 2 + (2 if digit_count >= 6 else 0)),
+            "max": 10,
+            "reason": "Heuristic estimate based on whether the summary likely preserves indicators, risks, or decisions.",
+        },
+        "cross_linking": {
+            "label": "Cross-linking",
+            "score": min(10, 1 + min(wiki_link_count, 9)),
+            "max": 10,
+            "reason": "Heuristic estimate based on reusable concept linking signals in the summary.",
+        },
+    }
+    total = sum(int(item["score"]) for item in dimensions.values())
+    return {
+        "method": "heuristic_summary_value_v1",
+        "overall_assessment": (
+            "Fallback score derived from summary structure, factual detail density, "
+            "and reuse signals because a structured LLM scorecard was unavailable."
+        ),
+        "total_score": total,
+        "dimensions": dimensions,
+    }
+
+
+def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return minimum
+    return max(minimum, min(maximum, numeric))
 def _default_model(kb_dir: Path) -> str:
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     return str(config.get("model") or DEFAULT_CONFIG["model"])

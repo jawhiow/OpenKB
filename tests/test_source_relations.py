@@ -41,6 +41,12 @@ def _make_kb(tmp_path: Path) -> Path:
         "---\ndoc_type: short\nfull_text: sources/paper.md\n---\n\n# Paper",
         encoding="utf-8",
     )
+    review_summary = kb_dir / ".openkb" / "review_summaries" / "2026-05-13" / "paper.md"
+    review_summary.parent.mkdir(parents=True, exist_ok=True)
+    review_summary.write_text(
+        "---\ndoc_type: short\nfull_text: sources/paper.md\n---\n\n# Paper Review",
+        encoding="utf-8",
+    )
     (kb_dir / "wiki" / "summaries" / "other.md").write_text(
         "---\ndoc_type: short\nfull_text: sources/other.md\n---\n\n# Other",
         encoding="utf-8",
@@ -100,6 +106,9 @@ def test_get_source_documents_includes_related_pages_grouped_by_type(tmp_path: P
     assert paper["hash"] == "hash-paper"
     assert paper["stem"] == "paper"
     assert paper["related_count"] == 4
+    assert paper["review_summary_path"].startswith("review_summaries/")
+    assert paper["review_summary_path"].endswith("/paper.md")
+    assert paper["review_summary_exists"] is True
     assert paper["related_pages"]["summaries"] == [
         {"path": "summaries/paper.md", "page": "summaries/paper", "title": "paper", "shared": False}
     ]
@@ -173,6 +182,7 @@ def test_get_source_documents_scans_related_pages_once(tmp_path: Path, monkeypat
 
 def test_delete_source_document_removes_owned_artifacts_and_keeps_shared_pages(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
+    review_summary = kb_dir / ".openkb" / "review_summaries" / "2026-05-13" / "paper.md"
 
     result = delete_source_document(kb_dir, "paper")
 
@@ -184,6 +194,7 @@ def test_delete_source_document_removes_owned_artifacts_and_keeps_shared_pages(t
     ]
     assert result["updated_pages"] == ["concepts/Shared.md"]
     assert "raw/paper.pdf" in result["removed_files"]
+    assert ".openkb/review_summaries/2026-05-13/paper.md" in result["removed_files"]
     assert "wiki/sources/paper.md" in result["removed_files"]
     assert "wiki/sources/images/paper/" in result["removed_files"]
 
@@ -191,6 +202,7 @@ def test_delete_source_document_removes_owned_artifacts_and_keeps_shared_pages(t
     assert not (kb_dir / "wiki" / "sources" / "paper.md").exists()
     assert not (kb_dir / "wiki" / "sources" / "images" / "paper").exists()
     assert not (kb_dir / "wiki" / "summaries" / "paper.md").exists()
+    assert not review_summary.exists()
     assert not (kb_dir / "wiki" / "companies" / "TSMC.md").exists()
     assert not (kb_dir / "wiki" / "concepts" / "HBM.md").exists()
 

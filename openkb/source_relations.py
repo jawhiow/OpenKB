@@ -92,6 +92,9 @@ def _mtime_ingested_at(kb_dir: Path, name: str) -> str | None:
         Path(kb_dir) / "wiki" / "sources" / f"{stem}.json",
         Path(kb_dir) / "raw" / name,
     ]
+    candidates.extend(sorted((Path(kb_dir) / ".openkb" / "sources").glob(f"*/{stem}.md")))
+    candidates.extend(sorted((Path(kb_dir) / ".openkb" / "sources").glob(f"*/{stem}.json")))
+    candidates.extend(sorted((Path(kb_dir) / ".openkb" / "raw").glob(f"*/{Path(name).name}")))
     existing = [path for path in candidates if path.exists()]
     if not existing:
         return None
@@ -114,6 +117,145 @@ def _resolve_ingested_at(kb_dir: Path, meta: dict[str, Any], name: str, ingest_l
 
 def _hashes_path(kb_dir: Path) -> Path:
     return Path(kb_dir) / ".openkb" / "hashes.json"
+
+
+def normalize_kb_relative_path(value: object) -> str:
+    return str(value or "").strip().replace("\\", "/").lstrip("/")
+
+
+def kb_relative_path(kb_dir: Path, path: Path | None) -> str:
+    if path is None:
+        return ""
+    try:
+        return path.relative_to(kb_dir).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def resolve_kb_relative_path(kb_dir: Path, relative_path: object) -> Path | None:
+    normalized = normalize_kb_relative_path(relative_path)
+    if not normalized:
+        return None
+    return Path(kb_dir) / normalized
+
+
+def staged_raw_dir(kb_dir: Path) -> Path:
+    return Path(kb_dir) / ".openkb" / "raw"
+
+
+def staged_raw_date_dir(kb_dir: Path, ingested_at: object = None) -> Path:
+    date_part = _ingested_date(ingested_at) or datetime.now().astimezone(_local_tzinfo()).date().isoformat()
+    return staged_raw_dir(kb_dir) / date_part
+
+
+def staged_raw_relative_path(name: str, ingested_at: object = None) -> str:
+    date_part = _ingested_date(ingested_at) or datetime.now().astimezone(_local_tzinfo()).date().isoformat()
+    return f".openkb/raw/{date_part}/{Path(name).name}"
+
+
+def staged_raw_full_path(kb_dir: Path, name: str, ingested_at: object = None) -> Path:
+    return staged_raw_date_dir(kb_dir, ingested_at) / Path(name).name
+
+
+def staged_sources_dir(kb_dir: Path) -> Path:
+    return Path(kb_dir) / ".openkb" / "sources"
+
+
+def staged_source_date_dir(kb_dir: Path, ingested_at: object = None) -> Path:
+    date_part = _ingested_date(ingested_at) or datetime.now().astimezone(_local_tzinfo()).date().isoformat()
+    return staged_sources_dir(kb_dir) / date_part
+
+
+def staged_source_relative_path(stem: str, suffix: str, ingested_at: object = None) -> str:
+    date_part = _ingested_date(ingested_at) or datetime.now().astimezone(_local_tzinfo()).date().isoformat()
+    normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    return f".openkb/sources/{date_part}/{stem}{normalized_suffix}"
+
+
+def staged_source_full_path(kb_dir: Path, stem: str, suffix: str, ingested_at: object = None) -> Path:
+    normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    return staged_source_date_dir(kb_dir, ingested_at) / f"{stem}{normalized_suffix}"
+
+
+def staged_source_images_relative_dir(stem: str, ingested_at: object = None) -> str:
+    date_part = _ingested_date(ingested_at) or datetime.now().astimezone(_local_tzinfo()).date().isoformat()
+    return f".openkb/sources/images/{date_part}/{stem}"
+
+
+def staged_source_images_full_dir(kb_dir: Path, stem: str, ingested_at: object = None) -> Path:
+    date_part = _ingested_date(ingested_at) or datetime.now().astimezone(_local_tzinfo()).date().isoformat()
+    return Path(kb_dir) / ".openkb" / "sources" / "images" / date_part / stem
+
+
+def formal_raw_relative_path(name: str) -> str:
+    return f"raw/{Path(name).name}"
+
+
+def formal_raw_full_path(kb_dir: Path, name: str) -> Path:
+    return Path(kb_dir) / formal_raw_relative_path(name)
+
+
+def formal_source_relative_path(stem: str, suffix: str) -> str:
+    normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    return f"wiki/sources/{stem}{normalized_suffix}"
+
+
+def formal_source_full_path(kb_dir: Path, stem: str, suffix: str) -> Path:
+    normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    return Path(kb_dir) / "wiki" / "sources" / f"{stem}{normalized_suffix}"
+
+
+def formal_source_images_relative_dir(stem: str) -> str:
+    return f"wiki/sources/images/{stem}"
+
+
+def formal_source_images_full_dir(kb_dir: Path, stem: str) -> Path:
+    return Path(kb_dir) / "wiki" / "sources" / "images" / stem
+
+
+def resolve_source_artifact_path(kb_dir: Path, relative_path: object) -> Path | None:
+    normalized = normalize_kb_relative_path(relative_path)
+    if not normalized:
+        return None
+    candidates = [Path(kb_dir) / normalized]
+    if normalized.startswith("sources/"):
+        candidates.append(Path(kb_dir) / "wiki" / normalized)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def review_summary_storage_relative_path(relative_path: object) -> str:
+    normalized = normalize_kb_relative_path(relative_path)
+    if normalized.startswith(".openkb/"):
+        normalized = normalized[len(".openkb/"):]
+    return normalized
+
+
+def review_summary_storage_full_path(kb_dir: Path, relative_path: object) -> Path | None:
+    normalized = review_summary_storage_relative_path(relative_path)
+    if not normalized:
+        return None
+    return Path(kb_dir) / ".openkb" / normalized
+
+
+def source_images_dir_for_source_path(source_relative_path: object) -> str | None:
+    normalized = normalize_kb_relative_path(source_relative_path)
+    if not normalized:
+        return None
+    source_path = Path(normalized)
+    stem = source_path.stem
+    if normalized.startswith(".openkb/sources/"):
+        parts = source_path.parts
+        if len(parts) >= 4:
+            date_part = parts[2]
+            return f".openkb/sources/images/{date_part}/{stem}"
+    if normalized.startswith("wiki/sources/"):
+        return f"wiki/sources/images/{stem}"
+    if normalized.startswith("sources/"):
+        return f"wiki/sources/images/{stem}"
+    return None
 
 
 def _read_hashes(kb_dir: Path) -> dict[str, dict[str, Any]]:
@@ -142,6 +284,24 @@ def _write_hashes(kb_dir: Path, hashes: dict[str, dict[str, Any]]) -> None:
 def _safe_doc_name(name: object) -> str:
     value = str(name or "unknown").strip() or "unknown"
     return Path(value).name
+
+
+def review_summaries_dir(kb_dir: Path) -> Path:
+    return Path(kb_dir) / ".openkb" / "review_summaries"
+
+
+def review_summary_date_dir(kb_dir: Path, ingested_at: object = None) -> Path:
+    date_part = _ingested_date(ingested_at) or datetime.now().astimezone(_local_tzinfo()).date().isoformat()
+    return review_summaries_dir(kb_dir) / date_part
+
+
+def review_summary_relative_path(stem: str, ingested_at: object = None) -> str:
+    date_part = _ingested_date(ingested_at) or datetime.now().astimezone(_local_tzinfo()).date().isoformat()
+    return f"review_summaries/{date_part}/{stem}.md"
+
+
+def review_summary_full_path(kb_dir: Path, stem: str, ingested_at: object = None) -> Path:
+    return review_summary_date_dir(kb_dir, ingested_at) / f"{stem}.md"
 
 
 def _split_frontmatter(text: str) -> tuple[str, str] | None:
@@ -223,10 +383,54 @@ def _empty_related_pages() -> dict[str, list[dict[str, Any]]]:
 
 def _source_candidates(kb_dir: Path, stem: str) -> list[Path]:
     wiki_dir = kb_dir / "wiki"
+    staged_matches = sorted((Path(kb_dir) / ".openkb" / "sources").glob(f"*/{stem}.md"))
+    staged_matches.extend(sorted((Path(kb_dir) / ".openkb" / "sources").glob(f"*/{stem}.json")))
     return [
         wiki_dir / "sources" / f"{stem}.md",
         wiki_dir / "sources" / f"{stem}.json",
+        *staged_matches,
     ]
+
+
+def _metadata_raw_relative_path(kb_dir: Path, meta: dict[str, Any], name: str, ingested_at: object = None) -> str:
+    stored = normalize_kb_relative_path(meta.get("raw_path"))
+    if stored:
+        return stored
+    legacy = formal_raw_relative_path(name)
+    if (Path(kb_dir) / legacy).exists():
+        return legacy
+    return staged_raw_relative_path(name, ingested_at)
+
+
+def _display_source_relative_path(relative_path: str) -> str:
+    if relative_path.startswith("wiki/"):
+        return relative_path[len("wiki/"):]
+    return relative_path
+
+
+def _metadata_source_relative_path(kb_dir: Path, meta: dict[str, Any], stem: str) -> str | None:
+    stored = normalize_kb_relative_path(meta.get("source_path"))
+    if stored:
+        return _display_source_relative_path(stored)
+    candidate = next((path for path in _source_candidates(kb_dir, stem) if path.exists()), None)
+    if candidate is not None:
+        return _display_source_relative_path(kb_relative_path(kb_dir, candidate))
+    return None
+
+
+def _resolve_source_display_path(
+    kb_dir: Path,
+    meta: dict[str, Any],
+    stem: str,
+    summary_source_texts: dict[str, str | None] | None,
+) -> str | None:
+    if summary_source_texts is not None and stem in summary_source_texts:
+        source_text_path = summary_source_texts.get(stem)
+    else:
+        source_text_path = _source_path_from_summary(kb_dir, stem)
+    if source_text_path:
+        return _display_source_relative_path(normalize_kb_relative_path(source_text_path))
+    return _metadata_source_relative_path(kb_dir, meta, stem)
 
 
 def _source_path_from_summary(kb_dir: Path, stem: str) -> str | None:
@@ -316,6 +520,8 @@ def _build_source_document(
     name = _safe_doc_name(meta.get("name"))
     stem = Path(name).stem
     source_summary = f"summaries/{stem}.md"
+    review_summary_path = review_summary_relative_path(stem, _resolve_ingested_at(kb_dir, meta, name, ingest_log_dates))
+    formal_summary_exists = (wiki_dir / "summaries" / f"{stem}.md").exists()
 
     related_pages = _empty_related_pages()
     if related_pages_index is not None:
@@ -337,19 +543,13 @@ def _build_source_document(
                 if source_summary in sources:
                     related_pages[subdir].append(_page_entry(path, wiki_dir, sources))
 
-    if summary_source_texts is not None and stem in summary_source_texts:
-        source_text_path = summary_source_texts.get(stem)
-    else:
-        summary_path = wiki_dir / "summaries" / f"{stem}.md"
-        if summary_path.exists():
-            source_text_path = _frontmatter_full_text(summary_path.read_text(encoding="utf-8"))
-        else:
-            existing_source = next((path for path in _source_candidates(kb_dir, stem) if path.exists()), None)
-            source_text_path = existing_source.relative_to(wiki_dir).as_posix() if existing_source else None
-
-    related_count = sum(len(items) for items in related_pages.values())
-    raw_path = kb_dir / "raw" / name
     ingested_at = _resolve_ingested_at(kb_dir, meta, name, ingest_log_dates)
+    source_text_path = _resolve_source_display_path(kb_dir, meta, stem, summary_source_texts)
+    raw_rel = _metadata_raw_relative_path(kb_dir, meta, name, ingested_at)
+    raw_path = resolve_kb_relative_path(kb_dir, raw_rel)
+    review_summary_path = review_summary_relative_path(stem, ingested_at)
+    review_summary_exists = (Path(kb_dir) / ".openkb" / review_summary_path).exists()
+    related_count = sum(len(items) for items in related_pages.values())
     return {
         "hash": file_hash,
         "name": name,
@@ -358,11 +558,13 @@ def _build_source_document(
         "pages": meta.get("pages", ""),
         "ingested_at": ingested_at,
         "ingested_date": _ingested_date(ingested_at),
-        "raw_path": f"raw/{name}",
-        "raw_exists": raw_path.exists(),
+        "raw_path": raw_rel,
+        "raw_exists": bool(raw_path and raw_path.exists()),
         "source_path": source_text_path,
         "source_summary": source_summary,
-        "summary_exists": (wiki_dir / "summaries" / f"{stem}.md").exists(),
+        "summary_exists": formal_summary_exists,
+        "review_summary_path": review_summary_path,
+        "review_summary_exists": review_summary_exists,
         "related_count": related_count,
         "related_pages": related_pages,
     }
@@ -452,7 +654,14 @@ def _remove_index_entries(wiki_dir: Path, page_ids: set[str]) -> None:
         index_path.write_text("\n".join(filtered).rstrip() + "\n", encoding="utf-8")
 
 
-def _remove_evidence_for_source(wiki_dir: Path, source_summary: str, removed_pages: set[str], stem: str) -> None:
+def _remove_evidence_for_source(
+    wiki_dir: Path,
+    source_summary: str,
+    removed_pages: set[str],
+    stem: str,
+    *,
+    source_path: str = "",
+) -> None:
     map_path = wiki_dir / "evidence_map.json"
     if not map_path.exists():
         return
@@ -465,6 +674,10 @@ def _remove_evidence_for_source(wiki_dir: Path, source_summary: str, removed_pag
 
     summary_link = source_summary[:-3] if source_summary.endswith(".md") else source_summary
     source_texts = {f"sources/{stem}.md", f"sources/{stem}.json"}
+    normalized_source_path = normalize_kb_relative_path(source_path)
+    if normalized_source_path:
+        source_texts.add(normalized_source_path.removeprefix("wiki/"))
+        source_texts.add(normalized_source_path)
     for page in list(evidence_map):
         if page in removed_pages:
             evidence_map.pop(page, None)
@@ -514,13 +727,23 @@ def delete_source_document(kb_dir: Path, selector: str) -> dict[str, Any]:
     document = resolve_source_document(kb_dir, selector)
     stem = document["stem"]
     source_summary = document["source_summary"]
+    review_summary_path = review_summary_storage_relative_path(document.get("review_summary_path"))
+    source_path = normalize_kb_relative_path(document.get("source_path"))
+    raw_path = normalize_kb_relative_path(document.get("raw_path"))
     removed_pages: list[str] = []
     updated_pages: list[str] = []
+    removed_files: list[str] = []
 
     summary_path = wiki_dir / source_summary
     if summary_path.exists():
         summary_path.unlink()
         removed_pages.append(source_summary)
+
+    if review_summary_path:
+        review_summary_full_path = review_summary_storage_full_path(kb_dir, review_summary_path)
+        removed_review_summary = _remove_path(review_summary_full_path, kb_dir) if review_summary_full_path else None
+        if removed_review_summary:
+            removed_files.append(removed_review_summary)
 
     for subdir in ALL_MANAGED_PAGE_DIRS:
         pages_dir = wiki_dir / subdir
@@ -545,21 +768,35 @@ def delete_source_document(kb_dir: Path, selector: str) -> dict[str, Any]:
             path.write_text(updated, encoding="utf-8")
             updated_pages.append(rel)
 
-    removed_files: list[str] = []
-    raw_removed = _remove_path(kb_dir / "raw" / document["name"], kb_dir)
+    raw_removed = _remove_path(resolve_kb_relative_path(kb_dir, raw_path), kb_dir) if raw_path else None
     if raw_removed:
         removed_files.append(raw_removed)
-    for source_path in _source_candidates(kb_dir, stem):
-        removed = _remove_path(source_path, kb_dir)
-        if removed:
+    source_candidates: list[Path] = []
+    if source_path:
+        source_artifact = resolve_source_artifact_path(kb_dir, source_path)
+        if source_artifact is not None:
+            source_candidates.append(source_artifact)
+    for candidate in _source_candidates(kb_dir, stem):
+        if candidate not in source_candidates:
+            source_candidates.append(candidate)
+    for candidate in source_candidates:
+        removed = _remove_path(candidate, kb_dir)
+        if removed and removed not in removed_files:
             removed_files.append(removed)
-    images_removed = _remove_path(wiki_dir / "sources" / "images" / stem, kb_dir)
+    images_dir = source_images_dir_for_source_path(source_path) if source_path else None
+    images_removed = _remove_path(resolve_kb_relative_path(kb_dir, images_dir), kb_dir) if images_dir else None
     if images_removed:
         removed_files.append(images_removed)
 
     removed_page_ids = {Path(page).with_suffix("").as_posix() for page in removed_pages}
     _remove_index_entries(wiki_dir, removed_page_ids)
-    _remove_evidence_for_source(wiki_dir, source_summary, set(removed_pages), stem)
+    _remove_evidence_for_source(
+        wiki_dir,
+        source_summary,
+        set(removed_pages),
+        stem,
+        source_path=source_path,
+    )
 
     hashes = _read_hashes(kb_dir)
     hashes.pop(document["hash"], None)

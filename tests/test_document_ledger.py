@@ -58,6 +58,8 @@ def test_save_and_load_document_ledger_normalize_records(tmp_path: Path):
         "name": "paper.pdf",
         "stem": "paper",
         "raw_path": "raw/paper.pdf",
+        "source_path": "",
+        "review_summary_path": "",
         "ingested_at": None,
         "source_kind": "",
         "page_count": None,
@@ -74,6 +76,8 @@ def test_save_and_load_document_ledger_normalize_records(tmp_path: Path):
             "ingest_score": None,
             "summary_score": 88,
             "promotion_score": None,
+            "summary_score_source": "",
+            "summary_scorecard": None,
             "review_notes": "",
             "recommended_ingest_mode": "",
             "approved_by": "",
@@ -112,6 +116,8 @@ def test_upsert_and_get_document_ledger_record_merge_defaults_and_updates(tmp_pa
     assert created["workflow_state"]["source_state"] == "ready"
     assert created["workflow_state"]["summary_state"] == "queued"
     assert created["review"]["recommended_ingest_mode"] == "summary_only"
+    assert created["review"]["summary_score_source"] == ""
+    assert created["review"]["summary_scorecard"] is None
 
     found = get_document_ledger_record(kb_dir, "hash-a")
     assert found == created

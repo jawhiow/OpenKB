@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,7 @@ from openkb.agent.compiler import (
     _SUMMARY_USER,
     _SYSTEM_TEMPLATE,
     _compile_concepts,
+    _write_summary,
     get_compile_max_concurrency,
 )
 from openkb.config import DEFAULT_CONFIG, load_config
@@ -22,7 +25,20 @@ from openkb.document_ledger import (
     upsert_document_ledger_record,
 )
 from openkb.schema import get_agents_md
-from openkb.source_relations import resolve_source_document
+from openkb.source_relations import (
+    formal_raw_full_path,
+    formal_raw_relative_path,
+    formal_source_full_path,
+    formal_source_images_full_dir,
+    formal_source_relative_path,
+    normalize_kb_relative_path,
+    resolve_kb_relative_path,
+    resolve_source_artifact_path,
+    resolve_source_document,
+    source_images_dir_for_source_path,
+)
+from openkb.state import HashRegistry
+from openkb.workflows.summary_pipeline import read_review_summary
 
 
 def promote_summary_document(
@@ -51,16 +67,12 @@ def promote_summary_document(
     if workflow_state.get("promotion_state") == "promoted" and not force:
         return {"file_hash": file_hash, "name": document["name"], "skipped": True}
 
-    summary_path = kb_dir / "wiki" / "summaries" / f"{stem}.md"
-    if not summary_path.exists():
-        raise RuntimeError(f"Summary page is missing: summaries/{stem}.md")
-
     update_document_workflow_state(kb_dir, file_hash, {"promotion_state": "running"})
     try:
         _run_promotion_compile(
             kb_dir,
             document,
-            summary_path,
+            ledger_record=ledger_record,
             model=model,
             max_concurrency=max_concurrency,
         )
@@ -116,8 +128,8 @@ def promote_summary_documents(
 def _run_promotion_compile(
     kb_dir: Path,
     document: dict[str, Any],
-    summary_path: Path,
     *,
+    ledger_record: dict[str, Any] | None,
     model: str | None,
     max_concurrency: int | None,
 ) -> None:
@@ -127,7 +139,25 @@ def _run_promotion_compile(
     wiki_dir = kb_dir / "wiki"
     stem = str(document["stem"])
     source_content = _source_context(kb_dir, document)
-    summary = summary_path.read_text(encoding="utf-8")
+    summary_text, _summary_rel = read_review_summary(
+        kb_dir,
+        stem=stem,
+        ingested_at=document.get("ingested_at"),
+        review_summary_path=str((ledger_record or {}).get("review_summary_path") or ""),
+    )
+    promotion_artifacts = _promote_source_artifacts(kb_dir, document, ledger_record=ledger_record)
+    doc_type = _doc_type_for_document(document)
+    summary_body = summary_text
+    if summary_body.startswith("---"):
+        end = summary_body.find("---", 3)
+        if end != -1:
+            summary_body = summary_body[end + 3:].lstrip("\n")
+    _write_summary(wiki_dir, stem, summary_body, doc_type=doc_type)
+    _rewrite_formal_summary_full_text(
+        wiki_dir / "summaries" / f"{stem}.md",
+        promotion_artifacts["formal_source_rel"],
+    )
+    summary = (wiki_dir / "summaries" / f"{stem}.md").read_text(encoding="utf-8")
     system_msg = {
         "role": "system",
         "content": _SYSTEM_TEMPLATE.format(schema_md=get_agents_md(wiki_dir), language=language),
@@ -147,18 +177,165 @@ def _run_promotion_compile(
             stem,
             get_compile_max_concurrency(max_concurrency),
             doc_brief="",
-            doc_type=_doc_type_for_document(document),
+            doc_type=doc_type,
         )
+    )
+    _update_promoted_document_metadata(
+        kb_dir,
+        document,
+        ledger_record=ledger_record,
+        raw_rel=promotion_artifacts["formal_raw_rel"],
+        source_rel=promotion_artifacts["formal_source_rel"],
     )
 
 
 def _source_context(kb_dir: Path, document: dict[str, Any]) -> str:
-    source_rel = str(document.get("source_path") or "").strip()
+    source_rel = normalize_kb_relative_path(document.get("source_path"))
     if source_rel:
-        source_path = kb_dir / "wiki" / source_rel
+        source_path = resolve_source_artifact_path(kb_dir, source_rel)
         if source_path.exists():
+            if source_path.suffix.lower() == ".json":
+                try:
+                    pages = json.loads(source_path.read_text(encoding="utf-8") or "[]")
+                except json.JSONDecodeError:
+                    return ""
+                if isinstance(pages, list):
+                    chunks = [
+                        str(item.get("content") or "").strip()
+                        for item in pages
+                        if isinstance(item, dict) and str(item.get("content") or "").strip()
+                    ]
+                    return "\n\n".join(chunks)
+                return ""
             return source_path.read_text(encoding="utf-8")
     return ""
+
+
+def _promote_source_artifacts(
+    kb_dir: Path,
+    document: dict[str, Any],
+    *,
+    ledger_record: dict[str, Any] | None,
+) -> dict[str, str]:
+    stem = str(document["stem"])
+    name = str(document["name"])
+    source_rel = normalize_kb_relative_path(document.get("source_path"))
+    raw_rel = normalize_kb_relative_path(
+        (ledger_record or {}).get("raw_path") or document.get("raw_path")
+    )
+    if not source_rel:
+        raise RuntimeError(f"No source artifact found for {name}")
+
+    source_path = resolve_source_artifact_path(kb_dir, source_rel)
+    suffix = Path(source_rel).suffix or ".md"
+    if source_path is None or not source_path.exists():
+        if source_rel.startswith(("sources/", "wiki/sources/")):
+            return {
+                "formal_raw_rel": raw_rel or formal_raw_relative_path(name),
+                "formal_source_rel": formal_source_relative_path(stem, suffix),
+            }
+        raise RuntimeError(f"Source artifact is missing: {source_rel}")
+
+    formal_source_path = formal_source_full_path(kb_dir, stem, suffix)
+    formal_source_path.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.resolve() != formal_source_path.resolve():
+        if formal_source_path.exists():
+            formal_source_path.unlink()
+        source_path.replace(formal_source_path)
+    if formal_source_path.suffix.lower() == ".md":
+        _rewrite_formal_source_image_refs(formal_source_path, stem)
+
+    images_rel = source_images_dir_for_source_path(source_rel)
+    if images_rel:
+        images_path = resolve_kb_relative_path(kb_dir, images_rel)
+        if images_path is not None and images_path.exists():
+            formal_images_path = formal_source_images_full_dir(kb_dir, stem)
+            if formal_images_path.exists():
+                shutil.rmtree(formal_images_path)
+            formal_images_path.parent.mkdir(parents=True, exist_ok=True)
+            if images_path.resolve() != formal_images_path.resolve():
+                images_path.replace(formal_images_path)
+
+    formal_raw_rel = raw_rel or formal_raw_relative_path(name)
+    if raw_rel:
+        raw_path = resolve_kb_relative_path(kb_dir, raw_rel)
+        if raw_path is not None and raw_path.exists():
+            formal_raw_path = formal_raw_full_path(kb_dir, name)
+            formal_raw_path.parent.mkdir(parents=True, exist_ok=True)
+            if raw_path.resolve() != formal_raw_path.resolve():
+                if formal_raw_path.exists():
+                    formal_raw_path.unlink()
+                raw_path.replace(formal_raw_path)
+            formal_raw_rel = formal_raw_relative_path(name)
+
+    return {
+        "formal_raw_rel": formal_raw_rel,
+        "formal_source_rel": formal_source_relative_path(stem, suffix),
+    }
+
+
+def _rewrite_formal_summary_full_text(summary_path: Path, full_text: str) -> None:
+    text = summary_path.read_text(encoding="utf-8")
+    normalized = normalize_kb_relative_path(full_text).removeprefix("wiki/")
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            frontmatter = text[: end + len("\n---")]
+            body = text[end + len("\n---"):].lstrip("\r\n")
+            lines = []
+            replaced = False
+            for line in frontmatter.splitlines():
+                if line.startswith("full_text:"):
+                    lines.append(f"full_text: {normalized}")
+                    replaced = True
+                else:
+                    lines.append(line)
+            if not replaced:
+                lines.insert(2, f"full_text: {normalized}")
+            summary_path.write_text("\n".join(lines) + "\n\n" + body, encoding="utf-8")
+
+
+def _rewrite_formal_source_image_refs(source_path: Path, stem: str) -> None:
+    text = source_path.read_text(encoding="utf-8")
+    updated = text
+    staged_prefix = ".openkb/sources/images/"
+    if staged_prefix in updated:
+        import re
+
+        pattern = re.compile(
+            rf"\.openkb/sources/images/\d{{4}}-\d{{2}}-\d{{2}}/{re.escape(stem)}/"
+        )
+        updated = pattern.sub(f"sources/images/{stem}/", updated)
+    if updated != text:
+        source_path.write_text(updated, encoding="utf-8")
+
+
+def _update_promoted_document_metadata(
+    kb_dir: Path,
+    document: dict[str, Any],
+    *,
+    ledger_record: dict[str, Any] | None,
+    raw_rel: str,
+    source_rel: str,
+) -> None:
+    file_hash = str(document["hash"])
+    hashes = HashRegistry(kb_dir / ".openkb" / "hashes.json")
+    meta = hashes.get(file_hash) or {}
+    updated_meta = dict(meta)
+    updated_meta["raw_path"] = normalize_kb_relative_path(raw_rel)
+    updated_meta["source_path"] = normalize_kb_relative_path(source_rel)
+    hashes.add(file_hash, updated_meta)
+
+    upsert_document_ledger_record(
+        kb_dir,
+        file_hash,
+        {
+            "raw_path": normalize_kb_relative_path(raw_rel),
+            "source_path": normalize_kb_relative_path(source_rel),
+            "workflow_state": {"promotion_state": "promoted"},
+            "execution": {"last_error": "", "updated_at": _now_iso()},
+        },
+    )
 
 
 def _selected_promotion_hashes(kb_dir: Path, *, file_hashes: list[str] | None) -> list[str]:
