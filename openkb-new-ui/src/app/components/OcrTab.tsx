@@ -17,6 +17,10 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { TableSkeleton } from '@/components/ui/skeleton';
+import { Pagination } from '@/components/ui/pagination';
+import { ActiveFilters, type FilterChip } from '@/components/ui/active-filters';
+import { DataFreshness } from '@/components/ui/data-freshness';
 
 interface OcrCacheEntry {
   file_hash: string;
@@ -63,8 +67,18 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [filterKey, setFilterKey] = useState<string>('');
 
-  const { data, error, isFetching, isLoading, refetch } = useQuery({
+  // Reset page when filters change.
+  const currentFilterKey = `${kbDir ?? ''}|${searchQuery}|${statusFilter}`;
+  if (currentFilterKey !== filterKey) {
+    setFilterKey(currentFilterKey);
+    setPage(1);
+  }
+
+  const { data, error, isFetching, isLoading, dataUpdatedAt, refetch } = useQuery({
     queryKey: ['ocrCache', kbDir],
     queryFn: () => getOcrCache(kbDir ?? ''),
     enabled: !!kbDir,
@@ -87,6 +101,31 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
         .some((value) => value.toLowerCase().includes(query));
     });
   }, [entries, searchQuery, statusFilter]);
+
+  const pagedEntries = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredEntries.slice(start, start + pageSize);
+  }, [filteredEntries, page, pageSize]);
+
+  const activeFilters: FilterChip[] = [];
+  if (searchQuery.trim()) {
+    activeFilters.push({
+      key: 'search',
+      label: `Search: "${searchQuery.trim()}"`,
+      onRemove: () => setSearchQuery(''),
+    });
+  }
+  if (statusFilter !== 'all') {
+    activeFilters.push({
+      key: 'status',
+      label: `Status: ${formatStatus(statusFilter)}`,
+      onRemove: () => setStatusFilter('all'),
+    });
+  }
+  const clearAllFilters = () => {
+    setSearchQuery('');
+    setStatusFilter('all');
+  };
 
   const counts = useMemo(
     () => ({
@@ -183,10 +222,17 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
               <span>{counts.withPages} with pages</span>
               <span>{counts.withPageIndexInput} with PageIndex input</span>
               <span>{counts.invalidated} invalidated</span>
+              <DataFreshness updatedAt={dataUpdatedAt} isFetching={isFetching} />
             </div>
           </div>
         </div>
       </CardHeader>
+
+      {activeFilters.length > 0 ? (
+        <div className="border-b bg-background/60 px-6 py-2">
+          <ActiveFilters filters={activeFilters} onClearAll={clearAllFilters} />
+        </div>
+      ) : null}
 
       {actionMessage ? (
         <div className="border-b bg-[rgba(27,52,42,0.04)] px-6 py-3 text-sm text-muted-foreground">
@@ -203,9 +249,8 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
 
       <CardContent className="min-h-0 flex-1 overflow-hidden p-0">
         {isLoading ? (
-          <div className="flex h-full items-center justify-center text-muted-foreground">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Loading OCR cache...
+          <div className="h-full overflow-auto p-6">
+            <TableSkeleton rows={6} columns={6} />
           </div>
         ) : filteredEntries.length === 0 ? (
           <div className="flex h-full items-center justify-center p-6">
@@ -228,7 +273,7 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredEntries.map((entry) => (
+                {pagedEntries.map((entry) => (
                   <TableRow key={entry.file_hash}>
                     <TableCell className="min-w-[260px]">
                       <div className="max-w-[360px]">
@@ -306,6 +351,17 @@ export function OcrTab({ kbDir }: { kbDir: string | null }) {
                 ))}
               </TableBody>
             </Table>
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={filteredEntries.length}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+              label="entries"
+            />
           </div>
         )}
       </CardContent>

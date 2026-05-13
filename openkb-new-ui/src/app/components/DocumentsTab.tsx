@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
   CheckCircle2,
+  ExternalLink,
   Eye,
   FileUp,
   FolderPlus,
@@ -14,6 +15,14 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
+import { toast } from '@/components/ui/toaster';
+import { confirm as confirmDialog } from '@/components/ui/confirm-dialog';
+import { TableSkeleton } from '@/components/ui/skeleton';
+import { BatchBar } from '@/components/ui/batch-bar';
+import { Pagination } from '@/components/ui/pagination';
+import { ActiveFilters, type FilterChip } from '@/components/ui/active-filters';
+import { DataFreshness } from '@/components/ui/data-freshness';
+import { ArrowDown, ArrowUp, ChevronsUpDown } from 'lucide-react';
 import {
   deleteDocument,
   DocumentItem,
@@ -21,6 +30,7 @@ import {
   getDocuments,
   importDocuments,
   promoteDocuments,
+  RelatedPageEntry,
   reviewSummaries,
   summarizeDocuments,
   uploadDocuments,
@@ -42,6 +52,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 type StageView = 'inventory' | 'review' | 'promotion';
 
 type SelectionState = Record<string, boolean>;
+
+type SortKey = 'name' | 'type' | 'source_state' | 'summary_state' | 'review_state' | 'promotion_state';
+type SortDir = 'asc' | 'desc';
+
+const SORT_ACCESSORS: Record<SortKey, (d: DocumentItem) => string> = {
+  name: (d) => d.name.toLowerCase(),
+  type: (d) => d.type.toLowerCase(),
+  source_state: (d) => d.workflow_state.source_state,
+  summary_state: (d) => d.workflow_state.summary_state,
+  review_state: (d) => d.workflow_state.review_state,
+  promotion_state: (d) => d.workflow_state.promotion_state,
+};
 
 const INVENTORY_FILTERS: Array<{ label: string; value: string }> = [
   { label: 'All inventory', value: '' },
@@ -69,9 +91,11 @@ const PROMOTION_STATE_FILTERS: Array<{ label: string; value: string }> = [
 export function DocumentsTab({
   kbDir,
   onJobStarted,
+  onNavigateToWiki,
 }: {
   kbDir: string;
   onJobStarted: (jobId: string) => void;
+  onNavigateToWiki?: (path: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [stageView, setStageView] = useState<StageView>('inventory');
@@ -86,6 +110,89 @@ export function DocumentsTab({
   const [reviewNotes, setReviewNotes] = useState('');
   const [summaryScore, setSummaryScore] = useState('');
   const [detailDocument, setDetailDocument] = useState<DocumentItem | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [stageKey, setStageKey] = useState<string>(`${stageView}|`);
+
+  // Reset page when stage/filters change (derived-state pattern, avoids set-state-in-effect).
+  const currentStageKey = `${stageView}|${searchQuery}|${inventorySourceState}|${reviewStateFilter}|${promotionReviewFilter}|${promotionStateFilter}`;
+  if (currentStageKey !== stageKey) {
+    setStageKey(currentStageKey);
+    setPage(1);
+  }
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((dir) => (dir === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+    setPage(1);
+  };
+
+  // Active filter chips per stage. Each chip's onRemove resets that filter to its default.
+  const activeFilters: FilterChip[] = (() => {
+    const chips: FilterChip[] = [];
+    if (searchQuery.trim()) {
+      chips.push({
+        key: 'search',
+        label: `Search: "${searchQuery.trim()}"`,
+        onRemove: () => setSearchQuery(''),
+      });
+    }
+    if (stageView === 'inventory' && inventorySourceState) {
+      const label = INVENTORY_FILTERS.find((f) => f.value === inventorySourceState)?.label
+        ?? inventorySourceState;
+      chips.push({
+        key: 'inv-state',
+        label: `Source: ${label}`,
+        onRemove: () => setInventorySourceState(''),
+      });
+    }
+    if (stageView === 'review' && reviewStateFilter !== 'unreviewed,held,scored') {
+      const label = REVIEW_FILTERS.find((f) => f.value === reviewStateFilter)?.label
+        ?? reviewStateFilter;
+      chips.push({
+        key: 'rev-state',
+        label: `Review: ${label}`,
+        onRemove: () => setReviewStateFilter('unreviewed,held,scored'),
+      });
+    }
+    if (stageView === 'promotion') {
+      if (promotionReviewFilter !== 'approved') {
+        const label = PROMOTION_REVIEW_FILTERS.find((f) => f.value === promotionReviewFilter)?.label
+          ?? promotionReviewFilter;
+        chips.push({
+          key: 'prom-rev',
+          label: `Review: ${label}`,
+          onRemove: () => setPromotionReviewFilter('approved'),
+        });
+      }
+      if (promotionStateFilter !== 'not_selected,failed') {
+        const label = PROMOTION_STATE_FILTERS.find((f) => f.value === promotionStateFilter)?.label
+          ?? promotionStateFilter;
+        chips.push({
+          key: 'prom-state',
+          label: `Promotion: ${label}`,
+          onRemove: () => setPromotionStateFilter('not_selected,failed'),
+        });
+      }
+    }
+    return chips;
+  })();
+
+  const clearAllFilters = () => {
+    setSearchQuery('');
+    if (stageView === 'inventory') setInventorySourceState('');
+    if (stageView === 'review') setReviewStateFilter('unreviewed,held,scored');
+    if (stageView === 'promotion') {
+      setPromotionReviewFilter('approved');
+      setPromotionStateFilter('not_selected,failed');
+    }
+  };
 
   const queryParams = useMemo<DocumentQueryParams>(() => {
     if (stageView === 'inventory') {
@@ -108,13 +215,32 @@ export function DocumentsTab({
     };
   }, [inventorySourceState, promotionReviewFilter, promotionStateFilter, reviewStateFilter, searchQuery, stageView]);
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useQuery({
     queryKey: ['documents', kbDir, stageView, queryParams],
     queryFn: () => getDocuments(kbDir, queryParams),
     enabled: !!kbDir,
   });
 
   const documents = useMemo(() => data?.documents ?? [], [data?.documents]);
+
+  const sortedDocuments = useMemo(() => {
+    if (!sortKey) return documents;
+    const accessor = SORT_ACCESSORS[sortKey];
+    const direction = sortDir === 'asc' ? 1 : -1;
+    return [...documents].sort((a, b) => {
+      const av = accessor(a);
+      const bv = accessor(b);
+      if (av < bv) return -direction;
+      if (av > bv) return direction;
+      return 0;
+    });
+  }, [documents, sortKey, sortDir]);
+
+  const displayDocuments = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return sortedDocuments.slice(start, start + pageSize);
+  }, [sortedDocuments, page, pageSize]);
+
   const visibleHashes = useMemo(() => new Set(documents.map((document) => document.hash)), [documents]);
   const visibleSelection = useMemo(
     () =>
@@ -143,21 +269,27 @@ export function DocumentsTab({
     onSuccess: (data) => {
       setLocalPath('');
       handleJobStart(data?.job?.id);
+      toast.success('Import job started');
     },
+    onError: (error) => toast.error('Import failed', errorMessage(error)),
   });
 
   const uploadMutation = useMutation({
     mutationFn: (files: File[]) => uploadDocuments(kbDir, files, { import_only: true }),
     onSuccess: (data) => {
       handleJobStart(data?.job?.id);
+      toast.success('Upload job started');
     },
+    onError: (error) => toast.error('Upload failed', errorMessage(error)),
   });
 
   const summarizeMutation = useMutation({
     mutationFn: (fileHashes: string[]) => summarizeDocuments(kbDir, fileHashes),
     onSuccess: (data) => {
       handleJobStart(data?.job?.id);
+      toast.success('Summarize job started');
     },
+    onError: (error) => toast.error('Summarize failed', errorMessage(error)),
   });
 
   const approveMutation = useMutation({
@@ -177,7 +309,9 @@ export function DocumentsTab({
       setSummaryScore('');
       setSelection({});
       handleJobStart(data?.job?.id);
+      toast.success('Documents approved');
     },
+    onError: (error) => toast.error('Approve failed', errorMessage(error)),
   });
 
   const holdMutation = useMutation({
@@ -195,7 +329,9 @@ export function DocumentsTab({
     onSuccess: (data) => {
       setSelection({});
       handleJobStart(data?.job?.id);
+      toast.success('Documents held');
     },
+    onError: (error) => toast.error('Hold failed', errorMessage(error)),
   });
 
   const rejectMutation = useMutation({
@@ -213,7 +349,9 @@ export function DocumentsTab({
     onSuccess: (data) => {
       setSelection({});
       handleJobStart(data?.job?.id);
+      toast.success('Documents rejected');
     },
+    onError: (error) => toast.error('Reject failed', errorMessage(error)),
   });
 
   const promoteMutation = useMutation({
@@ -221,14 +359,18 @@ export function DocumentsTab({
     onSuccess: (data) => {
       setSelection({});
       handleJobStart(data?.job?.id);
+      toast.success('Promotion job started');
     },
+    onError: (error) => toast.error('Promote failed', errorMessage(error)),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (selector: string) => deleteDocument(kbDir, selector),
     onSuccess: (data) => {
       handleJobStart(data?.job?.id);
+      toast.success('Document removed');
     },
+    onError: (error) => toast.error('Delete failed', errorMessage(error)),
   });
 
   const busy =
@@ -263,7 +405,7 @@ export function DocumentsTab({
   };
 
   return (
-    <Card className="h-full flex flex-col rounded-none border-t-0 border-b-0 border-x-0 sm:border-x sm:rounded-lg overflow-hidden min-h-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(249,247,242,0.95))]">
+    <Card className="relative h-full flex flex-col rounded-none border-t-0 border-b-0 border-x-0 sm:border-x sm:rounded-lg overflow-hidden min-h-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(249,247,242,0.95))]">
       <CardHeader className="border-b bg-[linear-gradient(135deg,rgba(27,52,42,0.06),rgba(186,151,91,0.12))]">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
@@ -310,6 +452,11 @@ export function DocumentsTab({
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
               <span>{documents.length} visible</span>
               <span>{selectedHashes.length} selected</span>
+              <DataFreshness
+                updatedAt={dataUpdatedAt}
+                isFetching={isFetching}
+                onRefresh={() => void refetch()}
+              />
             </div>
           </div>
         </div>
@@ -327,6 +474,11 @@ export function DocumentsTab({
               <TabsTrigger value="review">Summary Review</TabsTrigger>
               <TabsTrigger value="promotion">Promotion</TabsTrigger>
             </TabsList>
+            {activeFilters.length > 0 ? (
+              <div className="pb-3 pt-3">
+                <ActiveFilters filters={activeFilters} onClearAll={clearAllFilters} />
+              </div>
+            ) : null}
           </div>
 
           <TabsContent value="inventory" className="m-0 flex min-h-0 flex-1 flex-col">
@@ -349,11 +501,16 @@ export function DocumentsTab({
               }
             />
             <DocumentStageTable
-              documents={documents}
+              documents={displayDocuments}
               isLoading={isLoading}
               selection={visibleSelection}
               onToggleSelection={toggleSelection}
               onToggleAll={toggleAll}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              hasActiveFilters={activeFilters.length > 0}
+              onClearFilters={clearAllFilters}
               onDelete={(selector) => deleteMutation.mutate(selector)}
               onSummarize={(hash) => summarizeMutation.mutate([hash])}
               onApprove={(hash) =>
@@ -362,6 +519,17 @@ export function DocumentsTab({
               onPromote={(hash) => promoteMutation.mutate([hash])}
               onViewDetail={setDetailDocument}
               showDelete
+            />
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={sortedDocuments.length}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+              label="documents"
             />
           </TabsContent>
 
@@ -419,15 +587,31 @@ export function DocumentsTab({
               }
             />
             <DocumentStageTable
-              documents={documents}
+              documents={displayDocuments}
               isLoading={isLoading}
               selection={visibleSelection}
               onToggleSelection={toggleSelection}
               onToggleAll={toggleAll}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              hasActiveFilters={activeFilters.length > 0}
+              onClearFilters={clearAllFilters}
               onApprove={(hash) => approveMutation.mutate([hash])}
               onHold={(hash) => holdMutation.mutate([hash])}
               onReject={(hash) => rejectMutation.mutate([hash])}
               onViewDetail={setDetailDocument}
+            />
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={sortedDocuments.length}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+              label="documents"
             />
           </TabsContent>
 
@@ -475,13 +659,29 @@ export function DocumentsTab({
               </div>
             </div>
             <DocumentStageTable
-              documents={documents}
+              documents={displayDocuments}
               isLoading={isLoading}
               selection={visibleSelection}
               onToggleSelection={toggleSelection}
               onToggleAll={toggleAll}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              hasActiveFilters={activeFilters.length > 0}
+              onClearFilters={clearAllFilters}
               onPromote={(hash) => promoteMutation.mutate([hash])}
               onViewDetail={setDetailDocument}
+            />
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={sortedDocuments.length}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+              label="documents"
             />
           </TabsContent>
         </Tabs>
@@ -493,7 +693,66 @@ export function DocumentsTab({
         </div>
       ) : null}
 
-      <DocumentDetailDialog document={detailDocument} onOpenChange={(open) => !open && setDetailDocument(null)} />
+      <BatchBar count={selectedHashes.length} onClear={() => setSelection({})} itemLabel="documents selected">
+        {stageView === 'inventory' && (
+          <Button
+            size="sm"
+            onClick={() => summarizeMutation.mutate(selectedHashes)}
+            disabled={summarizeMutation.isPending}
+          >
+            {summarizeMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+            Summarize
+          </Button>
+        )}
+        {stageView === 'review' && (
+          <>
+            <Button
+              size="sm"
+              onClick={() => approveMutation.mutate(selectedHashes)}
+              disabled={approveMutation.isPending}
+              className="bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+              Approve
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => holdMutation.mutate(selectedHashes)}
+              disabled={holdMutation.isPending}
+            >
+              Hold
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => rejectMutation.mutate(selectedHashes)}
+              disabled={rejectMutation.isPending}
+            >
+              Reject
+            </Button>
+          </>
+        )}
+        {stageView === 'promotion' && (
+          <Button
+            size="sm"
+            onClick={() => promoteMutation.mutate(selectedHashes)}
+            disabled={promoteMutation.isPending}
+          >
+            {promoteMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />}
+            Promote
+          </Button>
+        )}
+      </BatchBar>
+
+      <DocumentDetailDialog
+        document={detailDocument}
+        onOpenChange={(open) => !open && setDetailDocument(null)}
+        onNavigateToWiki={(path) => {
+          setDetailDocument(null);
+          onNavigateToWiki?.(path);
+        }}
+      />
     </Card>
   );
 }
@@ -552,6 +811,11 @@ function DocumentStageTable({
   selection,
   onToggleSelection,
   onToggleAll,
+  sortKey,
+  sortDir,
+  onSort,
+  hasActiveFilters = false,
+  onClearFilters,
   onDelete,
   onSummarize,
   onApprove,
@@ -566,6 +830,11 @@ function DocumentStageTable({
   selection: SelectionState;
   onToggleSelection: (hash: string) => void;
   onToggleAll: () => void;
+  sortKey?: SortKey | null;
+  sortDir?: SortDir;
+  onSort?: (key: SortKey) => void;
+  hasActiveFilters?: boolean;
+  onClearFilters?: () => void;
   onDelete?: (selector: string) => void;
   onSummarize?: (hash: string) => void;
   onApprove?: (hash: string) => void;
@@ -580,16 +849,25 @@ function DocumentStageTable({
   return (
     <div className="flex-1 overflow-auto px-6 py-4">
       {isLoading ? (
-        <div className="flex justify-center py-12">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <div className="overflow-hidden rounded-2xl border bg-white/85 p-4 shadow-sm dark:bg-card/40">
+          <TableSkeleton rows={6} columns={6} />
         </div>
       ) : documents.length === 0 ? (
-        <div className="flex h-full flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-[rgba(255,255,255,0.65)] px-6 py-12 text-center">
-          <AlertCircle className="mb-3 h-8 w-8 text-muted-foreground" />
-          <p className="font-medium">No matching documents</p>
-          <p className="mt-1 max-w-md text-sm text-muted-foreground">
-            Adjust the current filters or import more files into inventory before continuing.
-          </p>
+        <div className="flex h-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-[rgba(255,255,255,0.65)] px-6 py-12 text-center dark:bg-card/40">
+          <AlertCircle className="h-8 w-8 text-muted-foreground" />
+          <div>
+            <p className="font-medium">No matching documents</p>
+            <p className="mt-1 max-w-md text-sm text-muted-foreground">
+              {hasActiveFilters
+                ? 'Try clearing the active filters or widening the search.'
+                : 'Import files into inventory using the controls above to get started.'}
+            </p>
+          </div>
+          {hasActiveFilters && onClearFilters ? (
+            <Button type="button" size="sm" variant="outline" onClick={onClearFilters}>
+              Clear filters
+            </Button>
+          ) : null}
         </div>
       ) : (
         <div className="overflow-hidden rounded-2xl border bg-white/85 shadow-sm">
@@ -597,12 +875,20 @@ function DocumentStageTable({
             <TableHeader>
               <TableRow className="bg-[rgba(27,52,42,0.04)]">
                 <TableHead className="w-10">
-                  <input type="checkbox" checked={allSelected} onChange={onToggleAll} />
+                  <input type="checkbox" checked={allSelected} onChange={onToggleAll} aria-label="Select all visible rows" />
                 </TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Workflow</TableHead>
-                <TableHead>Review</TableHead>
+                <TableHead>
+                  <SortableHeader label="Name" sortKey="name" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
+                </TableHead>
+                <TableHead>
+                  <SortableHeader label="Source" sortKey="source_state" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
+                </TableHead>
+                <TableHead>
+                  <SortableHeader label="Workflow" sortKey="summary_state" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
+                </TableHead>
+                <TableHead>
+                  <SortableHeader label="Review" sortKey="review_state" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
+                </TableHead>
                 <TableHead>Execution</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -615,6 +901,7 @@ function DocumentStageTable({
                       type="checkbox"
                       checked={!!selection[document.hash]}
                       onChange={() => onToggleSelection(document.hash)}
+                      aria-label={`Select ${document.name}`}
                     />
                   </TableCell>
                   <TableCell className="max-w-[280px] whitespace-normal">
@@ -629,9 +916,7 @@ function DocumentStageTable({
                     {document.pages ? <div className="mt-1 text-muted-foreground">{document.pages} pages</div> : null}
                   </TableCell>
                   <TableCell className="max-w-[220px] whitespace-normal text-xs">
-                    <WorkflowBadge label="source" value={document.workflow_state.source_state} />
-                    <WorkflowBadge label="summary" value={document.workflow_state.summary_state} />
-                    <WorkflowBadge label="promotion" value={document.workflow_state.promotion_state} />
+                    <WorkflowPipeline state={document.workflow_state} />
                   </TableCell>
                   <TableCell className="max-w-[200px] whitespace-normal text-xs">
                     <div className="font-medium">{document.workflow_state.review_state}</div>
@@ -719,10 +1004,14 @@ function DocumentStageTable({
                         variant="ghost"
                         size="icon-sm"
                         className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                        onClick={() => {
-                          if (confirm(`Remove ${document.name}?`)) {
-                            onDelete?.(document.hash);
-                          }
+                        onClick={async () => {
+                          const ok = await confirmDialog({
+                            title: 'Remove document?',
+                            description: `"${document.name}" will be removed from inventory.`,
+                            confirmLabel: 'Remove',
+                            variant: 'danger',
+                          });
+                          if (ok) onDelete?.(document.hash);
                         }}
                       >
                         <Trash2 className="h-4 w-4" />
@@ -740,20 +1029,70 @@ function DocumentStageTable({
   );
 }
 
-function WorkflowBadge({ label, value }: { label: string; value: string }) {
-  const tone =
-    value === 'ready' || value === 'approved' || value === 'promoted'
-      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-      : value === 'failed' || value === 'rejected'
-        ? 'bg-red-50 text-red-700 border-red-200'
-        : value === 'running' || value === 'queued'
-          ? 'bg-amber-50 text-amber-700 border-amber-200'
-          : 'bg-stone-100 text-stone-700 border-stone-200';
+type WorkflowStateRecord = DocumentItem['workflow_state'];
+
+const PIPELINE_STAGES: Array<{ key: keyof WorkflowStateRecord; short: string; label: string }> = [
+  { key: 'ingest_state', short: 'IG', label: 'Ingest' },
+  { key: 'ocr_state', short: 'OC', label: 'OCR' },
+  { key: 'source_state', short: 'SR', label: 'Source' },
+  { key: 'summary_state', short: 'SM', label: 'Summary' },
+  { key: 'review_state', short: 'RV', label: 'Review' },
+  { key: 'promotion_state', short: 'PR', label: 'Promotion' },
+];
+
+function toneClass(value: string): string {
+  if (!value) return 'bg-stone-100 text-stone-700 border-stone-200 dark:bg-stone-500/15 dark:text-stone-300 dark:border-stone-500/30';
+  if (value === 'ready' || value === 'approved' || value === 'promoted' || value === 'imported') {
+    return 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30';
+  }
+  if (value === 'failed' || value === 'rejected') {
+    return 'bg-red-100 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-300 dark:border-red-500/30';
+  }
+  if (value === 'running' || value === 'queued' || value === 'held') {
+    return 'bg-amber-100 text-amber-700 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30';
+  }
+  return 'bg-stone-100 text-stone-700 border-stone-200 dark:bg-stone-500/15 dark:text-stone-300 dark:border-stone-500/30';
+}
+
+/**
+ * Active stage = the first non-terminal one we haven't completed yet.
+ * Falls back to the last stage when everything is done.
+ */
+function findActiveStageIndex(state: WorkflowStateRecord): number {
+  const TERMINAL_OK = new Set(['ready', 'approved', 'promoted', 'imported', 'not_needed']);
+  for (let i = 0; i < PIPELINE_STAGES.length; i += 1) {
+    const value = state[PIPELINE_STAGES[i].key];
+    if (!TERMINAL_OK.has(value)) return i;
+  }
+  return PIPELINE_STAGES.length - 1;
+}
+
+function WorkflowPipeline({ state }: { state: WorkflowStateRecord }) {
+  const activeIndex = findActiveStageIndex(state);
+  const activeStage = PIPELINE_STAGES[activeIndex];
+  const activeValue = state[activeStage.key];
+  const titleText = PIPELINE_STAGES.map((s) => `${s.label}: ${state[s.key] || '—'}`).join('\n');
 
   return (
-    <div className={`mb-1 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${tone}`}>
-      <span className="uppercase tracking-[0.12em] text-[10px]">{label}</span>
-      <span>{value}</span>
+    <div className="flex flex-col gap-1.5" title={titleText}>
+      <div className="flex h-1.5 items-center gap-0.5" role="img" aria-label={`Workflow progress, current stage ${activeStage.label}: ${activeValue}`}>
+        {PIPELINE_STAGES.map((stage) => {
+          const value = state[stage.key];
+          return (
+            <div
+              key={stage.key}
+              className={`h-full flex-1 rounded-sm border ${toneClass(value)}`}
+            />
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        <span className="font-semibold uppercase tracking-wider text-foreground/70">
+          {activeStage.label}
+        </span>
+        <span className="text-muted-foreground/80">·</span>
+        <span className="lowercase">{activeValue || '—'}</span>
+      </div>
     </div>
   );
 }
@@ -761,13 +1100,22 @@ function WorkflowBadge({ label, value }: { label: string; value: string }) {
 function DocumentDetailDialog({
   document,
   onOpenChange,
+  onNavigateToWiki,
 }: {
   document: DocumentItem | null;
   onOpenChange: (open: boolean) => void;
+  onNavigateToWiki?: (path: string) => void;
 }) {
+  const relatedGroups: Array<{ key: 'summaries' | 'companies' | 'industries' | 'concepts'; label: string }> = [
+    { key: 'summaries', label: 'Summaries' },
+    { key: 'companies', label: 'Companies' },
+    { key: 'industries', label: 'Industries' },
+    { key: 'concepts', label: 'Concepts' },
+  ];
+
   return (
     <Dialog open={!!document} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{document?.name || 'Document detail'}</DialogTitle>
           <DialogDescription>
@@ -776,45 +1124,55 @@ function DocumentDetailDialog({
         </DialogHeader>
 
         {document ? (
-          <div className="grid gap-4 md:grid-cols-2">
-            <DetailBlock
-              title="Identity"
-              lines={[
-                `hash: ${document.hash}`,
-                `stem: ${document.stem}`,
-                `raw: ${document.raw_path || 'n/a'}`,
-                `source: ${document.source_path || 'n/a'}`,
-                `summary: ${document.source_summary || 'n/a'}`,
-              ]}
-            />
-            <DetailBlock
-              title="Workflow"
-              lines={[
-                `ingest: ${document.workflow_state.ingest_state}`,
-                `ocr: ${document.workflow_state.ocr_state}`,
-                `source: ${document.workflow_state.source_state}`,
-                `summary: ${document.workflow_state.summary_state}`,
-                `review: ${document.workflow_state.review_state}`,
-                `promotion: ${document.workflow_state.promotion_state}`,
-              ]}
-            />
-            <DetailBlock
-              title="Review"
-              lines={[
-                `summary score: ${document.review.summary_score ?? 'n/a'}`,
-                `approved by: ${document.review.approved_by || 'n/a'}`,
-                `approved at: ${document.review.approved_at || 'n/a'}`,
-                `notes: ${document.review.review_notes || 'n/a'}`,
-              ]}
-            />
-            <DetailBlock
-              title="Execution"
-              lines={[
-                `last error: ${document.execution.last_error || 'none'}`,
-                `retries: ${document.execution.retry_count}`,
-                `updated: ${document.execution.updated_at || 'n/a'}`,
-                `related pages: ${document.related_count}`,
-              ]}
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <DetailBlock
+                title="Identity"
+                lines={[
+                  `hash: ${document.hash}`,
+                  `stem: ${document.stem}`,
+                  `raw: ${document.raw_path || 'n/a'}`,
+                  `source: ${document.source_path || 'n/a'}`,
+                  `summary: ${document.source_summary || 'n/a'}`,
+                ]}
+              />
+              <DetailBlock
+                title="Workflow"
+                lines={[
+                  `ingest: ${document.workflow_state.ingest_state}`,
+                  `ocr: ${document.workflow_state.ocr_state}`,
+                  `source: ${document.workflow_state.source_state}`,
+                  `summary: ${document.workflow_state.summary_state}`,
+                  `review: ${document.workflow_state.review_state}`,
+                  `promotion: ${document.workflow_state.promotion_state}`,
+                ]}
+              />
+              <DetailBlock
+                title="Review"
+                lines={[
+                  `summary score: ${document.review.summary_score ?? 'n/a'}`,
+                  `approved by: ${document.review.approved_by || 'n/a'}`,
+                  `approved at: ${document.review.approved_at || 'n/a'}`,
+                  `notes: ${document.review.review_notes || 'n/a'}`,
+                ]}
+              />
+              <DetailBlock
+                title="Execution"
+                lines={[
+                  `last error: ${document.execution.last_error || 'none'}`,
+                  `retries: ${document.execution.retry_count}`,
+                  `updated: ${document.execution.updated_at || 'n/a'}`,
+                  `related pages: ${document.related_count}`,
+                ]}
+              />
+            </div>
+
+            <RelatedPagesPanel
+              groups={relatedGroups.map((group) => ({
+                ...group,
+                pages: document.related_pages?.[group.key] ?? [],
+              }))}
+              onNavigate={onNavigateToWiki}
             />
           </div>
         ) : null}
@@ -822,6 +1180,70 @@ function DocumentDetailDialog({
         <DialogFooter showCloseButton />
       </DialogContent>
     </Dialog>
+  );
+}
+
+function RelatedPagesPanel({
+  groups,
+  onNavigate,
+}: {
+  groups: Array<{ key: string; label: string; pages: RelatedPageEntry[] }>;
+  onNavigate?: (path: string) => void;
+}) {
+  const total = groups.reduce((sum, group) => sum + group.pages.length, 0);
+  if (total === 0) {
+    return (
+      <div className="rounded-xl border bg-muted/30 p-4 text-sm text-muted-foreground">
+        <div className="mb-1 text-xs font-semibold uppercase tracking-[0.16em]">Related Wiki Pages</div>
+        No generated pages reference this document yet.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border bg-muted/30 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+          Related Wiki Pages
+        </div>
+        <div className="text-xs text-muted-foreground">{total} page(s)</div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {groups.map((group) =>
+          group.pages.length === 0 ? null : (
+            <div key={group.key} className="space-y-1">
+              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <span>{group.label}</span>
+                <span className="text-[10px] rounded-full bg-muted px-1.5 py-0.5">{group.pages.length}</span>
+              </div>
+              <ul className="space-y-0.5">
+                {group.pages.map((entry) => (
+                  <li key={entry.path}>
+                    <button
+                      type="button"
+                      className="group w-full rounded-md px-2 py-1 text-left text-xs hover:bg-muted/70 transition-colors flex items-start gap-1.5"
+                      onClick={() => onNavigate?.(entry.path)}
+                      disabled={!onNavigate}
+                      title={entry.path}
+                    >
+                      <ExternalLink className="h-3 w-3 mt-0.5 shrink-0 opacity-50 group-hover:opacity-100" />
+                      <span className="flex-1 min-w-0">
+                        <div className="truncate font-medium">{entry.title || entry.page}</div>
+                        <div className="truncate text-[10px] text-muted-foreground">{entry.path}</div>
+                      </span>
+                      {entry.shared && (
+                        <span className="text-[9px] uppercase tracking-wider text-amber-600 dark:text-amber-400 shrink-0">
+                          shared
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ),
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -839,5 +1261,47 @@ function DetailBlock({ title, lines }: { title: string; lines: string[] }) {
         ))}
       </div>
     </div>
+  );
+}
+
+function errorMessage(error: unknown): string | undefined {
+  if (!error) return undefined;
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (typeof error === 'object' && error !== null) {
+    const maybe = error as { message?: unknown };
+    if (typeof maybe.message === 'string') return maybe.message;
+  }
+  return undefined;
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  current,
+  dir,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  current: SortKey | null;
+  dir: SortDir;
+  onSort?: (key: SortKey) => void;
+}) {
+  if (!onSort) return <span>{label}</span>;
+  const active = current === sortKey;
+  const Icon = active ? (dir === 'asc' ? ArrowUp : ArrowDown) : ChevronsUpDown;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(sortKey)}
+      className="group inline-flex items-center gap-1 text-left font-medium text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:text-primary"
+      aria-label={`Sort by ${label}${active ? ` (${dir === 'asc' ? 'ascending' : 'descending'})` : ''}`}
+    >
+      {label}
+      <Icon
+        className={`h-3 w-3 ${active ? 'text-primary opacity-100' : 'opacity-40 group-hover:opacity-70'}`}
+      />
+    </button>
   );
 }

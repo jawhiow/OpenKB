@@ -28,6 +28,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CheckCircle2, Loader2, Plus, RefreshCcw, Save, Server, Settings2, ShieldAlert, Upload } from 'lucide-react';
+import { toast } from '@/components/ui/toaster';
+import { confirm as confirmDialog } from '@/components/ui/confirm-dialog';
 
 type SettingsSection = 'general' | 'model-pool';
 
@@ -840,9 +842,22 @@ export function SettingsTab({
                         <Button
                           variant="destructive"
                           onClick={async () => {
-                            if (confirm(`Delete model profile ${profile.name}?`)) {
+                            const ok = await confirmDialog({
+                              title: 'Delete model profile?',
+                              description: `Profile "${profile.name}" will be removed from the pool.`,
+                              confirmLabel: 'Delete',
+                              variant: 'danger',
+                            });
+                            if (!ok) return;
+                            try {
                               await deleteModelPoolProfile(kbDir!, profile.id);
                               await refreshKbQueries();
+                              toast.success('Model profile deleted');
+                            } catch (error) {
+                              toast.error(
+                                'Failed to delete profile',
+                                error instanceof Error ? error.message : undefined,
+                              );
                             }
                           }}
                           disabled={!kbDir || busy}

@@ -16,7 +16,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Bot, Copy, Loader2, MessageSquare, Send, Trash2, User } from 'lucide-react';
+import { Bot, Copy, ExternalLink, Loader2, MessageSquare, Send, Trash2, User } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
+import { toast } from '@/components/ui/toaster';
+import { confirm as confirmDialog } from '@/components/ui/confirm-dialog';
 
 interface SessionMessage {
   id: string;
@@ -83,7 +86,13 @@ function referenceLabel(reference: ChatReference): string {
   return reference.path || reference.type || 'reference';
 }
 
-export function SessionsTab({ kbDir }: { kbDir: string }) {
+export function SessionsTab({
+  kbDir,
+  onNavigateToWiki,
+}: {
+  kbDir: string;
+  onNavigateToWiki?: (path: string) => void;
+}) {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -121,6 +130,10 @@ export function SessionsTab({ kbDir }: { kbDir: string }) {
       }
       await queryClient.invalidateQueries({ queryKey: ['chats', kbDir] });
       await queryClient.invalidateQueries({ queryKey: ['chatSession', kbDir] });
+      toast.success('Session deleted');
+    },
+    onError: (error) => {
+      toast.error('Failed to delete session', error instanceof Error ? error.message : undefined);
     },
   });
 
@@ -199,7 +212,9 @@ export function SessionsTab({ kbDir }: { kbDir: string }) {
         controller.signal,
       );
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Query failed');
+      const message = error instanceof Error ? error.message : 'Query failed';
+      setErrorMessage(message);
+      toast.error('Query failed', message);
     } finally {
       setPendingQuestion('');
       setStreamingAnswer('');
@@ -210,7 +225,12 @@ export function SessionsTab({ kbDir }: { kbDir: string }) {
 
   const handleCopy = async () => {
     const lines = messages.map((message) => `${message.role === 'user' ? 'You' : 'OpenKB'}: ${message.content}`);
-    await navigator.clipboard.writeText(lines.join('\n\n'));
+    try {
+      await navigator.clipboard.writeText(lines.join('\n\n'));
+      toast.success('Conversation copied');
+    } catch (error) {
+      toast.error('Copy failed', error instanceof Error ? error.message : undefined);
+    }
   };
 
   return (
@@ -242,7 +262,16 @@ export function SessionsTab({ kbDir }: { kbDir: string }) {
               >
                 New Session
               </Button>
-              {filteredSessions.length ? (
+              {sessionsQuery.isLoading ? (
+                <div className="space-y-2 px-1 pt-2">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} className="rounded-md border border-border/60 px-3 py-2">
+                      <Skeleton className="h-3.5 w-3/4" />
+                      <Skeleton className="mt-2 h-3 w-1/2" />
+                    </div>
+                  ))}
+                </div>
+              ) : filteredSessions.length ? (
                 filteredSessions.map((session) => (
                   <Button
                     key={session.id}
@@ -281,10 +310,14 @@ export function SessionsTab({ kbDir }: { kbDir: string }) {
               {activeSession ? (
                 <Button
                   variant="destructive"
-                  onClick={() => {
-                    if (confirm(`Delete session ${sessionTitle(activeSession)}?`)) {
-                      deleteMutation.mutate(activeSession.id);
-                    }
+                  onClick={async () => {
+                    const ok = await confirmDialog({
+                      title: 'Delete session?',
+                      description: `"${sessionTitle(activeSession)}" will be removed permanently.`,
+                      confirmLabel: 'Delete',
+                      variant: 'danger',
+                    });
+                    if (ok) deleteMutation.mutate(activeSession.id);
                   }}
                   disabled={deleteMutation.isPending}
                 >
@@ -308,8 +341,16 @@ export function SessionsTab({ kbDir }: { kbDir: string }) {
             <ScrollArea className="h-full">
               <div ref={threadRef} className="space-y-5 p-5">
                 {sessionDetailQuery.isLoading ? (
-                  <div className="flex justify-center py-10">
-                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  <div className="space-y-4">
+                    {[0, 1, 2].map((i) => (
+                      <div key={i} className={i % 2 === 0 ? 'flex justify-end' : 'flex'}>
+                        <div className="max-w-[70%] space-y-2 rounded-xl bg-muted/50 p-3">
+                          <Skeleton className="h-3 w-32" />
+                          <Skeleton className="h-3 w-48" />
+                          <Skeleton className="h-3 w-40" />
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 ) : messages.length ? (
                   messages.map((message) => (
@@ -401,12 +442,33 @@ export function SessionsTab({ kbDir }: { kbDir: string }) {
             <div className="rounded-xl border bg-background p-4">
               <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">References</div>
               {activeReferences.length ? (
-                <div className="space-y-2 text-sm">
-                  {activeReferences.map((reference, index) => (
-                    <div key={`${reference.type}-${reference.path}-${index}`} className="rounded-lg bg-muted/50 px-3 py-2">
-                      {referenceLabel(reference)}
-                    </div>
-                  ))}
+                <div className="space-y-1.5 text-sm">
+                  {activeReferences.map((reference, index) => {
+                    const label = referenceLabel(reference);
+                    const isWikiNav = reference.type === 'wiki_file' && !!reference.path && !!onNavigateToWiki;
+                    if (isWikiNav) {
+                      return (
+                        <button
+                          key={`${reference.type}-${reference.path}-${index}`}
+                          type="button"
+                          onClick={() => onNavigateToWiki!(reference.path!)}
+                          title={`Open ${reference.path} in Wiki`}
+                          className="group flex w-full items-center gap-2 rounded-lg bg-muted/40 px-3 py-2 text-left transition-colors hover:bg-primary/10 hover:text-primary focus-visible:bg-primary/10 focus-visible:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        >
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs">{label}</span>
+                          <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-60 transition-opacity group-hover:opacity-100" />
+                        </button>
+                      );
+                    }
+                    return (
+                      <div
+                        key={`${reference.type}-${reference.path}-${index}`}
+                        className="rounded-lg bg-muted/40 px-3 py-2 font-mono text-xs"
+                      >
+                        {label}
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="text-sm text-muted-foreground">No references captured for the latest answer.</div>

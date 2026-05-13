@@ -6,6 +6,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Clock3,
+  Inbox,
   Loader2,
   PauseCircle,
   RefreshCcw,
@@ -16,6 +17,9 @@ import { getJobs, JobPayload, retryJob, stopJob } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
+import { CardListSkeleton } from '@/components/ui/skeleton';
+import { toast } from '@/components/ui/toaster';
+import { DataFreshness } from '@/components/ui/data-freshness';
 
 type JobFilter = 'active' | 'attention' | 'done' | 'all';
 
@@ -37,7 +41,7 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const knownActiveJobsRef = useRef<Set<string>>(new Set());
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useQuery({
     queryKey: ['jobs'],
     queryFn: getJobs,
     refetchInterval: (query) => {
@@ -74,6 +78,10 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
     mutationFn: stopJob,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      toast.success('Stop requested');
+    },
+    onError: (error) => {
+      toast.error('Failed to stop job', error instanceof Error ? error.message : undefined);
     },
   });
 
@@ -85,6 +93,10 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
         setSelectedJobId(retriedId);
       }
       queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      toast.success('Job retried');
+    },
+    onError: (error) => {
+      toast.error('Failed to retry job', error instanceof Error ? error.message : undefined);
     },
   });
 
@@ -109,7 +121,12 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
                 Background import, summarization, review, promotion, and maintenance work.
               </CardDescription>
             </div>
-            {isFetching && !isLoading && <Loader2 className="mt-1 h-4 w-4 animate-spin text-muted-foreground" />}
+            <DataFreshness
+              updatedAt={dataUpdatedAt}
+              isFetching={isFetching}
+              onRefresh={() => void refetch()}
+              className="mt-1 shrink-0"
+            />
           </div>
           <div className="flex flex-wrap gap-2 pt-2">
             {FILTERS.map((item) => (
@@ -128,13 +145,23 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-y-auto">
           {isLoading ? (
-            <div className="flex h-full items-center justify-center text-muted-foreground">
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Loading jobs...
-            </div>
+            <CardListSkeleton count={4} />
           ) : filteredJobs.length === 0 ? (
-            <div className="flex h-full items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-              No jobs in this view.
+            <div className="flex h-full flex-col items-center justify-center gap-3 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+              <Inbox className="h-6 w-6 opacity-50" />
+              <div>
+                <p className="font-medium text-foreground">No jobs in this view</p>
+                <p className="mt-0.5 text-xs">
+                  {filter === 'all'
+                    ? 'Background jobs will appear here when you import, summarize, or promote documents.'
+                    : `Nothing in "${FILTERS.find((f) => f.value === filter)?.label ?? filter}". Try widening the filter.`}
+                </p>
+              </div>
+              {filter !== 'all' ? (
+                <Button type="button" size="sm" variant="outline" onClick={() => setFilter('all')}>
+                  Show all jobs
+                </Button>
+              ) : null}
             </div>
           ) : (
             <div className="space-y-3">

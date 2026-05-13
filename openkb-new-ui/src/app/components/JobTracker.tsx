@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import axios from 'axios';
 import { Loader2, CheckCircle2, XCircle, X } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
+import { notifyIfBackground } from '@/lib/notifications';
 
 interface JobTrackerProps {
   jobId: string | null;
@@ -37,11 +38,32 @@ export function GlobalJobTracker({ jobId, onComplete, onDismiss }: JobTrackerPro
   }, [jobId]);
 
   useEffect(() => {
-    if (job?.status === 'succeeded' && onComplete && completionNotifiedRef.current !== jobId) {
-      completionNotifiedRef.current = jobId;
-      onComplete();
+    if (!job?.status || !jobId) return;
+    if (completionNotifiedRef.current === jobId) return;
+
+    const terminal = job.status === 'succeeded' || job.status === 'failed' || job.status === 'stopped';
+    if (!terminal) return;
+
+    completionNotifiedRef.current = jobId;
+    const jobType = (job.type || 'Job').replace(/_/g, ' ');
+    if (job.status === 'succeeded') {
+      onComplete?.();
+      void notifyIfBackground(`✓ ${jobType} complete`, {
+        body: job.message || 'Background job finished successfully.',
+        tag: `openkb-job-${jobId}`,
+      });
+    } else if (job.status === 'failed') {
+      void notifyIfBackground(`✗ ${jobType} failed`, {
+        body: job.error || job.message || 'Background job failed.',
+        tag: `openkb-job-${jobId}`,
+      });
+    } else if (job.status === 'stopped') {
+      void notifyIfBackground(`■ ${jobType} stopped`, {
+        body: 'Background job was stopped.',
+        tag: `openkb-job-${jobId}`,
+      });
     }
-  }, [job?.status, jobId, onComplete]);
+  }, [job?.status, job?.type, job?.message, job?.error, jobId, onComplete]);
 
   if (!jobId && !job) return null;
 

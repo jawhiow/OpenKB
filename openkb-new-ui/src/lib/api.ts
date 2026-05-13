@@ -457,6 +457,213 @@ export const retryJob = async (jobId: string): Promise<JobEnvelope> => {
   return response.data;
 };
 
+// ----- Lint / Fix Plan / Quality -----
+
+export interface LintFixCandidate {
+  id?: string;
+  name: string;
+  title?: string;
+  path?: string;
+  type?: string;
+  action?: 'create' | 'manual-review' | string;
+  source_section?: string;
+  reason?: string;
+  preview?: string;
+  status?: string;
+  auto_applicable?: boolean;
+  approved?: boolean;
+}
+
+export interface LintFixPlan {
+  report: string | null;
+  candidates: LintFixCandidate[];
+}
+
+export interface LintApplyResult {
+  approved: LintFixCandidate[];
+  created: Array<{ name: string; title?: string; path: string }>;
+  reviewed: Array<{ name: string; title?: string; path: string; reason?: string }>;
+}
+
+export interface WikiFileResponse {
+  path: string;
+  content: string;
+}
+
+export const runLint = async (kbDir: string): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/lint', { kb_dir: kbDir });
+  return response.data;
+};
+
+export const generateLintFixPlan = async (kbDir: string, report: string | null): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/lint/fix-plan', { kb_dir: kbDir, report });
+  return response.data;
+};
+
+export const applyLintFixes = async (
+  kbDir: string,
+  candidates: LintFixCandidate[],
+): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/lint/apply-fixes', {
+    kb_dir: kbDir,
+    candidates,
+  });
+  return response.data;
+};
+
+export const getWikiFile = async (kbDir: string, path: string): Promise<WikiFileResponse> => {
+  const response = await apiClient.get('/wiki/file', {
+    params: { kb_dir: kbDir, path },
+  });
+  return response.data;
+};
+
+// ----- Ingest Gate (Scoring) -----
+
+export interface IngestGateConfig {
+  enabled: boolean;
+  pass_threshold: number;
+  hold_threshold: number;
+  hard_reject_enabled: boolean;
+  log_all_decisions: boolean;
+  allow_force_pass: boolean;
+  allow_force_reject: boolean;
+}
+
+export interface IngestGateSummary {
+  total?: number;
+  pass?: number;
+  hold?: number;
+  reject?: number;
+  force_pass?: number;
+  force_reject?: number;
+  average_score?: number | string | null;
+  latest_at?: string | null;
+}
+
+export interface IngestGateDimensionScore {
+  score?: number;
+  max?: number;
+  reason?: string;
+  evidence?: string[];
+  deductions?: string[];
+}
+
+export interface IngestGateDecision {
+  id?: string;
+  line_number?: number;
+  timestamp?: string;
+  doc_title?: string;
+  doc_type?: string;
+  source_info?: string;
+  total_score?: number | null;
+  final_decision?: string;
+  raw_decision?: string;
+  recommended_ingest_mode?: string;
+  hard_reject?: boolean;
+  force_pass?: boolean;
+  force_reject?: boolean;
+  one_line_verdict?: string;
+  primary_reasons?: string[];
+  hard_reject_reasons?: string[];
+  overlap_with_existing_kb?: string[];
+  suggested_outputs_if_ingested?: string[];
+  audit_trail?: {
+    why_this_decision?: string;
+    why_not_higher?: string;
+    why_not_lower?: string;
+  };
+  operator?: string;
+  force_reason?: string;
+  dimension_scores?: Record<string, IngestGateDimensionScore>;
+}
+
+export interface IngestGateData {
+  config: IngestGateConfig;
+  summary: IngestGateSummary;
+  decisions: IngestGateDecision[];
+}
+
+export const getIngestGate = async (
+  kbDir: string,
+  limit: number = 250,
+): Promise<IngestGateData> => {
+  const response = await apiClient.get('/ingest-gate', {
+    params: { kb_dir: kbDir, limit },
+  });
+  return response.data;
+};
+
+export const saveIngestGateConfig = async (
+  kbDir: string,
+  config: Partial<IngestGateConfig>,
+): Promise<unknown> => {
+  const payload: Record<string, unknown> = {
+    ingest_gate_enabled: config.enabled,
+    ingest_gate_pass_threshold: config.pass_threshold,
+    ingest_gate_hold_threshold: config.hold_threshold,
+    ingest_gate_hard_reject_enabled: config.hard_reject_enabled,
+    ingest_gate_log_all_decisions: config.log_all_decisions,
+    ingest_gate_allow_force_pass: config.allow_force_pass,
+    ingest_gate_allow_force_reject: config.allow_force_reject,
+  };
+  Object.keys(payload).forEach((key) => payload[key] === undefined && delete payload[key]);
+  const response = await apiClient.put('/config', {
+    kb_dir: kbDir,
+    ...payload,
+  });
+  return response.data;
+};
+
+// ----- LLM Usage -----
+
+export interface LlmUsageItem {
+  id?: string | number;
+  created_at?: string;
+  feature?: string;
+  model?: string;
+  wire_api?: string;
+  duration_ms?: number;
+  status?: string;
+  error?: string | null;
+  [key: string]: unknown;
+}
+
+export interface LlmUsageResponse {
+  items: LlmUsageItem[];
+  page: number;
+  page_size: number;
+  pages: number;
+  total: number;
+  start: number;
+  end: number;
+}
+
+export const getLlmUsage = async (
+  kbDir: string,
+  params: { q?: string; page?: number; page_size?: number } = {},
+): Promise<LlmUsageResponse> => {
+  const response = await apiClient.get('/llm-usage', {
+    params: {
+      kb_dir: kbDir,
+      q: params.q ?? '',
+      page: params.page ?? 1,
+      page_size: params.page_size ?? 50,
+    },
+  });
+  return response.data;
+};
+
+export const exportLlmUsage = async (
+  kbDir: string,
+  q: string = '',
+): Promise<{ items: LlmUsageItem[]; total: number }> => {
+  const response = await apiClient.get('/llm-usage/export', {
+    params: { kb_dir: kbDir, q },
+  });
+  return response.data;
+};
+
 export const getChats = async (kbDir: string): Promise<ChatListResponse> => {
   const response = await apiClient.get('/chats', {
     params: { kb_dir: kbDir },
