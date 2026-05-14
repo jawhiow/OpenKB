@@ -91,6 +91,20 @@ function modelHealthTone(health: string) {
   return 'bg-slate-100 text-slate-700 border-slate-200';
 }
 
+function probeDueAt(profile: ModelPoolProfile, intervalSeconds: number): number | null {
+  const lastChecked = Date.parse(profile.last_checked_at || '');
+  if (Number.isNaN(lastChecked)) return null;
+  return lastChecked + Math.max(intervalSeconds, 1) * 1000;
+}
+
+function shouldAutoProbeProfile(profile: ModelPoolProfile, intervalSeconds: number, now = Date.now()): boolean {
+  if (!profile.enabled || profile.probing) return false;
+  if (!profile.last_checked_at) return true;
+  const dueAt = probeDueAt(profile, intervalSeconds);
+  if (dueAt === null) return true;
+  return dueAt <= now;
+}
+
 export function SettingsTab({
   kbDir,
   onKbChanged,
@@ -109,6 +123,8 @@ export function SettingsTab({
   const [successMessage, setSuccessMessage] = useState('');
   const [modelSearch, setModelSearch] = useState('');
   const [modelHealthFilter, setModelHealthFilter] = useState('all');
+  const [autoProbeTick, setAutoProbeTick] = useState(0);
+  const [localProbingProfileIds, setLocalProbingProfileIds] = useState<string[]>([]);
 
   const configQuery = useQuery({
     queryKey: ['config', kbDir],
@@ -203,15 +219,50 @@ export function SettingsTab({
   });
 
   const probeAllMutation = useMutation({
-    mutationFn: () => probeAllModelPoolProfiles(kbDir!),
-    onSuccess: async () => {
-      clearFlash();
-      setSuccessMessage('Model pool probe completed.');
+    mutationFn: (source: 'manual' | 'auto' = 'manual') => probeAllModelPoolProfiles(kbDir!, source),
+    onMutate: (source) => {
+      const currentProfiles = modelPoolQuery.data?.profiles ?? [];
+      const ids = currentProfiles.filter((profile) => profile.enabled).map((profile) => profile.id);
+      setLocalProbingProfileIds((current) => Array.from(new Set([...current, ...ids])));
+      return { source, ids };
+    },
+    onSuccess: async (_data, source) => {
+      if (source !== 'auto') {
+        clearFlash();
+        setSuccessMessage('Model pool probe completed.');
+      }
       await refreshKbQueries();
+    },
+    onError: (error, source) => {
+      if (source !== 'auto') {
+        setSuccessMessage('');
+        setErrorMessage(error instanceof Error ? error.message : 'Probe failed');
+      }
+    },
+    onSettled: (_data, _error, _source, context) => {
+      const ids = context?.ids ?? [];
+      if (!ids.length) return;
+      setLocalProbingProfileIds((current) => current.filter((id) => !ids.includes(id)));
+    },
+  });
+
+  const probeProfileMutation = useMutation({
+    mutationFn: async (profileId: string) => {
+      await probeModelPoolProfile(kbDir!, profileId);
+      await refreshKbQueries();
+      return profileId;
+    },
+    onMutate: (profileId) => {
+      setLocalProbingProfileIds((current) => Array.from(new Set([...current, profileId])));
+      return { profileId };
     },
     onError: (error) => {
       setSuccessMessage('');
       setErrorMessage(error instanceof Error ? error.message : 'Probe failed');
+    },
+    onSettled: (_data, _error, _profileId, context) => {
+      if (!context?.profileId) return;
+      setLocalProbingProfileIds((current) => current.filter((id) => id !== context.profileId));
     },
   });
 
@@ -220,17 +271,24 @@ export function SettingsTab({
     const pool = modelPoolQuery.data;
     if (!pool?.enabled || probeAllMutation.isPending) return;
     const intervalSeconds = Math.max(Number(pool.probe_interval_seconds || 600), 1);
-    const timer = window.setTimeout(() => {
-      void probeAllModelPoolProfiles(kbDir)
-        .then(async () => {
-          await refreshKbQueries();
-        })
-        .catch(() => {
-          // Silent background probe: keep manual controls responsible for surfaced errors.
-        });
-    }, intervalSeconds * 1000);
+    const dueProfiles = pool.profiles.filter((profile) => shouldAutoProbeProfile(profile, intervalSeconds));
+    if (dueProfiles.length > 0) {
+      void probeAllMutation.mutateAsync('auto').catch(() => {
+        // Silent background probe: keep manual controls responsible for surfaced errors.
+      });
+      return;
+    }
+
+    const dueTimes = pool.profiles
+      .filter((profile) => profile.enabled && !profile.probing)
+      .map((profile) => probeDueAt(profile, intervalSeconds))
+      .filter((value): value is number => value !== null);
+    const nextDelay = dueTimes.length
+      ? Math.max(Math.min(...dueTimes) - Date.now(), 1000)
+      : intervalSeconds * 1000;
+    const timer = window.setTimeout(() => setAutoProbeTick((current) => current + 1), nextDelay);
     return () => window.clearTimeout(timer);
-  }, [kbDir, modelPoolQuery.data, probeAllMutation.isPending, refreshKbQueries, section]);
+  }, [autoProbeTick, kbDir, modelPoolQuery.data, probeAllMutation, refreshKbQueries, section]);
 
   const saveProfileMutation = useMutation({
     mutationFn: async (draft: ProfileDraft) => {
@@ -290,6 +348,7 @@ export function SettingsTab({
     createKbMutation.isPending ||
     testLlmMutation.isPending ||
     probeAllMutation.isPending ||
+    probeProfileMutation.isPending ||
     saveProfileMutation.isPending;
 
   const updateDraft = <K extends keyof ConfigData>(key: K, value: ConfigData[K]) => {
@@ -732,7 +791,7 @@ export function SettingsTab({
                     >
                       {modelPool?.enabled ? 'Disable Pool' : 'Enable Pool'}
                     </Button>
-                    <Button variant="outline" onClick={() => probeAllMutation.mutate()} disabled={!kbDir || busy}>
+                      <Button variant="outline" onClick={() => probeAllMutation.mutate('manual')} disabled={!kbDir || busy}>
                       {probeAllMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
                       Probe All
                     </Button>
@@ -783,12 +842,22 @@ export function SettingsTab({
                 ) : filteredProfiles.length ? (
                   filteredProfiles.map((profile) => (
                     <div key={profile.id} className="rounded-2xl border bg-background p-5 shadow-sm">
+                      {(() => {
+                        const isProbing = profile.probing || localProbingProfileIds.includes(profile.id);
+                        return (
+                          <>
                       <div className="flex items-start justify-between gap-4">
                         <div>
                           <div className="flex items-center gap-2">
                             <h4 className="font-semibold">{profile.name}</h4>
                             {profile.is_active ? (
                               <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">active</span>
+                            ) : null}
+                            {isProbing ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2 py-0.5 text-xs text-sky-700">
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                                probing
+                              </span>
                             ) : null}
                           </div>
                           <p className="mt-1 text-sm text-muted-foreground">{profile.base_url || '(default provider)'}</p>
@@ -803,6 +872,8 @@ export function SettingsTab({
                         <div>Wire API: {profile.wire_api}</div>
                         <div>Provider: {profile.provider}</div>
                         <div>Last checked: {profile.last_checked_at || 'never'}</div>
+                        <div>Last probe started: {profile.last_probe_started_at || (isProbing ? 'just now' : 'never')}</div>
+                        <div>Probe source: {profile.probe_source || 'n/a'}</div>
                         {profile.last_error ? <div className="text-red-700">Last error: {profile.last_error}</div> : null}
                       </div>
 
@@ -828,11 +899,8 @@ export function SettingsTab({
                       <div className="mt-4 flex flex-wrap gap-2">
                         <Button
                           variant="outline"
-                          onClick={async () => {
-                            await probeModelPoolProfile(kbDir!, profile.id);
-                            await refreshKbQueries();
-                          }}
-                          disabled={!kbDir || busy}
+                          onClick={() => probeProfileMutation.mutate(profile.id)}
+                          disabled={!kbDir || busy || isProbing}
                         >
                           Probe
                         </Button>
@@ -882,6 +950,9 @@ export function SettingsTab({
                           Delete
                         </Button>
                       </div>
+                          </>
+                        );
+                      })()}
                     </div>
                   ))
                 ) : (

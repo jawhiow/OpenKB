@@ -285,6 +285,9 @@ export interface ModelPoolRoute {
 
 export interface ModelPoolProfile extends ConfigProfile {
   health: string;
+  probing: boolean;
+  probe_source: string;
+  last_probe_started_at: string;
   last_checked_at: string;
   latency_ms: number | null;
   consecutive_failures: number;
@@ -926,8 +929,8 @@ export const getModelPool = async (kbDir: string): Promise<ModelPoolData> => {
   return normalizeModelPoolData(response.data);
 };
 
-export const probeAllModelPoolProfiles = async (kbDir: string): Promise<ModelPoolData> => {
-  const response = await apiClient.post('/model-pool/probe', { kb_dir: kbDir });
+export const probeAllModelPoolProfiles = async (kbDir: string, source = 'manual'): Promise<ModelPoolData> => {
+  const response = await apiClient.post('/model-pool/probe', { kb_dir: kbDir, source });
   return normalizeModelPoolData(response.data?.model_pool ?? response.data);
 };
 
@@ -1293,6 +1296,9 @@ function normalizeModelPoolData(raw: unknown): ModelPoolData {
           return {
             ...normalized,
             health: String(profileItem.health ?? 'unknown'),
+            probing: Boolean(profileItem.probing),
+            probe_source: String(profileItem.probe_source ?? ''),
+            last_probe_started_at: String(profileItem.last_probe_started_at ?? ''),
             last_checked_at: String(profileItem.last_checked_at ?? ''),
             latency_ms:
               profileItem.latency_ms === null || profileItem.latency_ms === undefined

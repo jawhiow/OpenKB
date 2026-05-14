@@ -300,8 +300,19 @@ def _cleanup_staged_upload(target_kb: Path, staged: Path) -> None:
         shutil.rmtree(parent, ignore_errors=True)
 
 
-def _probe_model_pool_profile(target_kb: Path, profile_id: str) -> dict[str, Any]:
+def _probe_model_pool_profile(target_kb: Path, profile_id: str, *, probe_source: str = "manual") -> dict[str, Any]:
     from openkb.model_pool import configured_routes, probe_model_route, record_route_failure, record_route_success
+
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    kb_helpers.save_model_pool_profile_status(
+        target_kb,
+        profile_id,
+        {
+            "probing": True,
+            "probe_source": str(probe_source or "manual"),
+            "last_probe_started_at": started_at,
+        },
+    )
 
     profile = kb_helpers.get_model_pool_profile(target_kb, profile_id)
     if not profile.get("enabled", True):
@@ -310,6 +321,7 @@ def _probe_model_pool_profile(target_kb: Path, profile_id: str) -> dict[str, Any
             profile_id,
             {
                 "health": "disabled",
+                "probing": False,
                 "last_checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "latency_ms": None,
                 "available_models": [],
@@ -347,6 +359,7 @@ def _probe_model_pool_profile(target_kb: Path, profile_id: str) -> dict[str, Any
         profile_id,
         {
             "health": health,
+            "probing": False,
             "last_checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "latency_ms": min(latencies) if latencies else None,
             "consecutive_failures": consecutive_failures,
@@ -1728,7 +1741,8 @@ def create_app(registry: JobRegistry | None = None):
         try:
             target_kb = _resolve_kb_dir(payload.get("kb_dir"))
             pool = kb_helpers.get_model_pool_data(target_kb)
-            results = [_probe_model_pool_profile(target_kb, profile["id"]) for profile in pool["profiles"]]
+            probe_source = str(payload.get("source") or "manual")
+            results = [_probe_model_pool_profile(target_kb, profile["id"], probe_source=probe_source) for profile in pool["profiles"]]
             return {
                 "profiles": results,
                 "model_pool": kb_helpers.get_model_pool_data(target_kb),
@@ -1762,7 +1776,7 @@ def create_app(registry: JobRegistry | None = None):
         try:
             target_kb = _resolve_kb_dir(payload.get("kb_dir"))
             kb_helpers.get_model_pool_profile(target_kb, profile_id)
-            profile = _probe_model_pool_profile(target_kb, profile_id)
+            profile = _probe_model_pool_profile(target_kb, profile_id, probe_source="manual")
             return {
                 "profile": profile,
                 "model_pool": kb_helpers.get_model_pool_data(target_kb),

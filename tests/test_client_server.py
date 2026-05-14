@@ -1788,6 +1788,9 @@ def test_model_pool_endpoint_merges_profiles_with_health_status(tmp_path):
                 "profiles": {
                     "gateway": {
                         "health": "degraded",
+                        "probing": True,
+                        "probe_source": "auto",
+                        "last_probe_started_at": "2026-05-06T11:41:30Z",
                         "last_checked_at": "2026-05-06T11:42:08Z",
                         "latency_ms": 812,
                         "consecutive_failures": 1,
@@ -1818,6 +1821,9 @@ def test_model_pool_endpoint_merges_profiles_with_health_status(tmp_path):
     assert card["features"] == ["chat"]
     assert card["probe_models"] == ["gpt-4o-mini", "gpt-5.4-mini"]
     assert card["health"] == "degraded"
+    assert card["probing"] is True
+    assert card["probe_source"] == "auto"
+    assert card["last_probe_started_at"] == "2026-05-06T11:41:30Z"
     assert card["available_models"] == ["gpt-4o-mini"]
     assert card["failed_models"] == {"gpt-5.4-mini": "model_not_found"}
 
@@ -1863,10 +1869,16 @@ def test_model_pool_profile_probe_persists_status_without_deleting_config(tmp_pa
     assert calls[1]["model"] == "missing-model"
     result = response.json()["profile"]
     assert result["health"] == "degraded"
+    assert result["probing"] is False
+    assert result["probe_source"] == "manual"
+    assert result["last_probe_started_at"]
     assert result["available_models"] == ["gpt-4o-mini"]
     assert result["failed_models"] == {"missing-model": "model_not_found"}
     status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
     assert status["profiles"]["gateway"]["health"] == "degraded"
+    assert status["profiles"]["gateway"]["probing"] is False
+    assert status["profiles"]["gateway"]["probe_source"] == "manual"
+    assert status["profiles"]["gateway"]["last_probe_started_at"]
     config = (kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8")
     assert "id: gateway" in config
     assert "missing-model" in config
