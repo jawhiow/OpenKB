@@ -1,4 +1,4 @@
-"""Local HTTP server for the OpenKB browser client."""
+"""Local HTTP server for the OpenKB client API."""
 from __future__ import annotations
 
 import asyncio
@@ -32,8 +32,7 @@ def _import_web_dependencies():
     try:
         import uvicorn
         from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-        from fastapi.responses import FileResponse, Response, StreamingResponse
-        from fastapi.staticfiles import StaticFiles
+        from fastapi.responses import Response, StreamingResponse
     except ModuleNotFoundError as exc:
         raise ClientDependencyError(
             "OpenKB client dependencies are not installed."
@@ -42,7 +41,7 @@ def _import_web_dependencies():
     # so FastAPI resolves names like `UploadFile` from module globals.
     globals()["UploadFile"] = UploadFile
     globals()["StreamingResponse"] = StreamingResponse
-    return FastAPI, File, FileResponse, HTTPException, Query, Response, StaticFiles, UploadFile, uvicorn
+    return FastAPI, File, HTTPException, Query, Response, UploadFile, uvicorn
 
 
 def _default_kb_dir() -> Path | None:
@@ -66,11 +65,6 @@ def _resolve_kb_dir(raw: str | None = None) -> Path:
 def _sse_event(name: str, payload: dict[str, Any]) -> str:
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return f"event: {name}\ndata: {data}\n\n"
-
-
-def _static_dir() -> Path:
-    return Path(__file__).resolve().parent / "static"
-
 
 def _callable_accepts_keyword(fn: Any, name: str) -> bool:
     try:
@@ -369,7 +363,7 @@ def create_app(registry: JobRegistry | None = None):
     FastAPI and Uvicorn are imported lazily so base OpenKB installs can still
     import the package and use the CLI without the optional client extra.
     """
-    FastAPI, File, FileResponse, HTTPException, Query, Response, StaticFiles, UploadFile, _uvicorn = _import_web_dependencies()
+    FastAPI, File, HTTPException, Query, Response, UploadFile, _uvicorn = _import_web_dependencies()
     from fastapi.middleware.cors import CORSMiddleware
     registry = registry or default_registry
     app = FastAPI(title="OpenKB Client", version="0.1.0")
@@ -383,8 +377,6 @@ def create_app(registry: JobRegistry | None = None):
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    static_dir = _static_dir()
 
     def translate_error(exc: Exception) -> HTTPException:
         if isinstance(exc, FileNotFoundError):
@@ -1855,12 +1847,14 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
-    if static_dir.exists():
-        app.mount("/assets", StaticFiles(directory=static_dir), name="assets")
-
     @app.get("/")
-    def index() -> Any:
-        return FileResponse(static_dir / "index.html")
+    def index() -> dict[str, Any]:
+        return {
+            "ok": True,
+            "service": "openkb-client-api",
+            "ui": "openkb-new-ui",
+            "ui_dev_url": os.getenv("OPENKB_UI_URL", "http://127.0.0.1:3000"),
+        }
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Any:
@@ -1870,8 +1864,8 @@ def create_app(registry: JobRegistry | None = None):
 
 
 def serve_client(*, host: str = "0.0.0.0", port: int = 8765, open_browser: bool = True) -> None:
-    """Start the local client server."""
-    _FastAPI, _File, _FileResponse, _HTTPException, _Query, _Response, _StaticFiles, _UploadFile, uvicorn = _import_web_dependencies()
+    """Start the local client API server."""
+    _FastAPI, _File, _HTTPException, _Query, _Response, _UploadFile, uvicorn = _import_web_dependencies()
     url = f"http://{host}:{port}"
     if open_browser:
         webbrowser.open(url)

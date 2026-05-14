@@ -255,6 +255,20 @@ def test_llm_usage_retains_only_latest_200_rows(tmp_path):
     assert listed["items"][-1]["model"] == "model-5"
 
 
+def test_client_root_reports_api_and_new_ui_metadata():
+    client = TestClient(create_app())
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "service": "openkb-client-api",
+        "ui": "openkb-new-ui",
+        "ui_dev_url": "http://127.0.0.1:3000",
+    }
+
+
 def test_query_job_resumes_existing_web_chat_session(tmp_path):
     kb_dir = _make_kb(tmp_path)
     registry = JobRegistry()
