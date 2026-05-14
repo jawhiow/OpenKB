@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from openkb.document_ledger import get_document_ledger_record
+from openkb.document_ledger import upsert_document_ledger_record
 from openkb.client.kb import get_document_data
 from openkb.state import HashRegistry
 from openkb.workflows.import_pipeline import import_document_source
@@ -66,6 +67,40 @@ def test_import_document_source_records_failed_source_state(kb_dir: Path):
     assert document["hash"] == file_hash
     assert document["workflow_state"]["source_state"] == "failed"
     assert document["execution"]["last_error"] == "conversion exploded"
+
+
+def test_import_document_source_forces_reimport_after_failed_known_hash(kb_dir: Path):
+    src = kb_dir / "incoming" / "retry.md"
+    src.parent.mkdir()
+    src.write_text("# Retry", encoding="utf-8")
+    file_hash = HashRegistry.hash_file(src)
+    HashRegistry(kb_dir / ".openkb" / "hashes.json").add(
+        file_hash,
+        {
+            "name": src.name,
+            "type": "md",
+            "raw_path": ".openkb/raw/2026-05-14/retry.md",
+        },
+    )
+    upsert_document_ledger_record(
+        kb_dir,
+        file_hash,
+        {
+            "name": src.name,
+            "stem": src.stem,
+            "raw_path": ".openkb/raw/2026-05-14/retry.md",
+            "workflow_state": {"source_state": "failed"},
+            "execution": {"last_error": "old failure", "retry_count": 1},
+        },
+    )
+
+    result = import_document_source(src, kb_dir)
+
+    assert result["skipped"] is False
+    record = get_document_ledger_record(kb_dir, file_hash)
+    assert record is not None
+    assert record["workflow_state"]["source_state"] == "ready"
+    assert record["execution"]["last_error"] == ""
 
 
 def test_import_document_source_records_ocr_pdf_as_source_ready(kb_dir: Path, tmp_path: Path):

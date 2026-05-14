@@ -31,8 +31,9 @@ def import_document_source(
     job=None,
 ) -> dict[str, Any]:
     """Convert one file into raw/source artifacts without compiling wiki pages."""
+    effective_force = force or _is_known_failed_import(file_path, kb_dir)
     try:
-        result = convert_document(file_path, kb_dir, force=force, strategy_override=strategy_override, job=job)
+        result = convert_document(file_path, kb_dir, force=effective_force, strategy_override=strategy_override, job=job)
     except Exception as exc:
         register_import_failure(file_path, kb_dir, exc, strategy_override=strategy_override)
         raise
@@ -65,6 +66,20 @@ def import_document_source(
         "source_path": _relative_to_kb(kb_dir, staged_result.source_path),
         "ledger_record": ledger_record,
     }
+
+
+def _is_known_failed_import(file_path: Path, kb_dir: Path) -> bool:
+    """Return True when re-importing a file whose previous source prep failed."""
+    try:
+        file_hash = HashRegistry.hash_file(file_path)
+    except OSError:
+        return False
+    existing = get_document_ledger_record(kb_dir, file_hash)
+    workflow_state = (existing or {}).get("workflow_state") or {}
+    return (
+        workflow_state.get("source_state") == "failed"
+        or workflow_state.get("ocr_state") == "failed"
+    )
 
 
 def register_import_failure(
