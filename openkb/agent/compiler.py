@@ -1046,8 +1046,9 @@ def _preferred_generated_page_name(name: str, title: str) -> str:
     if raw_title and _CJK_RE.search(raw_title):
         # 优先去掉所有英文括注，保留主中文标题
         title_name = re.sub(r"[（(][^）)]*[）)]", "", raw_title).strip()
-        # 去掉冒号/破折号副标题
-        title_main = re.split(r"[：:—\-]", title_name, 1)[0].strip() if title_name else ""
+        # 去掉明显的冒号/长破折号副标题，但保留 ASCII 连字符，避免
+        # ``CPO-共封装光学`` 这类合法概念名被截断成 ``CPO``。
+        title_main = re.split(r"[：:—]", title_name, 1)[0].strip() if title_name else ""
         return _sanitize_concept_name(title_main or title_name or raw_title)
 
     if raw_name and _CJK_RE.search(raw_name):
@@ -1689,8 +1690,10 @@ def _resolve_duplicate_concept_slug(
             prefix_key = _concept_alias_key(prefix)
             if prefix_key in aliases:
                 return aliases[prefix_key]
-    # Last-resort fuzzy match: unigram Jaccard against existing signatures.
-    if signatures:
+    # Last-resort fuzzy match is valuable for CJK / cross-language concept
+    # variants, but too aggressive for English-only names like
+    # ``flash-attention`` vs ``attention``.
+    if signatures and any(_CJK_RE.search(value or "") for value in (name, title, brief)):
         hit = _similar_concept_slug(name, title, brief, signatures)
         if hit:
             return hit
@@ -2386,6 +2389,15 @@ _EVIDENCE_ANCHOR_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
 )
 
 
+def _evidence_anchor_value(kind: str, formatted_anchor: str) -> str:
+    """Return the stored evidence-map value for a detected anchor."""
+    if kind == "page":
+        match = re.search(r"(\d{1,4})", formatted_anchor)
+        if match:
+            return match.group(1)
+    return formatted_anchor
+
+
 def _strip_frontmatter_block(text: str) -> str:
     if not text.startswith("---"):
         return text
@@ -2481,7 +2493,8 @@ def _extract_page_reference_evidence(
         anchor = _detect_evidence_anchor(line)
         if anchor is None:
             continue
-        _kind, page = anchor
+        kind, formatted_anchor = anchor
+        page = _evidence_anchor_value(kind, formatted_anchor)
         snippet = _clean_evidence_snippet(line)
         if not snippet:
             continue

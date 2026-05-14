@@ -7,6 +7,7 @@ from typing import Any
 
 from openkb.converter import ConvertResult, convert_document
 from openkb.document_ledger import get_document_ledger_record, upsert_document_ledger_record
+from openkb.pdf_strategy import OCR_PAGEINDEX_LOCAL, PAGEINDEX_LOCAL
 from openkb.source_relations import (
     current_ingested_at,
     kb_relative_path,
@@ -178,7 +179,7 @@ def document_type_for_result(file_path: Path, result: ConvertResult) -> str:
     """Return the legacy hash-registry document type for a converted result."""
     if result.local_long_doc:
         return "local_long_pdf"
-    if result.is_long_doc or result.selected_strategy == "ocr-pageindex-local":
+    if result.is_long_doc or result.selected_strategy in {OCR_PAGEINDEX_LOCAL, PAGEINDEX_LOCAL}:
         return "long_pdf"
     return file_path.suffix.lstrip(".").lower()
 
@@ -194,6 +195,8 @@ def source_kind_for_result(doc_type: str, result: ConvertResult) -> str:
     if doc_type == "local_long_pdf":
         return "local_long_json"
     if doc_type == "long_pdf":
+        if result.source_path is not None and result.selected_strategy in {OCR_PAGEINDEX_LOCAL, PAGEINDEX_LOCAL}:
+            return "page_json"
         return "pageindex_cloud"
     return "markdown" if doc_type else ""
 

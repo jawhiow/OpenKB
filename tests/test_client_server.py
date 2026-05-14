@@ -769,6 +769,93 @@ def test_summarize_document_job_uses_active_profile_runtime(tmp_path, monkeypatc
     }
 
 
+def test_summarize_document_job_parallelizes_across_model_pool_routes(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".env").write_text("P1_KEY=sk-p1\nP2_KEY=sk-p2\n", encoding="utf-8")
+    registry = JobRegistry()
+    started = threading.Barrier(2)
+    seen: list[tuple[tuple[str, ...], str, str, str | None]] = []
+    seen_lock = threading.Lock()
+
+    routes = [
+        SimpleNamespace(
+            profile_id="p1",
+            profile_name="primary",
+            model="model-a",
+            wire_api="chat_completions",
+            base_url="https://a.example/v1",
+            api_key_env="P1_KEY",
+            provider="generic",
+            reasoning_effort="",
+            thinking_enabled=False,
+        ),
+        SimpleNamespace(
+            profile_id="p2",
+            profile_name="backup",
+            model="model-b",
+            wire_api="chat_completions",
+            base_url="https://b.example/v1",
+            api_key_env="P2_KEY",
+            provider="generic",
+            reasoning_effort="",
+            thinking_enabled=False,
+        ),
+    ]
+
+    def fake_summarize_documents(target_kb, *, file_hashes=None, model=None, force=False, max_workers=1, progress_callback=None):
+        from openkb.llm_runtime import get_api_key, get_base_url
+
+        assert target_kb == kb_dir
+        assert max_workers == 1
+        assert file_hashes
+        if progress_callback:
+            progress_callback({"event": "start", "index": 1, "file_hash": file_hashes[0], "completed": 0, "total": len(file_hashes)})
+        started.wait(timeout=2)
+        with seen_lock:
+            seen.append((tuple(file_hashes), model, get_api_key(), get_base_url(model)))
+        if progress_callback:
+            progress_callback({
+                "event": "generated",
+                "index": 1,
+                "file_hash": file_hashes[0],
+                "name": f"{file_hashes[0]}.md",
+                "summary_path": f"review_summaries/{file_hashes[0]}.md",
+                "completed": 1,
+                "total": len(file_hashes),
+            })
+        return {
+            "generated": len(file_hashes),
+            "skipped": 0,
+            "failed": 0,
+            "total": len(file_hashes),
+            "failures": [],
+            "documents": [{"file_hash": item, "name": f"{item}.md"} for item in file_hashes],
+        }
+
+    monkeypatch.setattr("openkb.cli._healthy_model_pool_routes", lambda _kb: routes)
+    monkeypatch.setattr("openkb.workflows.summary_pipeline._selected_summary_hashes", lambda _kb, *, file_hashes=None: ["hash-a", "hash-b"])
+    monkeypatch.setattr("openkb.workflows.summary_pipeline.summarize_documents", fake_summarize_documents)
+    monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
+
+    app = create_app(registry=registry)
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/summarize")
+    response = route.endpoint({"kb_dir": str(kb_dir), "file_hashes": ["hash-a", "hash-b"]})
+    job = registry.wait(response["job"]["id"], timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded", job.error
+    assert job.result["generated"] == 2
+    assert job.progress_current == 2
+    assert job.progress_total == 2
+    normalized = sorted((hashes, model, api_key, base_url) for hashes, model, api_key, base_url in seen)
+    assert normalized == [
+        (("hash-a",), "model-a", "sk-p1", "https://a.example/v1"),
+        (("hash-b",), "model-b", "sk-p2", "https://b.example/v1"),
+    ]
+    assert any("Summarizing with 2 parallel task(s)" in entry["message"] for entry in job.logs)
+    assert any("Summarized" in entry["message"] for entry in job.logs)
+
+
 def test_review_summary_job_uses_summary_review_pipeline(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     registry = JobRegistry()

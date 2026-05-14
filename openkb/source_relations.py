@@ -114,6 +114,17 @@ def _resolve_ingested_at(kb_dir: Path, meta: dict[str, Any], name: str, ingest_l
     return _mtime_ingested_at(kb_dir, name)
 
 
+def _existing_review_summary_relative_path(kb_dir: Path, stem: str) -> str | None:
+    root = review_summaries_dir(kb_dir)
+    if not root.exists():
+        return None
+    matches = sorted(root.glob(f"*/{stem}.md"))
+    if not matches:
+        return None
+    newest = max(matches, key=lambda path: path.stat().st_mtime)
+    return newest.relative_to(root).as_posix()
+
+
 
 def _hashes_path(kb_dir: Path) -> Path:
     return Path(kb_dir) / ".openkb" / "hashes.json"
@@ -549,6 +560,11 @@ def _build_source_document(
     raw_path = resolve_kb_relative_path(kb_dir, raw_rel)
     review_summary_path = review_summary_relative_path(stem, ingested_at)
     review_summary_exists = (Path(kb_dir) / ".openkb" / review_summary_path).exists()
+    if not review_summary_exists:
+        existing_review_summary = _existing_review_summary_relative_path(kb_dir, stem)
+        if existing_review_summary is not None:
+            review_summary_path = f"review_summaries/{existing_review_summary}"
+            review_summary_exists = True
     related_count = sum(len(items) for items in related_pages.values())
     return {
         "hash": file_hash,

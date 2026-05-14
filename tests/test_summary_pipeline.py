@@ -100,6 +100,38 @@ def test_summarize_documents_batches_source_ready_records(kb_dir: Path):
     assert result["total"] == 1
 
 
+def test_summarize_documents_reports_progress_and_runs_workers(kb_dir: Path):
+    _add_source_doc(kb_dir, file_hash="hash-a")
+    _add_source_doc(kb_dir, file_hash="hash-b")
+    events: list[dict] = []
+    seen: list[str] = []
+
+    def worker(file_hash: str) -> dict:
+        seen.append(file_hash)
+        return {
+            "file_hash": file_hash,
+            "name": f"{file_hash}.md",
+            "skipped": False,
+            "summary_path": f"review_summaries/{file_hash}.md",
+        }
+
+    result = summarize_documents(
+        kb_dir,
+        file_hashes=["hash-a", "hash-b"],
+        max_workers=2,
+        worker=worker,
+        progress_callback=events.append,
+    )
+
+    assert sorted(seen) == ["hash-a", "hash-b"]
+    assert result["generated"] == 2
+    assert result["failed"] == 0
+    assert result["total"] == 2
+    assert [event["event"] for event in events].count("start") == 2
+    assert [event["event"] for event in events].count("generated") == 2
+    assert events[-1]["completed"] == 2
+
+
 def test_summarize_documents_selects_legacy_kb_without_persisted_ledger(kb_dir: Path):
     (kb_dir / "wiki" / "sources" / "report.md").write_text(
         "# Report\n\nRevenue grew 20%.",

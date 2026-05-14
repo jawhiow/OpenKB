@@ -1,10 +1,12 @@
 """Summary-review workflow for staged OpenKB documents."""
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openkb.agent.compiler import (
     _SYSTEM_TEMPLATE,
@@ -29,6 +31,12 @@ from openkb.source_relations import (
     review_summary_full_path,
     review_summary_relative_path,
 )
+
+
+SummaryProgressCallback = Callable[[dict[str, Any]], None]
+SummaryWorker = Callable[[str], dict[str, Any]]
+_SUMMARY_LEDGER_LOCKS: dict[Path, threading.RLock] = {}
+_SUMMARY_LEDGER_LOCKS_LOCK = threading.Lock()
 
 
 _SUMMARY_SCORE_DIMENSIONS: tuple[tuple[str, str, int], ...] = (
@@ -211,24 +219,27 @@ def summarize_document_source(
     document = resolve_source_document(kb_dir, selector)
     file_hash = str(document["hash"])
     stem = str(document["stem"])
-    ledger_record = get_document_ledger_record(kb_dir, file_hash)
-    if ledger_record is None:
-        ledger_record = build_document_ledger_record(
-            file_hash,
-            defaults=infer_document_ledger_defaults(document),
-        )
-    workflow_state = ledger_record.get("workflow_state", {})
-    if workflow_state.get("summary_state") == "ready" and not force:
-        return {
-            "file_hash": file_hash,
-            "name": document["name"],
-            "skipped": True,
-            "summary_path": str(ledger_record.get("review_summary_path") or review_summary_relative_path(stem, document.get("ingested_at"))),
-        }
-    if workflow_state.get("source_state") not in {"ready", None, ""} and not force:
-        raise RuntimeError(f"Source is not ready for summarization: {document['name']}")
 
-    update_document_workflow_state(kb_dir, file_hash, {"summary_state": "running"})
+    with _summary_ledger_lock(kb_dir):
+        ledger_record = get_document_ledger_record(kb_dir, file_hash)
+        if ledger_record is None:
+            ledger_record = build_document_ledger_record(
+                file_hash,
+                defaults=infer_document_ledger_defaults(document),
+            )
+        workflow_state = ledger_record.get("workflow_state", {})
+        if workflow_state.get("summary_state") == "ready" and not force:
+            return {
+                "file_hash": file_hash,
+                "name": document["name"],
+                "skipped": True,
+                "summary_path": str(ledger_record.get("review_summary_path") or review_summary_relative_path(stem, document.get("ingested_at"))),
+            }
+        if workflow_state.get("source_state") not in {"ready", None, ""} and not force:
+            raise RuntimeError(f"Source is not ready for summarization: {document['name']}")
+
+        update_document_workflow_state(kb_dir, file_hash, {"summary_state": "running"})
+
     try:
         source_rel = normalize_kb_relative_path(document.get("source_path"))
         if not source_rel:
@@ -249,30 +260,32 @@ def summarize_document_source(
             ingested_at=document.get("ingested_at"),
         )
     except Exception as exc:
-        _mark_summary_failed(kb_dir, file_hash, exc)
+        with _summary_ledger_lock(kb_dir):
+            _mark_summary_failed(kb_dir, file_hash, exc)
         raise
 
-    upsert_document_ledger_record(
-        kb_dir,
-        file_hash,
-        {
-            "review_summary_path": summary_rel,
-            "workflow_state": {
-                "summary_state": "ready",
-                "review_state": "unreviewed",
-                "promotion_state": "not_selected",
+    with _summary_ledger_lock(kb_dir):
+        upsert_document_ledger_record(
+            kb_dir,
+            file_hash,
+            {
+                "review_summary_path": summary_rel,
+                "workflow_state": {
+                    "summary_state": "ready",
+                    "review_state": "unreviewed",
+                    "promotion_state": "not_selected",
+                },
+                "review": {
+                    "summary_score": generated["scorecard"].get("total_score"),
+                    "summary_score_source": "auto",
+                    "summary_scorecard": generated["scorecard"],
+                },
+                "execution": {
+                    "last_error": "",
+                    "updated_at": _now_iso(),
+                },
             },
-            "review": {
-                "summary_score": generated["scorecard"].get("total_score"),
-                "summary_score_source": "auto",
-                "summary_scorecard": generated["scorecard"],
-            },
-            "execution": {
-                "last_error": "",
-                "updated_at": _now_iso(),
-            },
-        },
-    )
+        )
     return {
         "file_hash": file_hash,
         "name": document["name"],
@@ -287,6 +300,9 @@ def summarize_documents(
     file_hashes: list[str] | None = None,
     model: str | None = None,
     force: bool = False,
+    max_workers: int = 1,
+    progress_callback: SummaryProgressCallback | None = None,
+    worker: SummaryWorker | None = None,
 ) -> dict[str, Any]:
     """Batch-generate summaries for selected or source-ready documents."""
     selected_hashes = _selected_summary_hashes(kb_dir, file_hashes=file_hashes)
@@ -294,22 +310,66 @@ def summarize_documents(
     failures: list[dict[str, str]] = []
     generated = 0
     skipped = 0
-    for file_hash in selected_hashes:
+    total = len(selected_hashes)
+    completed = 0
+    state_lock = threading.Lock()
+
+    def emit(event: str, **payload: Any) -> None:
+        if progress_callback is not None:
+            progress_callback({"event": event, "completed": completed, "total": total, **payload})
+
+    def run_one(index: int, file_hash: str) -> tuple[int, str, dict[str, Any] | None, Exception | None]:
+        emit("start", index=index, file_hash=file_hash)
         try:
-            result = summarize_document_source(kb_dir, file_hash, model=model, force=force)
+            if worker is not None:
+                result = worker(file_hash)
+            else:
+                result = summarize_document_source(kb_dir, file_hash, model=model, force=force)
         except Exception as exc:
-            failures.append({"file_hash": file_hash, "error": str(exc)})
-            continue
-        results.append(result)
-        if result.get("skipped"):
-            skipped += 1
-        else:
-            generated += 1
+            return index, file_hash, None, exc
+        return index, file_hash, result, None
+
+    def record(index: int, file_hash: str, result: dict[str, Any] | None, exc: Exception | None) -> None:
+        nonlocal completed, generated, skipped
+        with state_lock:
+            completed += 1
+            if exc is not None:
+                failures.append({"file_hash": file_hash, "error": str(exc)})
+                emit("failure", index=index, file_hash=file_hash, error=str(exc))
+                return
+            assert result is not None
+            results.append(result)
+            if result.get("skipped"):
+                skipped += 1
+                emit("skipped", index=index, file_hash=file_hash, name=str(result.get("name") or ""))
+            else:
+                generated += 1
+                emit(
+                    "generated",
+                    index=index,
+                    file_hash=file_hash,
+                    name=str(result.get("name") or ""),
+                    summary_path=str(result.get("summary_path") or ""),
+                )
+
+    emit("selected")
+    worker_count = min(max(int(max_workers or 1), 1), max(total, 1))
+    if worker_count == 1:
+        for index, file_hash in enumerate(selected_hashes, 1):
+            record(*run_one(index, file_hash))
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [
+                executor.submit(run_one, index, file_hash)
+                for index, file_hash in enumerate(selected_hashes, 1)
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                record(*future.result())
     return {
         "generated": generated,
         "skipped": skipped,
         "failed": len(failures),
-        "total": len(selected_hashes),
+        "total": total,
         "failures": failures,
         "documents": results,
     }
@@ -419,7 +479,7 @@ def _generate_summary_only(kb_dir: Path, doc_name: str, source_path: Path, model
 
 
 def _selected_summary_hashes(kb_dir: Path, *, file_hashes: list[str] | None) -> list[str]:
-    if file_hashes:
+    if file_hashes is not None:
         return [str(file_hash).strip() for file_hash in file_hashes if str(file_hash).strip()]
     return [
         record["file_hash"]
@@ -429,6 +489,16 @@ def _selected_summary_hashes(kb_dir: Path, *, file_hashes: list[str] | None) -> 
             summary_state=["not_started", "failed"],
         )
     ]
+
+
+def _summary_ledger_lock(kb_dir: Path) -> threading.RLock:
+    key = Path(kb_dir).resolve()
+    with _SUMMARY_LEDGER_LOCKS_LOCK:
+        lock = _SUMMARY_LEDGER_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _SUMMARY_LEDGER_LOCKS[key] = lock
+        return lock
 
 
 def _mark_summary_failed(kb_dir: Path, file_hash: str, error: Exception) -> None:

@@ -24,6 +24,7 @@ from openkb.ocr.pipeline import prepare_ocr_artifacts
 from openkb.pdf_strategy import (
     OCR_LOCAL_LONG,
     OCR_PAGEINDEX_LOCAL,
+    PAGEINDEX_LOCAL,
     PLAIN_LOCAL_LONG,
     recommend_long_pdf_strategy,
     resolve_long_pdf_strategy,
@@ -83,6 +84,26 @@ def _pageindex_long_doc_available() -> bool:
     )
 
 
+def _pageindex_local_runtime_available(kb_dir: Path) -> bool:
+    """Return whether OpenKB's configured local PageIndex runtime is usable."""
+    try:
+        from openkb.pageindex_local.runtime import runtime_is_ready
+    except ImportError:
+        return False
+    return runtime_is_ready(Path(kb_dir) / ".openkb" / "pageindex-local")
+
+
+def _write_pageindex_input_from_pages(pages: list[dict], path: Path) -> None:
+    """Write per-page PDF extraction as Markdown suitable for local PageIndex."""
+    parts: list[str] = []
+    for index, page in enumerate(pages, start=1):
+        page_num = page.get("page") or index
+        content = str(page.get("content") or "").strip()
+        parts.append(f"## Page {page_num}\n\n{content}".strip())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n\n".join(parts).strip(), encoding="utf-8")
+
+
 def convert_document(
     src: Path,
     kb_dir: Path,
@@ -138,7 +159,8 @@ def convert_document(
         ocr_enabled = bool(config.get("ocr_enabled", True))
         ocr_auto_recommend = bool(config.get("ocr_auto_recommend", True))
         pageindex_local_enabled = bool(config.get("pageindex_local_enabled", False))
-        force_local_strategy = strategy_override in {PLAIN_LOCAL_LONG, *_OCR_STRATEGIES}
+        pageindex_local_available = pageindex_local_enabled and _pageindex_local_runtime_available(kb_dir)
+        force_local_strategy = strategy_override in {PLAIN_LOCAL_LONG, PAGEINDEX_LOCAL, *_OCR_STRATEGIES}
         scan_detected = False
 
         if force_local_strategy or (ocr_enabled and ocr_auto_recommend) or is_long_doc:
@@ -150,7 +172,7 @@ def convert_document(
                 is_scanned=scan_detected,
                 ocr_enabled=ocr_enabled,
                 ocr_auto_recommend=ocr_auto_recommend,
-                pageindex_local_enabled=pageindex_local_enabled,
+                pageindex_local_enabled=pageindex_local_available,
             )
         selected_strategy = resolve_long_pdf_strategy(recommended_strategy, strategy_override)
 
@@ -171,6 +193,32 @@ def convert_document(
                 pageindex_input_path=artifacts["pageindex_input_path"]
                 if selected_strategy == OCR_PAGEINDEX_LOCAL
                 else None,
+                file_hash=file_hash,
+                page_count=page_count,
+            )
+
+        if selected_strategy == PAGEINDEX_LOCAL:
+            sources_dir = kb_dir / "wiki" / "sources"
+            sources_dir.mkdir(parents=True, exist_ok=True)
+            images_dir = kb_dir / "wiki" / "sources" / "images" / doc_name
+            images_dir.mkdir(parents=True, exist_ok=True)
+            pages = convert_pdf_to_pages(src, doc_name, images_dir)
+            dest_json = sources_dir / f"{doc_name}.json"
+            dest_json.write_text(
+                json.dumps(pages, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            pageindex_input_path = openkb_dir / "pageindex-local" / f"{doc_name}-input.md"
+            _write_pageindex_input_from_pages(pages, pageindex_input_path)
+            return ConvertResult(
+                raw_path=raw_dest,
+                source_path=dest_json,
+                is_long_doc=is_long_doc,
+                local_long_doc=False,
+                scan_detected=scan_detected,
+                recommended_strategy=recommended_strategy,
+                selected_strategy=selected_strategy,
+                pageindex_input_path=pageindex_input_path,
                 file_hash=file_hash,
                 page_count=page_count,
             )
@@ -218,7 +266,7 @@ def convert_document(
 
             raise RuntimeError(
                 "Long PDF requires PageIndex, but no compatible PageIndex backend is available. "
-                "Install/configure PageIndex or use OCR PageIndex for scanned PDFs."
+                "Install/configure PageIndex or enable a ready local PageIndex runtime."
             )
 
     # ------------------------------------------------------------------

@@ -809,21 +809,111 @@ def create_app(registry: JobRegistry | None = None):
             raise translate_error(exc) from exc
 
         def run(job):
+            import concurrent.futures
+            import threading
+
+            from openkb.cli import _healthy_model_pool_routes, _runtime_context_for_profile
+            from openkb.llm_runtime import llm_runtime_context
+            from openkb.llm_usage import llm_usage_context
+            from openkb.model_pool import route_profile
+            from openkb.workflows.summary_pipeline import _selected_summary_hashes
             from openkb.workflows.summary_pipeline import summarize_documents as run_summarize_documents
 
             job.raise_if_stopped()
+            selected_hashes = [str(item) for item in file_hashes] if file_hashes else None
+            all_hashes = _selected_summary_hashes(target_kb, file_hashes=selected_hashes)
+            job.set_progress(0, len(all_hashes))
+            requested_model = str(payload.get("model") or "").strip() or None
+            routes = [] if requested_model else _healthy_model_pool_routes(target_kb)
+            worker_count = min(len(routes), len(all_hashes)) if routes and all_hashes else 1
             job.add_log("Generating document summaries")
-            with _workflow_llm_context(
-                target_kb,
-                model=str(payload.get("model") or "").strip() or None,
-                feature="summary",
-            ) as selected_model:
-                result = run_summarize_documents(
+            if not all_hashes:
+                job.add_log("No source-ready document summaries to generate.")
+                return {"generated": 0, "skipped": 0, "failed": 0, "total": 0, "failures": [], "documents": []}
+            if worker_count > 1:
+                job.add_log(f"Summarizing with {worker_count} parallel task(s) across healthy LLM profile(s).")
+            else:
+                job.add_log("Summarizing with a single task.")
+
+            progress_lock = threading.Lock()
+            completed = 0
+
+            def progress(event: dict[str, Any]) -> None:
+                nonlocal completed
+                with progress_lock:
+                    if event.get("event") in {"generated", "skipped", "failure"}:
+                        completed += 1
+                    index = event.get("index")
+                    file_hash = str(event.get("file_hash") or "").strip()
+                    name = str(event.get("name") or "").strip()
+                    summary_path = str(event.get("summary_path") or "").strip()
+                    if event.get("event") == "start":
+                        job.add_log(f"Summarizing {index}: {file_hash}")
+                    elif event.get("event") == "generated":
+                        message = f"Summarized {index}: {name or file_hash}"
+                        if summary_path:
+                            message += f" -> {summary_path}"
+                        job.add_log(message)
+                    elif event.get("event") == "skipped":
+                        job.add_log(f"Skipped {index}: {name or file_hash}")
+                    elif event.get("event") == "failure":
+                        job.add_log(f"Failed {index}: {file_hash}: {event.get('error')}", level="error")
+                    job.set_progress(completed, len(all_hashes))
+
+            def merge_result(base: dict[str, Any], partial: dict[str, Any]) -> None:
+                base["generated"] += int(partial.get("generated") or 0)
+                base["skipped"] += int(partial.get("skipped") or 0)
+                base["failed"] += int(partial.get("failed") or 0)
+                base["total"] += int(partial.get("total") or 0)
+                base["failures"].extend(partial.get("failures") or [])
+                base["documents"].extend(partial.get("documents") or [])
+
+            def run_worker(route, bucket: list[str]) -> dict[str, Any]:
+                profile = route_profile(route)
+                with llm_runtime_context(_runtime_context_for_profile(target_kb, profile)), llm_usage_context(target_kb, "summary"):
+                    selected_model = str(route.model or "").strip() or None
+                    kwargs: dict[str, Any] = {
+                        "file_hashes": bucket,
+                        "model": selected_model,
+                        "force": bool(payload.get("force", False)),
+                    }
+                    if _callable_accepts_keyword(run_summarize_documents, "max_workers"):
+                        kwargs["max_workers"] = 1
+                    if _callable_accepts_keyword(run_summarize_documents, "progress_callback"):
+                        kwargs["progress_callback"] = progress
+                    return run_summarize_documents(target_kb, **kwargs)
+
+            if routes and worker_count > 1:
+                buckets: list[list[str]] = [[] for _ in range(worker_count)]
+                for offset, file_hash in enumerate(all_hashes):
+                    buckets[offset % worker_count].append(file_hash)
+                result = {"generated": 0, "skipped": 0, "failed": 0, "total": 0, "failures": [], "documents": []}
+                with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+                    futures = [
+                        executor.submit(run_worker, route, bucket)
+                        for route, bucket in zip(routes[:worker_count], buckets)
+                        if bucket
+                    ]
+                    for future in concurrent.futures.as_completed(futures):
+                        merge_result(result, future.result())
+            elif routes:
+                result = run_worker(routes[0], all_hashes)
+            else:
+                with _workflow_llm_context(
                     target_kb,
-                    file_hashes=[str(item) for item in file_hashes] if file_hashes else None,
-                    model=selected_model,
-                    force=bool(payload.get("force", False)),
-                )
+                    model=requested_model,
+                    feature="summary",
+                ) as selected_model:
+                    kwargs: dict[str, Any] = {
+                        "file_hashes": all_hashes,
+                        "model": selected_model,
+                        "force": bool(payload.get("force", False)),
+                    }
+                    if _callable_accepts_keyword(run_summarize_documents, "max_workers"):
+                        kwargs["max_workers"] = 1
+                    if _callable_accepts_keyword(run_summarize_documents, "progress_callback"):
+                        kwargs["progress_callback"] = progress
+                    result = run_summarize_documents(target_kb, **kwargs)
             if result["generated"]:
                 commit_kb_changes(target_kb, f"Summarize {result['generated']} document(s)")
             job.raise_if_stopped()

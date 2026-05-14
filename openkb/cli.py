@@ -43,6 +43,7 @@ from openkb.llm_runtime import configure_runtime, get_base_url, model_prefers_re
 from openkb.converter import convert_document
 from openkb.kb_git import commit_kb_changes, ensure_kb_git
 from openkb.log import append_log
+from openkb.pdf_strategy import OCR_PAGEINDEX_LOCAL, PAGEINDEX_LOCAL
 from openkb.schema import AGENTS_MD
 
 # Suppress warnings after all imports — markitdown overrides filters at import time
@@ -489,7 +490,10 @@ def _run_pageindex_with_model_pool(
             _setup_llm_key(kb_dir, route_profile(route))
             started_at = time.perf_counter()
             try:
-                result = operation(route.model)
+                from openkb.llm_runtime import llm_runtime_context
+
+                with llm_runtime_context(_runtime_context_for_profile(kb_dir, route_profile(route))):
+                    result = operation(route.model)
                 record_route_success(kb_dir, route.profile_id, route.model)
                 _record_external_compile_usage(
                     kb_dir,
@@ -529,7 +533,10 @@ def _run_pageindex_with_model_pool(
     _setup_llm_key(kb_dir, default_profile)
     started_at = time.perf_counter()
     try:
-        result = operation(default_model)
+        from openkb.llm_runtime import llm_runtime_context
+
+        with llm_runtime_context(_runtime_context_for_profile(kb_dir, default_profile)):
+            result = operation(default_model)
     except Exception as exc:
         _record_external_compile_usage(
             kb_dir,
@@ -833,12 +840,16 @@ def add_single_file(
             if strict:
                 raise RuntimeError(f"Compilation failed: {exc}") from exc
             return
-    elif result.selected_strategy == "ocr-pageindex-local":
-        click.echo("  Document routed to OCR + local PageIndex...")
-        _emit_progress(progress_callback, f"Indexing OCR document locally: {file_path.name}")
+    elif result.selected_strategy in {OCR_PAGEINDEX_LOCAL, PAGEINDEX_LOCAL}:
+        if result.selected_strategy == OCR_PAGEINDEX_LOCAL:
+            click.echo("  Document routed to OCR + local PageIndex...")
+            _emit_progress(progress_callback, f"Indexing OCR document locally: {file_path.name}")
+        else:
+            click.echo("  Long document routed to local PageIndex...")
+            _emit_progress(progress_callback, f"Indexing long document locally: {file_path.name}")
         try:
             if result.source_path is None or result.pageindex_input_path is None:
-                raise RuntimeError("OCR PageIndex artifacts are missing.")
+                raise RuntimeError("Local PageIndex artifacts are missing.")
             from openkb.indexer import index_ocr_with_local_pageindex
 
             pageindex_model = str(config.get("pageindex_local_model") or profiles[0]["model"]).strip()
@@ -859,6 +870,7 @@ def add_single_file(
                     "source_path": str(result.source_path),
                     "pageindex_input_path": str(result.pageindex_input_path),
                     "mode": "pageindex_local",
+                    "strategy": result.selected_strategy,
                 },
                 fixed_route=model_route,
             )

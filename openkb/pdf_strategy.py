@@ -6,8 +6,9 @@ from typing import Final
 PLAIN_LOCAL_LONG: Final[str] = "plain-local-long"
 OCR_LOCAL_LONG: Final[str] = "ocr-local-long"
 OCR_PAGEINDEX_LOCAL: Final[str] = "ocr-pageindex-local"
+PAGEINDEX_LOCAL: Final[str] = "pageindex-local"
 
-_KNOWN_STRATEGIES = {PLAIN_LOCAL_LONG, OCR_LOCAL_LONG, OCR_PAGEINDEX_LOCAL}
+_KNOWN_STRATEGIES = {PLAIN_LOCAL_LONG, OCR_LOCAL_LONG, OCR_PAGEINDEX_LOCAL, PAGEINDEX_LOCAL}
 
 
 def recommend_long_pdf_strategy(
@@ -18,9 +19,10 @@ def recommend_long_pdf_strategy(
     pageindex_local_enabled: bool,
 ) -> str:
     """Return the default long-PDF strategy for current document conditions."""
-    del pageindex_local_enabled
     if is_scanned and ocr_enabled and ocr_auto_recommend:
         return OCR_PAGEINDEX_LOCAL
+    if pageindex_local_enabled:
+        return PAGEINDEX_LOCAL
     return ""
 
 

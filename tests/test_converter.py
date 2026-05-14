@@ -360,6 +360,43 @@ class TestConvertDocumentPdfLong:
 
         mock_pages.assert_not_called()
 
+    def test_long_pdf_uses_local_pageindex_runtime_when_ready(self, kb_dir, tmp_path):
+        src = tmp_path / "local-pageindex.pdf"
+        src.write_bytes(b"%PDF-1.4 fake long content")
+        (kb_dir / ".openkb" / "config.yaml").write_text(
+            "pageindex_threshold: 20\npageindex_local_enabled: true\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch("openkb.converter.pymupdf.open") as mock_mu,
+            patch("openkb.converter._pageindex_long_doc_available", return_value=False),
+            patch("openkb.converter._pageindex_local_runtime_available", return_value=True),
+            patch("openkb.converter.is_probably_scanned_pdf", return_value=False),
+            patch(
+                "openkb.converter.convert_pdf_to_pages",
+                return_value=[
+                    {"page": 1, "content": "Page one text.", "images": []},
+                    {"page": 2, "content": "Page two text.", "images": []},
+                ],
+            ) as mock_pages,
+        ):
+            fake_doc = MagicMock()
+            fake_doc.page_count = 200
+            fake_doc.__enter__ = MagicMock(return_value=fake_doc)
+            fake_doc.__exit__ = MagicMock(return_value=False)
+            mock_mu.return_value = fake_doc
+
+            result = convert_document(src, kb_dir)
+
+        mock_pages.assert_called_once()
+        assert result.is_long_doc is True
+        assert result.selected_strategy == "pageindex-local"
+        assert result.source_path is not None
+        assert json.loads(result.source_path.read_text(encoding="utf-8"))[0]["content"] == "Page one text."
+        assert result.pageindex_input_path is not None
+        assert result.pageindex_input_path.read_text(encoding="utf-8").startswith("## Page 1\n\nPage one text.")
+
     def test_long_pdf_marks_scanned_recommendation_when_ocr_enabled(self, kb_dir, tmp_path):
         src = tmp_path / "scan-recommend.pdf"
         src.write_bytes(b"%PDF-1.4 fake long content")

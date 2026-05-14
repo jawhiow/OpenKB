@@ -844,6 +844,66 @@ class TestAddCommand:
         hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
         assert hashes["short-pageindex-1"]["type"] == "long_pdf"
 
+    def test_add_single_file_pageindex_local_success_runs_long_compiler_and_registers_pageindex(self, tmp_path):
+        from openkb.cli import add_single_file
+        from openkb.converter import ConvertResult
+        from openkb.indexer import IndexResult
+
+        kb_dir = self._setup_kb(tmp_path)
+        doc = tmp_path / "local-long.pdf"
+        doc.write_bytes(b"%PDF")
+        source_path = kb_dir / "wiki" / "sources" / "local-long.json"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text('[{"page": 1, "content": "Local page"}]', encoding="utf-8")
+        pageindex_input_path = tmp_path / "pageindex_input.md"
+        pageindex_input_path.write_text("## Page 1\n\nLocal page", encoding="utf-8")
+        mock_result = ConvertResult(
+            raw_path=kb_dir / "raw" / "local-long.pdf",
+            source_path=source_path,
+            is_long_doc=True,
+            local_long_doc=False,
+            selected_strategy="pageindex-local",
+            pageindex_input_path=pageindex_input_path,
+            file_hash="pageindex-local-1",
+        )
+        index_result = IndexResult(
+            doc_id="local-doc-1",
+            description="Local PageIndex summary",
+            tree={"structure": []},
+        )
+        summary_path = kb_dir / "wiki" / "summaries" / "local-long.md"
+
+        with (
+            patch("openkb.cli.convert_document", return_value=mock_result),
+            patch("openkb.indexer.index_ocr_with_local_pageindex", return_value=index_result) as mock_index,
+            patch("openkb.agent.compiler.compile_long_doc", new_callable=AsyncMock) as mock_compile_long,
+            patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock) as mock_compile_local,
+        ):
+            mock_compile_long.return_value = []
+            add_single_file(doc, kb_dir)
+
+        mock_index.assert_called_once_with(
+            "local-long",
+            source_path,
+            pageindex_input_path,
+            kb_dir,
+            model="gpt-4o-mini",
+            job=None,
+        )
+        mock_compile_local.assert_not_called()
+        mock_compile_long.assert_awaited_once_with(
+            "local-long",
+            summary_path,
+            "local-doc-1",
+            kb_dir,
+            "gpt-4o-mini",
+            doc_description="Local PageIndex summary",
+            max_concurrency=2,
+            cleanup_existing=False,
+        )
+        hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+        assert hashes["pageindex-local-1"]["type"] == "long_pdf"
+
     def test_add_single_file_ocr_pageindex_local_uses_model_pool_route_model(self, tmp_path):
         from openkb.cli import add_single_file
         from openkb.converter import ConvertResult

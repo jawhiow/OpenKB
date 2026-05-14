@@ -124,6 +124,33 @@ def test_dedupe_concept_plan_merges_suffix_variant_into_existing_concept(tmp_pat
     assert deduped["related"] == []
 
 
+def test_dedupe_concept_plan_keeps_distinct_english_compounds(tmp_path):
+    wiki = tmp_path / "wiki"
+    (wiki / "concepts").mkdir(parents=True)
+    (wiki / "concepts" / "attention.md").write_text(
+        "# Attention\n\nExisting concept.",
+        encoding="utf-8",
+    )
+
+    deduped = _dedupe_concept_plan(
+        wiki,
+        {
+            "create": [
+                {
+                    "name": "flash-attention",
+                    "title": "Flash Attention",
+                }
+            ],
+            "update": [],
+            "related": [],
+        },
+    )
+
+    assert deduped["create"] == [{"name": "flash-attention", "title": "Flash Attention"}]
+    assert deduped["update"] == []
+    assert deduped["related"] == []
+
+
 def test_llm_calls_emit_progress_events_for_job_details():
     events: list[str] = []
 
