@@ -9,6 +9,7 @@ Checks for:
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 
 from openkb.schema import LEGACY_WIKI_DIRS
@@ -489,6 +490,174 @@ def format_legacy_placeholder_fixes(cleaned: list[dict[str, str | int]]) -> str:
     return "\n".join(lines)
 
 
+def find_concept_duplicate_clusters(kb_dir: Path, max_clusters: int = 20) -> list[str]:
+    """Surface duplicate-concept clusters detected by ``concept_merge``.
+
+    Returns formatted bullet strings suitable for inclusion in the lint
+    report. Only the top ``max_clusters`` are returned to keep reports
+    readable; the full set is still available via ``openkb merge-concepts``.
+    """
+    try:
+        from openkb.concept_merge import propose_merges
+    except ImportError:
+        return []
+    proposals = propose_merges(kb_dir)
+    issues: list[str] = []
+    for proposal in proposals[:max_clusters]:
+        siblings = proposal.merged[1:]
+        if not siblings:
+            continue
+        joined = ", ".join(siblings[:4]) + (" ..." if len(siblings) > 4 else "")
+        issues.append(
+            f"duplicate concept cluster (canonical={proposal.canonical}, "
+            f"size={len(proposal.merged)}): merge candidates → {joined}"
+        )
+    if len(proposals) > max_clusters:
+        issues.append(
+            f"... and {len(proposals) - max_clusters} more clusters; run "
+            "`openkb merge-concepts` to see the full list."
+        )
+    return issues
+
+
+_H1_NOISE_PREFIX_RE = re.compile(
+    r"^(概念[:：]|主题[:：]|Concept\s*[:：]|Topic\s*[:：])\s*",
+    re.IGNORECASE,
+)
+
+
+def _h1_bigram_set(text: str) -> set[str]:
+    text = unicodedata.normalize("NFKC", text or "").casefold()
+    text = re.sub(r"[\s\-_/（）()【】\[\]，,。.：:、；;]+", "", text)
+    if len(text) <= 1:
+        return {text} if text else set()
+    return {text[i:i+2] for i in range(len(text) - 1)}
+
+
+def _h1_jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def find_h1_issues(wiki: Path, *, namespaces: tuple[str, ...] = ("concepts", "companies", "industries")) -> list[str]:
+    """Audit H1 / filename consistency across the named subdirectories.
+
+    Surfaces four failure modes (matching ``scripts/audit_concept_h1.py``):
+      * ``missing_h1``: page has no top-level heading at all.
+      * ``h1_is_english_slug``: H1 text is just the English slug (no human title).
+      * ``h1_prefix_noise``: H1 begins with ``概念：`` / ``Concept:`` etc.
+      * ``h1_mismatch``: H1 and filename share almost no characters
+        (suggests LLM drifted to a different topic).
+    """
+    issues: list[str] = []
+    for namespace in namespaces:
+        for path, _kinds in iter_h1_violations(wiki, namespace):
+            for kind, detail in _kinds:
+                issues.append(f"{kind}: {namespace}/{path.name} {detail}")
+    return issues
+
+
+def iter_h1_violations(wiki: Path, namespace: str):
+    """Yield ``(path, [(kind, detail), ...])`` for each problematic page.
+
+    Public iterator used both by lint reports and by ``openkb compact --fix-h1``
+    to drive in-place repairs.
+    """
+    cjk_pattern = re.compile(r"[一-鿿]")
+    ns_dir = wiki / namespace
+    if not ns_dir.is_dir():
+        return
+    for path in sorted(ns_dir.glob("*.md")):
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        body = raw
+        if raw.startswith("---"):
+            end = raw.find("\n---", 3)
+            if end != -1:
+                body = raw[end + 4:].lstrip("\n")
+        h1_text = ""
+        for line in body.splitlines():
+            s = line.strip()
+            if s.startswith("# ") and not s.startswith("## "):
+                h1_text = s[2:].strip()
+                break
+        stem = path.stem
+        kinds: list[tuple[str, str]] = []
+        if not h1_text:
+            kinds.append(("missing_h1", ""))
+        elif h1_text == stem and not cjk_pattern.search(h1_text):
+            kinds.append(("h1_is_english_slug", f"(H1={h1_text!r})"))
+        elif _H1_NOISE_PREFIX_RE.match(h1_text):
+            kinds.append(("h1_prefix_noise", f"(H1={h1_text!r})"))
+        elif cjk_pattern.search(h1_text) and cjk_pattern.search(stem):
+            h1_main = re.split(r"[：:—\-\(（]", h1_text, 1)[0].strip()
+            stem_main = re.split(r"[：:—\-\(（]", stem, 1)[0].strip()
+            sim = max(
+                _h1_jaccard(_h1_bigram_set(stem), _h1_bigram_set(h1_text)),
+                _h1_jaccard(_h1_bigram_set(stem_main), _h1_bigram_set(h1_text)),
+                _h1_jaccard(_h1_bigram_set(stem), _h1_bigram_set(h1_main)),
+            )
+            if sim < 0.25:
+                kinds.append(("h1_mismatch", f"(H1={h1_text!r}, sim={sim:.2f})"))
+        if kinds:
+            yield path, kinds
+
+
+def apply_safe_h1_fix(path: Path) -> bool:
+    """Apply safe H1 repairs in place. Returns True if mutated.
+
+    Safe = only repairs ``missing_h1`` (prepend ``# {stem}``) and
+    ``h1_prefix_noise`` (strip the ``概念：`` / ``Concept:`` prefix). Skipped
+    for ``h1_mismatch`` (too risky to overwrite blindly) and
+    ``h1_is_english_slug`` (requires a Chinese title that doesn't exist yet).
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    body = raw
+    fm_block = ""
+    if raw.startswith("---"):
+        end = raw.find("\n---", 3)
+        if end != -1:
+            fm_block = raw[: end + 4]
+            body = raw[end + 4:].lstrip("\n")
+
+    lines = body.splitlines()
+    h1_idx = -1
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("# ") and not s.startswith("## "):
+            h1_idx = i
+            break
+
+    changed = False
+    if h1_idx >= 0:
+        h1_text = lines[h1_idx].strip()[2:].strip()
+        cleaned = _H1_NOISE_PREFIX_RE.sub("", h1_text).strip()
+        if cleaned and cleaned != h1_text:
+            lines[h1_idx] = f"# {cleaned}"
+            changed = True
+    else:
+        lines = [f"# {path.stem}", "", *lines]
+        changed = True
+
+    if not changed:
+        return False
+    new_body = "\n".join(lines)
+    if raw.endswith("\n"):
+        new_body += "\n"
+    if fm_block:
+        new_raw = fm_block.rstrip("\n") + "\n" + new_body
+    else:
+        new_raw = new_body
+    path.write_text(new_raw, encoding="utf-8")
+    return True
+
+
 def run_structural_lint(kb_dir: Path) -> str:
     """Run all structural lint checks and return a formatted Markdown report.
 
@@ -507,6 +676,8 @@ def run_structural_lint(kb_dir: Path) -> str:
     incomplete = find_incomplete_entries(raw, wiki)
     sync_issues = check_index_sync(wiki)
     investment_issues = find_investment_quality_issues(wiki)
+    h1_issues = find_h1_issues(wiki)
+    duplicate_clusters = find_concept_duplicate_clusters(kb_dir)
 
     lines = ["## Structural Lint Report\n"]
 
@@ -561,5 +732,29 @@ def run_structural_lint(kb_dir: Path) -> str:
             lines.append(f"- {issue}")
     else:
         lines.append("No investment-specific quality issues found.")
+    lines.append("")
+
+    # H1 / filename consistency
+    lines.append(f"### H1 / Filename Issues ({len(h1_issues)})")
+    if h1_issues:
+        for issue in h1_issues[:50]:
+            lines.append(f"- {issue}")
+        if len(h1_issues) > 50:
+            lines.append(f"- ... and {len(h1_issues) - 50} more (run `python scripts/audit_concept_h1.py <kb>` for the full report)")
+    else:
+        lines.append("All H1 headings look healthy.")
+    lines.append("")
+
+    # Duplicate concept clusters (mergeable)
+    lines.append(f"### Duplicate Concept Clusters ({len(duplicate_clusters)})")
+    if duplicate_clusters:
+        for issue in duplicate_clusters:
+            lines.append(f"- {issue}")
+        lines.append("")
+        lines.append(
+            "_Run `openkb merge-concepts` to review or `openkb merge-concepts --apply` to merge._"
+        )
+    else:
+        lines.append("No duplicate concept clusters detected.")
 
     return "\n".join(lines)

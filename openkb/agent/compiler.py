@@ -60,12 +60,30 @@ def _emit_compile_progress(message: str) -> None:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_TEMPLATE = """\
-You are OpenKB's wiki compilation agent for a personal knowledge base.
+You are OpenKB's wiki compilation agent for a **long-term personal investment
+knowledge base**. The KB is built to be re-read by future-you and by other
+LLMs as durable context for investment research.
 
 {schema_md}
 
+## Global principles (apply to every page you generate)
+1. **Trustworthiness** — every material claim must be traceable back to the
+   source document. Cite anchors: PDF → ``p.12``; video/audio transcript →
+   ``[01:23:45]`` (or ``12:34``); chapter/section → ``§3.2`` or ``第3章``;
+   if no anchor exists, paraphrase carefully and note ``(unverified)``.
+2. **Modularity** — concept pages should be reusable across documents. Prefer
+   short canonical Chinese nouns over long descriptive titles. A concept that
+   only applies to one company or one event belongs in that company page or
+   the document summary, not in ``concepts/``.
+3. **Freshness via update** — when a similar page exists, prefer ``update``
+   (merging new evidence) over ``create`` (spawning a near-duplicate). Use the
+   summary's existing-pages list to avoid renaming the same idea.
+4. **Investment focus** — favour content that survives multiple quarters:
+   business model, capital allocation, durable risks, monitoring indicators,
+   bear-case signals. Filter out short-lived narrative noise.
+
 Write all content in {language} language.
-Use [[wikilinks]] to connect related pages (e.g. [[concepts/attention]]).
+Use [[wikilinks]] to connect related pages (e.g. ``[[concepts/护城河]]``).
 """
 
 _SUMMARY_USER = """\
@@ -74,25 +92,37 @@ New document: {doc_name}
 Full text:
 {content}
 
-Write a summary page for this document in Markdown.
+Write a summary page for this **investment-research document** in Markdown.
 
-If this is an investment research report, use an investment-research structure:
+Use this investment structure when applicable:
 - Core thesis and conclusion
 - Ratings / top ideas / company table when available
 - Key numbers, assumptions, forecasts, and valuation context
 - Industry chain map and bottlenecks
 - Catalysts and monitoring indicators
 - Risks, bear-case evidence, and disconfirming signals
-- Source evidence with page references when page markers are present
+- Source evidence section — anchor each evidence line. PDF: ``(p.12)``;
+  video/audio: ``[01:23:45]`` or ``[12:34]``; transcript with section
+  headings: ``(§核心论点)``; chapter book: ``(§3.2)`` or ``(第3章)``.
+  If the source has no anchors at all (raw transcript), prefix evidence
+  lines with the most relevant section/topic in ``(§...)``.
 
 Keep all material claims traceable to the source text. Preserve important
-numbers, dates, companies, and units. Use [[concepts/...]] only for concepts
-that deserve durable cross-document pages.
+numbers, dates, companies, and units.
+
+Use ``[[concepts/...]]`` ONLY when the target idea deserves a durable
+cross-document page. Heuristics for "deserves":
+- Appears (or will appear) in ≥ 2 documents.
+- Is a reusable noun (mechanism, metric, risk type, framework, policy,
+  technology, monitoring indicator). NOT a one-off event or quarterly figure.
+- Has a stable canonical Chinese name (no English slugs, no descriptive
+  sentence-as-name).
 
 Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) describing the document's main contribution
-- "content": The full summary in Markdown. Include key concepts, findings, ideas, \
-and [[wikilinks]] to concepts that could become cross-document concept pages
+- "content": The full summary in Markdown. Start with ``# {doc_name}`` (or a
+  cleaner Chinese title if the doc_name is a filename). Include key concepts,
+  findings, ideas, and ``[[wikilinks]]`` to durable concepts.
 
 Return ONLY valid JSON, no fences.
 """
@@ -117,14 +147,29 @@ Rules:
   supply-chain position.
 - The page subject must be an actual company, listed company, private company,
   subsidiary, or clearly named investable business entity.
+- **Name format (CRITICAL)** — "name" MUST be a canonical company noun:
+  * GOOD: ``腾讯``, ``小米集团``, ``中国长江电力``, ``比亚迪``, ``中天科技``, ``AMD``,
+    ``Wuxi Biologics``, ``松下电器产业株式会社``.
+  * BAD (these are research-fragment titles, NOT companies — never propose them):
+    - Starts with digit + dash: ``1-柴油机毛利率持续提升``,
+      ``2-中船柴油机剩余股权收购``, ``4月挖机销量有望超预期``
+    - Contains event/finance verbs: ``业绩优秀但股价承压``,
+      ``AI产业链算力需求爆发端``, ``东南亚户储需求恢复``
+    - Contains data points: ``26Q1沿海港口集装箱吞吐量7918万TEU``,
+      ``中微公司110倍-需谨慎看待估值合理性``
+    - Long descriptive phrase (> 12 CJK chars without 公司/集团/股份/控股):
+      ``光伏出口强劲及地缘冲突致全球提前补库``
 - Do NOT include products, technologies, countries, markets, concepts, or broad
   industry themes; those belong in `industries/` only when they are real
   industries, otherwise in `concepts/`.
+- **Update vs create** — before "create", check the existing list above. If a
+  company with the same canonical name (allowing for 公司/集团/股份/有限 suffix
+  variants) exists, use ``"action": "update"``.
 - If uncertain whether a candidate is a real company, do not include it.
 - Prefer 3-8 high-signal companies when the report supports it.
 - Use a concise Chinese page filename in "name" when the KB language is
-  Chinese. Do not use English slugs.
-- Use "action": "update" for an existing company page and "create" otherwise.
+  Chinese. Do not use English slugs unless the company is genuinely
+  English-only (e.g. ``AMD``, ``Wuxi Biologics``).
 - If the report does not contain material company evidence, return
   {{"companies": []}}.
 
@@ -147,6 +192,17 @@ Return a JSON object with one key:
 
 Rules:
 - Use "action": "update" for an existing page and "create" otherwise.
+- **Variant detection (CRITICAL)** — before "create", scan existing industry
+  briefs for the same sector under a different name. The following are all
+  DUPLICATES and should resolve to ``update`` on the canonical short noun:
+  * ``AI算力基础设施行业`` ≡ ``AI算力基础设施产业链全景`` ≡
+    ``AI算力基础设施行业-Capex驱动与国产替代下的景气周期``
+  * ``光通信产业链`` ≡ ``光通信产业链-从光芯片-光模块到光纤光缆与光器件的全链条结构``
+  * ``存储芯片行业`` ≡ ``半导体存储行业-AI驱动的超级周期-长协逻辑与估值重塑``
+  Canonical name = short noun phrase (≤ 8 CJK chars + ``行业``/``产业链``).
+- **Name format** — "name" is a short Chinese sector noun ending in
+  ``行业``, ``产业链``, ``市场``, ``链`` or similar. Do NOT include subtitles
+  separated by dashes, no event verbs, no quarters/years.
 - Use a concise Chinese page filename in "name" when the KB language is
   Chinese. Do not use English slugs.
 - The page subject must be a real industry, sector, market segment, or durable
@@ -159,7 +215,7 @@ Rules:
   ideas in `concepts/`, not in a dedicated investment-page directory.
 - If uncertain whether a candidate is a real industry, do not include it.
 - Do not duplicate company pages or ordinary reusable concepts.
-- Prefer a small set of high-signal pages. Empty arrays are fine.
+- Prefer a small set of high-signal pages (≤ 3 typically). Empty arrays are fine.
 - For an industry report, create at least one `industries/` page when the
   summary supports a durable sector, segment, or value-chain page.
 
@@ -198,11 +254,25 @@ Rules:
 - If a proposed concept is only a suffix variant of an existing concept name,
   such as added ratios, person names, or explanatory tails, use "update" on
   the shorter existing concept instead of creating a duplicate page.
+- **Semantic overlap heuristic** (CRITICAL):
+  before "create", scan existing concept briefs for entries that describe the
+  same idea even when the wording differs. A re-named variant
+  ("AIoT生态与变现" vs "AIoT生态的变现模式与增长逻辑"; "VIE_risk" vs "VIE架构风险";
+  "A股并购监管窗口指导" vs "A股并购重组估值上限的监管窗口指导") is a DUPLICATE.
+  Use "update" instead of "create" in these cases. **The briefs are
+  intentionally written to be self-disambiguating** — read them carefully
+  before claiming the proposed concept is novel.
 - Do NOT create concepts that are just the document topic itself.
 - Do NOT create concepts for actual companies or real industries; those belong
   in `companies/` and `industries/` only when they pass the stricter boundary.
-- Use a concise Chinese page filename in "name" when the KB language is
-  Chinese. Do not use English slugs.
+- **Filename rule** (CRITICAL): "name" MUST be a concise Chinese phrase
+  (≤ 16 字符 ideally; never exceed 30) covering the canonical concept noun.
+  Do NOT include English slugs (`AIoT_monetization`), parenthetical
+  explanations ("AIoT (人工智能物联网) 生态"), trailing modifiers ("…的变现模式
+  与增长逻辑"), full-sentence descriptions, or quoted brand names. Pick a
+  reusable concept noun, not a one-off description.
+- "title" is the human-readable display form and may add a short parenthetical
+  English gloss; "name" must remain the canonical Chinese noun.
 - "related" is for lightweight cross-linking only, no content rewrite needed.
 
 Return ONLY valid JSON, no fences, no explanation.
@@ -216,14 +286,26 @@ This concept relates to the document "{doc_name}" summarized above.
 
 If the source is investment research, structure the page as durable investment
 knowledge: definition, why it matters, source evidence, key metrics to track,
-company exposure, risks/contra-evidence, and related concepts. Include page
-references when available in the summary or source context.
+company exposure, risks/contra-evidence, and related concepts.
+
+**Output requirements:**
+- The content MUST begin with a single H1 ``# {title}`` line. No prefixes
+  like ``概念：`` or ``Concept:`` — just the canonical Chinese title.
+- Cite evidence with the right anchor type for the source:
+  * PDF report → ``(p.12)``
+  * Video/audio transcript → ``[01:23:45]`` or ``[12:34]``
+  * Section-only source → ``(§核心论点)`` or ``(§3.2)``
+- Use ``[[concepts/...]]`` for related reusable concepts, ``[[companies/...]]``
+  for company exposure, and ``[[summaries/{doc_name}]]`` for the source.
+- Do NOT write TODO placeholders. Omit claims that aren't supported by the
+  provided source context.
 
 Return a JSON object with two keys:
-- "brief": A single sentence (under 100 chars) defining this concept
-- "content": The full concept page in Markdown. Include clear explanation, \
-key details from the source document, and [[wikilinks]] to related concepts \
-and [[summaries/{doc_name}]]
+- "brief": A single self-disambiguating sentence (under 100 chars) defining
+  this concept. The brief is what other LLM passes use to decide whether a
+  future proposal duplicates this concept, so it must distinguish this idea
+  from sibling concepts.
+- "content": The full concept page in Markdown beginning with the H1.
 
 Return ONLY valid JSON, no fences.
 """
@@ -243,16 +325,24 @@ monitoring indicators, source evidence, related concepts, and
 For annual reports or financial reports, extract concrete financial and
 capital-allocation facts from the source context: revenue, profit, margins,
 cash flow, cash/debt, dividends, buybacks, major segment metrics, governance
-or VIE notes, and material risks when available. Attach page references such
-as "p.12" to key claims. Do not write placeholders such as TODO or "numbers
-need to be extracted from the report"; omit claims that are not supported by
-the provided context.
+or VIE notes, and material risks when available.
+
+**Output requirements:**
+- The content MUST begin with a single H1 ``# {title}`` line — exact title,
+  no prefixes, no annotations.
+- Cite evidence with the right anchor type for the source:
+  * PDF report → ``(p.12)``
+  * Video/audio transcript → ``[01:23:45]`` or ``[12:34]``
+  * Section-only source → ``(§核心论点)``
+- Do not write placeholders such as TODO or "numbers need to be extracted
+  from the report"; omit claims that are not supported by the provided context.
 
 Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) describing this company's
   investment relevance in this document
-- "content": The full company page in Markdown. Use [[concepts/...]] for
-  reusable concepts and [[summaries/{doc_name}]] for the source summary.
+- "content": The full company page in Markdown beginning with the H1. Use
+  ``[[concepts/...]]`` for reusable concepts and
+  ``[[summaries/{doc_name}]]`` for the source summary.
 
 Return ONLY valid JSON, no fences.
 """
@@ -269,11 +359,18 @@ Page guidance:
 Keep claims traceable to the source summary. Include source evidence when
 available, related companies/concepts when useful, and [[summaries/{doc_name}]].
 
+**Output requirements:**
+- The content MUST begin with a single H1 ``# {title}`` line.
+- Cite evidence with the right anchor type: PDF → ``(p.12)``;
+  video/audio → ``[01:23:45]``; section-only → ``(§核心论点)``.
+- No TODO placeholders; omit unsupported claims.
+
 Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) describing this page's
   investment relevance
-- "content": The full {page_label} page in Markdown. Use [[concepts/...]] for
-  reusable concepts and [[summaries/{doc_name}]] for the source summary.
+- "content": The full {page_label} page in Markdown beginning with the H1.
+  Use ``[[concepts/...]]`` for reusable concepts and
+  ``[[summaries/{doc_name}]]`` for the source summary.
 
 Return ONLY valid JSON, no fences.
 """
@@ -289,9 +386,21 @@ captured as source-backed evidence for this concept. Use the existing content \
 only as context. Focus the returned content on the new document's additions; \
 OpenKB will merge it without deleting prior source evidence.
 
+**Output requirements:**
+- The content you return covers ONLY the new document's contribution
+  (definition refinements, new evidence, new metrics, new exposed companies).
+  Do NOT restate everything from the existing content — the merger will keep it.
+- Begin with a short H2 section (no top-level H1; the canonical H1 stays in
+  the existing page) such as ``## 来自《{doc_name}》的补充证据``.
+- Cite evidence with the right anchor type for the source:
+  * PDF report → ``(p.12)``  * Video/audio transcript → ``[01:23:45]``  * Section-only source → ``(§核心论点)``
+
 Return a JSON object with two keys:
-- "brief": A single sentence (under 100 chars) defining this concept (may differ from before)
-- "content": The concept evidence from this document in Markdown
+- "brief": A single sentence (under 100 chars) defining this concept — if the
+  new document materially refines the canonical definition, return the
+  updated brief; otherwise return the existing one unchanged.
+- "content": The concept evidence from this document in Markdown (starting
+  with the H2 described above).
 
 Return ONLY valid JSON, no fences.
 """
@@ -305,8 +414,13 @@ Based on this structured summary, write a concise overview that captures \
 the key themes and findings. This will be used to generate concept pages.
 If this is an annual report or financial report, preserve concrete financial
 metrics, capital-allocation actions, segment details, governance notes, major
-risks, and page references such as "p.12" whenever available. Do not write
-TODOs or placeholders saying that numbers still need to be extracted.
+risks, and source anchors:
+- PDF page anchors → ``(p.12)``
+- If the source is a transcript / book chapter, use ``[01:23:45]`` or
+  ``(§3.2)`` style anchors instead.
+Do not write TODOs or placeholders saying that numbers still need to be
+extracted. The first line of your output should be a single H1
+``# {doc_name}`` (or a cleaner Chinese title derived from the document name).
 
 Return ONLY the Markdown content (no frontmatter, no code fences).
 """
@@ -319,11 +433,19 @@ This is a page-indexed local extraction for long document "{doc_name}".
 Based on this page-indexed extraction, write a high-signal summary page.
 For investment research reports, preserve ratings, company names, forecasts,
 valuation context, key numbers, catalysts, risks, and monitoring indicators.
-Use page references like "p.12" where evidence is available.
+
+**Output requirements:**
+- The content MUST begin with a single H1. Prefer the document's own title;
+  fall back to ``# {doc_name}`` only if no human-readable title is available.
+- Cite source evidence with the right anchor:
+  * PDF report → ``(p.12)`` (most common for this pipeline)
+  * Video/audio transcript → ``[01:23:45]``
+  * Section-only source → ``(§核心论点)``
+- Do NOT write TODOs or placeholders.
 
 Return a JSON object with two keys:
 - "brief": A single sentence (under 100 chars) describing the document's main contribution
-- "content": The full summary in Markdown with durable [[concepts/...]] links
+- "content": The full summary in Markdown with durable ``[[concepts/...]]`` links
 
 Return ONLY valid JSON, no fences.
 """
@@ -835,13 +957,107 @@ def _sanitize_concept_name(name: str) -> str:
     return sanitized or "unnamed-concept"
 
 
+def _extract_chinese_from_parens(text: str) -> str:
+    """Extract Chinese text from parenthetical annotations, e.g. 'AI Monetization (AI商业化变现)' -> 'AI商业化变现'."""
+    for match in re.finditer(r"[（(]([^）)]+)[）)]", text):
+        inner = match.group(1).strip()
+        if inner and _CJK_RE.search(inner):
+            return inner
+    return ""
+
+
+_H1_NOISE_PREFIX_RE = re.compile(
+    r"^(概念[:：]|主题[:：]|Concept\s*[:：]|Topic\s*[:：])\s*",
+    re.IGNORECASE,
+)
+
+
+def _ensure_h1(content: str, title: str) -> str:
+    """Ensure generated page content has a clean H1 matching ``title``.
+
+    Fixes three failure modes observed in the wild:
+      1) LLM omits the H1 entirely → prepend ``# {title}``.
+      2) LLM writes ``# 概念：foo`` / ``# Concept: foo`` noise → strip prefix.
+      3) The first heading is unrelated to ``title`` (bigram Jaccard < 0.2,
+         both contain CJK) → prepend a correct H1 (keep original as H2).
+    """
+    raw_title = str(title or "").strip()
+    if not raw_title:
+        return content
+    # Strip frontmatter from working copy
+    body = content
+    fm_block = ""
+    if body.startswith("---"):
+        end = body.find("---", 3)
+        if end != -1:
+            fm_block = body[: end + 3]
+            body = body[end + 3:].lstrip("\n")
+
+    lines = body.splitlines()
+    h1_idx = -1
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("# ") and not s.startswith("## "):
+            h1_idx = i
+            break
+
+    def _bigram_set(text: str) -> set[str]:
+        text = unicodedata.normalize("NFKC", text or "").casefold()
+        text = re.sub(r"[\s\-_/（）()【】\[\]，,。.：:、；;]+", "", text)
+        if len(text) <= 1:
+            return {text} if text else set()
+        return {text[i:i+2] for i in range(len(text) - 1)}
+
+    if h1_idx == -1:
+        body = f"# {raw_title}\n\n" + body.lstrip("\n")
+    else:
+        h1_text = lines[h1_idx].strip()[2:].strip()
+        cleaned = _H1_NOISE_PREFIX_RE.sub("", h1_text).strip()
+        if cleaned and cleaned != h1_text:
+            lines[h1_idx] = f"# {cleaned}"
+            h1_text = cleaned
+        # Mismatch: prepend correct H1, demote stale one to H2
+        if h1_text and _CJK_RE.search(h1_text) and _CJK_RE.search(raw_title):
+            a, b = _bigram_set(h1_text), _bigram_set(raw_title)
+            sim = len(a & b) / len(a | b) if (a and b) else 0.0
+            if sim < 0.2:
+                lines[h1_idx] = f"## {h1_text}"
+                lines.insert(h1_idx, "")
+                lines.insert(h1_idx, f"# {raw_title}")
+        body = "\n".join(lines)
+
+    if fm_block:
+        return fm_block.rstrip("\n") + "\n\n" + body
+    return body
+
+
 def _preferred_generated_page_name(name: str, title: str) -> str:
-    """Prefer Chinese titles as filenames when an LLM returns an English slug."""
+    """Prefer Chinese-named filenames in Chinese KBs.
+
+    Resolution order:
+      1) ``title`` 含中文 → 去掉英文括注后用 title。
+      2) ``name`` 含中文 → 用 name。
+      3) ``title`` / ``name`` 中括号内有中文（如 "AI Monetization (AI商业化变现)"）→ 抽出。
+      4) 都无中文 → 退回 name（英文 slug 不强改，但会被审计脚本和后续 LLM 规划标记）。
+    """
     raw_name = str(name or "").strip()
     raw_title = str(title or "").strip()
+
     if raw_title and _CJK_RE.search(raw_title):
+        # 优先去掉所有英文括注，保留主中文标题
         title_name = re.sub(r"[（(][^）)]*[）)]", "", raw_title).strip()
-        return _sanitize_concept_name(title_name or raw_title)
+        # 去掉冒号/破折号副标题
+        title_main = re.split(r"[：:—\-]", title_name, 1)[0].strip() if title_name else ""
+        return _sanitize_concept_name(title_main or title_name or raw_title)
+
+    if raw_name and _CJK_RE.search(raw_name):
+        return _sanitize_concept_name(raw_name)
+
+    for source in (raw_title, raw_name):
+        chinese = _extract_chinese_from_parens(source)
+        if chinese:
+            return _sanitize_concept_name(chinese)
+
     return _sanitize_concept_name(raw_name)
 
 
@@ -1055,12 +1271,111 @@ def _company_alias_keys(company_items: list[dict]) -> set[str]:
     return keys
 
 
+# Patterns that betray a "research-report-fragment" wrongly proposed as a
+# company. Used by ``_looks_like_event_or_quote``; tuned against the failure
+# patterns observed in legacy KBs (e.g. ``1-柴油机毛利率持续提升``,
+# ``4月挖机销量有望超预期``, ``业务聚焦海外-受益于国际关系缓和``).
+_COMPANY_LEADING_DIGIT_DASH_RE = re.compile(r"^\d+[\s\-—_]")
+_COMPANY_EVENT_VERB_RE = re.compile(
+    r"(超预期|爆发|景气|提速|提升|增长|驱动|拐点|突破|加速|演进|催化|放量|"
+    r"减值|压制|滑坡|崛起|分化|严峻|改善|承压|受益|看好|获益|带动|推动|"
+    r"复苏|放缓|高增|腾飞|起量|出清|抬升|下滑|出货|订单|销量|环比|同比|"
+    r"利好|利空|招标|落地|启动|发布)"
+)
+_COMPANY_DASH_RUN_RE = re.compile(r"---+")
+_COMPANY_PERCENT_RE = re.compile(r"\d{1,3}\s*%")
+_COMPANY_DATAPOINT_RE = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:亿|万|千|百|倍|x|TEU|GW|GWh|MW|kWh|"
+    r"元|美元|人民币|RMB|USD|EUR)|"
+    r"\bQ[1-4]\b|\d{2,4}Q[1-4]\b",
+    re.IGNORECASE,
+)
+_COMPANY_LEGAL_SUFFIX_RE = re.compile(
+    r"(?:股份有限公司|有限公司|集团|控股|科技|实业|国际|"
+    r"(?:Inc\.?|Corp\.?|Corporation|Limited|Ltd\.?|LLC|PLC|Holdings?|"
+    r"Company|Technologies?|Industries?|Group))\s*$",
+    re.IGNORECASE,
+)
+_KNOWN_COMPANY_NAME_RE = re.compile(
+    r"^(腾讯|阿里|百度|京东|美团|拼多多|字节跳动|小米|华为|比亚迪|宁德时代|"
+    r"中芯国际|中信|招商|平安|工商|建设|农业|交通|海尔|格力|美的|"
+    r"茅台|五粮液|伊利|蒙牛|青岛啤酒|海天|网易|快手|微博|滴滴|"
+    r"苹果|微软|英伟达|特斯拉|英特尔|AMD|台积电|三星|索尼|奈飞)"
+)
+
+
+def _looks_like_event_or_quote(name: str, title: str) -> str | None:
+    """Return a reason if the proposed company looks like a report fragment.
+
+    The caller should treat a non-None return value as "reject this proposal".
+    Returns ``None`` when the proposal looks legitimately company-like.
+
+    Heuristics are tuned to be **specific** (low false-positive rate) since
+    the cost of rejecting a real company is high. Real companies usually
+    match one of:
+      * Contains a corporate-form suffix (有限公司 / 集团 / Inc / Corp …).
+      * Matches the well-known company short-name allow-list.
+      * Short noun phrase (≤ 12 CJK chars, no event/verb keywords).
+    Anything else that *also* shows event-fragment signals is rejected.
+    """
+    name = str(name or "").strip()
+    title = str(title or "").strip()
+    payload = title or name
+    if not payload:
+        return "empty name"
+
+    # Strip parenthetical English/Chinese gloss for analysis, e.g.
+    # "中天科技 (ZTT)" -> "中天科技".
+    base = re.sub(r"[（(][^）)]*[）)]", "", payload).strip()
+    if not base:
+        base = payload
+
+    # Allow-list short-circuit: corporate-form suffix or famous name.
+    if _COMPANY_LEGAL_SUFFIX_RE.search(base) or _KNOWN_COMPANY_NAME_RE.match(base):
+        return None
+
+    # 1. Numeric/dash prefix is a very strong report-fragment signal.
+    if _COMPANY_LEADING_DIGIT_DASH_RE.match(base):
+        return "starts with digit+dash (looks like a report bullet)"
+
+    # 2. Long run of dashes is typical of LLM-merged section titles.
+    if _COMPANY_DASH_RUN_RE.search(base):
+        return "contains '---' run (looks like a fragment header)"
+
+    # 3. Length: real Chinese company short-names are rarely > 12 CJK chars.
+    cjk_count = sum(1 for c in base if "㐀" <= c <= "鿿")
+    if cjk_count >= 16:
+        return f"too long ({cjk_count} CJK chars; companies are usually ≤ 12)"
+
+    # 4. Event/finance verbs combined with non-trivial length = quote, not name.
+    if _COMPANY_EVENT_VERB_RE.search(base) and cjk_count >= 6:
+        return "contains event/finance verbs (looks like a quote, not a name)"
+
+    # 5. Embedded percentages or "N年" patterns are data points, not names.
+    if _COMPANY_PERCENT_RE.search(base):
+        return "contains percentage figure (looks like a data point)"
+    if _COMPANY_DATAPOINT_RE.search(base):
+        return "contains numeric + unit / quarter ref (looks like a data point)"
+    if re.search(r"\d{2,4}\s*年", base) and cjk_count >= 4:
+        return "contains year reference (looks like a forecast statement)"
+
+    return None
+
+
 def _canonicalize_company_item(item: dict) -> dict | None:
-    """Normalize company plan items to safe filenames."""
+    """Normalize company plan items to safe filenames; reject report fragments.
+
+    Returns ``None`` when the proposal triggers ``_looks_like_event_or_quote``
+    so research-report bullets and quote fragments don't slip into companies/.
+    """
     name = str(item.get("name", "")).strip()
     if not name:
         return None
     title = str(item.get("title", name)).strip() or name
+    rejection = _looks_like_event_or_quote(name, title)
+    if rejection is not None:
+        logger.info("Rejected company proposal %r: %s", title or name, rejection)
+        return None
     action = str(item.get("action", "create")).strip().lower()
     if action not in {"create", "update"}:
         action = "create"
@@ -1109,6 +1424,60 @@ def _parse_investment_page_plan(parsed: list | dict) -> dict[str, list[dict]]:
             if canonical is not None:
                 plan[subdir].append(canonical)
     return plan
+
+
+def _dedupe_investment_page_plan(
+    wiki_dir: Path, plan: dict[str, list[dict]],
+) -> dict[str, list[dict]]:
+    """Apply fuzzy dedupe to industries / themes / metrics / risks plan items.
+
+    For each subdir, build that namespace's signatures and resolve every
+    proposed item against existing pages. If a fuzzy match exists we coerce
+    ``action`` to ``update`` and adopt the existing slug; otherwise we keep
+    the proposal as-is. This is the same logic ``_dedupe_concept_plan``
+    applies to ``concepts/``, factored out so all generated namespaces share
+    the safety net.
+    """
+    deduped: dict[str, list[dict]] = _empty_investment_page_plan()
+    for subdir, items in plan.items():
+        if not items:
+            continue
+        signatures = _existing_namespace_signatures(wiki_dir, subdir)
+        # Aliases: slug + first H1 of each existing page, keyed by alias-key.
+        aliases: dict[str, str] = {}
+        existing_titles: dict[str, str] = {}
+        pages_dir = wiki_dir / subdir
+        if pages_dir.exists():
+            for path in sorted(pages_dir.glob("*.md")):
+                slug = path.stem
+                title = _concept_page_title(path)
+                existing_titles[slug] = title
+                for value in (slug, title):
+                    if value:
+                        aliases[_concept_alias_key(value)] = slug
+
+        seen_slugs: set[str] = set()
+        for item in items:
+            proposed_name = str(item.get("name") or "")
+            proposed_title = str(item.get("title") or proposed_name)
+            requested_action = str(item.get("action", "create")).strip().lower()
+            resolved_slug = _resolve_duplicate_concept_slug(
+                proposed_name, proposed_title, aliases,
+                signatures=signatures, brief="",
+            )
+            if resolved_slug is not None:
+                slug = resolved_slug
+                title = existing_titles.get(slug) or proposed_title
+                action = "update"
+            else:
+                slug = _sanitize_concept_name(proposed_name)
+                title = proposed_title
+                action = requested_action if requested_action in {"create", "update"} else "create"
+            if slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+            deduped[subdir].append({"name": slug, "title": title, "action": action})
+    return deduped
 
 
 def _planned_investment_page_slugs(plan: dict[str, list[dict]]) -> dict[str, set[str]]:
@@ -1181,7 +1550,127 @@ def _existing_concept_aliases(wiki_dir: Path) -> tuple[dict[str, str], dict[str,
     return aliases, titles
 
 
-def _resolve_duplicate_concept_slug(name: str, title: str, aliases: dict[str, str]) -> str | None:
+def _concept_unigrams(text: str) -> set[str]:
+    """Character unigram set covering both CJK and alphanumerics (case-folded, NFKC).
+
+    Used as a cheap, dependency-free semantic signature for fuzzy duplicate
+    detection across concept name/title/brief.
+    """
+    text = unicodedata.normalize("NFKC", text or "").casefold()
+    return {
+        c for c in text
+        if c.isalnum() or "㐀" <= c <= "鿿"
+    }
+
+
+def _existing_namespace_signatures(
+    wiki_dir: Path, subdir: str,
+) -> dict[str, tuple[set[str], set[str]]]:
+    """Generalised version of ``_existing_concept_signatures`` for any subdir.
+
+    Same dual-signature shape — tight (slug+title) + wide (slug+title+brief).
+    Used by industries / themes / metrics / risks dedupe paths so they get
+    the same Jaccard-based variant detection as concepts.
+    """
+    sigs: dict[str, tuple[set[str], set[str]]] = {}
+    pages_dir = wiki_dir / subdir
+    if not pages_dir.exists():
+        return sigs
+    for path in sorted(pages_dir.glob("*.md")):
+        slug = path.stem
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        brief = ""
+        if text.startswith("---"):
+            end = text.find("---", 3)
+            if end != -1:
+                for line in text[:end].split("\n"):
+                    if line.startswith("brief:"):
+                        brief = line[len("brief:"):].strip()
+                        break
+        title = _concept_page_title(path)
+        tight = _concept_unigrams(f"{slug} {title}")
+        wide = tight | _concept_unigrams(brief)
+        sigs[slug] = (tight, wide)
+    return sigs
+
+
+def _existing_concept_signatures(wiki_dir: Path) -> dict[str, tuple[set[str], set[str]]]:
+    """Backwards-compatible alias for concepts namespace."""
+    return _existing_namespace_signatures(wiki_dir, "concepts")
+
+
+def _similar_concept_slug(
+    name: str,
+    title: str,
+    brief: str,
+    signatures: dict[str, tuple[set[str], set[str]]],
+    tight_threshold: float = 0.50,
+    wide_threshold: float = 0.40,
+    overlap_threshold: float = 0.70,
+    min_overlap: int = 3,
+    overlap_min: int = 5,
+) -> str | None:
+    """Return the best existing slug matching either signature, or None.
+
+    Three-pass strategy:
+      * Tight Jaccard: target(name+title) vs candidate(name+title). Captures
+        Chinese-variant concept names.
+      * Wide Jaccard: target(name+title+brief) vs candidate(name+title+brief).
+        Captures cross-language variants where briefs supply CJK overlap.
+      * Overlap coefficient: ``inter / min(|target|, |candidate|)``. Captures
+        cases where one side has a long descriptive name/brief that dilutes
+        Jaccard. Requires ``overlap_min`` raw character overlap to avoid
+        trivial short-string false positives.
+    """
+    target_tight = _concept_unigrams(f"{name} {title or ''}")
+    target_wide = target_tight | _concept_unigrams(brief or "")
+    if len(target_tight) < min_overlap and len(target_wide) < min_overlap:
+        return None
+
+    best_slug: str | None = None
+    best_score = 0.0
+
+    for slug, (cand_tight, cand_wide) in signatures.items():
+        score = 0.0
+        if len(cand_tight) >= min_overlap and len(target_tight) >= min_overlap:
+            inter = len(target_tight & cand_tight)
+            if inter >= min_overlap:
+                union = len(target_tight | cand_tight)
+                sim = inter / union if union else 0.0
+                if sim >= tight_threshold:
+                    score = max(score, sim)
+        if score == 0 and len(cand_wide) >= min_overlap and len(target_wide) >= min_overlap:
+            inter = len(target_wide & cand_wide)
+            if inter >= min_overlap:
+                union = len(target_wide | cand_wide)
+                sim = inter / union if union else 0.0
+                if sim >= wide_threshold:
+                    score = max(score, sim)
+        if score == 0:
+            # Overlap-coefficient fallback for long-name dilution cases.
+            inter_t = len(target_tight & cand_tight)
+            if inter_t >= overlap_min:
+                base = min(len(target_tight), len(cand_tight))
+                if base:
+                    sim = inter_t / base
+                    if sim >= overlap_threshold:
+                        score = max(score, sim * 0.95)  # slight penalty vs Jaccard
+        if score > best_score:
+            best_score, best_slug = score, slug
+
+    return best_slug
+
+
+def _resolve_duplicate_concept_slug(
+    name: str,
+    title: str,
+    aliases: dict[str, str],
+    signatures: dict[str, tuple[set[str], set[str]]] | None = None,
+    brief: str = "",
+) -> str | None:
     """Resolve a concept proposal to an existing canonical slug when obvious."""
     candidates = [
         str(name or "").strip(),
@@ -1200,12 +1689,18 @@ def _resolve_duplicate_concept_slug(name: str, title: str, aliases: dict[str, st
             prefix_key = _concept_alias_key(prefix)
             if prefix_key in aliases:
                 return aliases[prefix_key]
+    # Last-resort fuzzy match: unigram Jaccard against existing signatures.
+    if signatures:
+        hit = _similar_concept_slug(name, title, brief, signatures)
+        if hit:
+            return hit
     return None
 
 
 def _dedupe_concept_plan(wiki_dir: Path, plan: dict) -> dict:
     """Collapse obvious duplicate concept variants into one canonical plan."""
     existing_aliases, existing_titles = _existing_concept_aliases(wiki_dir)
+    existing_signatures: dict[str, tuple[set[str], set[str]]] = _existing_concept_signatures(wiki_dir)
     aliases = dict(existing_aliases)
     deduped = {"create": [], "update": [], "related": []}
     chosen_actions: dict[str, str] = {}
@@ -1249,7 +1744,11 @@ def _dedupe_concept_plan(wiki_dir: Path, plan: dict) -> dict:
         for item in canonical_items:
             proposed_name = str(item["name"])
             proposed_title = str(item.get("title") or proposed_name)
-            slug = _resolve_duplicate_concept_slug(proposed_name, proposed_title, aliases)
+            proposed_brief = str(item.get("brief") or "")
+            slug = _resolve_duplicate_concept_slug(
+                proposed_name, proposed_title, aliases,
+                signatures=existing_signatures, brief=proposed_brief,
+            )
             if slug is None:
                 slug = _sanitize_concept_name(proposed_name)
             resolved_title = existing_titles.get(slug) or proposed_title
@@ -1261,7 +1760,9 @@ def _dedupe_concept_plan(wiki_dir: Path, plan: dict) -> dict:
         raw = str(related).strip()
         if not raw:
             continue
-        slug = _resolve_duplicate_concept_slug(raw, raw, aliases) or _sanitize_concept_name(raw)
+        slug = _resolve_duplicate_concept_slug(
+            raw, raw, aliases, signatures=existing_signatures,
+        ) or _sanitize_concept_name(raw)
         if not slug or chosen_actions.get(slug) in {"create", "update"}:
             continue
         if slug not in deduped["related"]:
@@ -1863,7 +2364,26 @@ def _frontmatter_source_entries(text: str) -> list[str]:
     ]
 
 
+# Evidence anchor patterns. ``_GENERATED_PAGE_REF_RE`` is kept for backwards
+# compatibility (callers that only want PDF-style page refs). The richer
+# ``_EVIDENCE_ANCHOR_PATTERNS`` list drives the multi-modal extractor below:
+# PDF page, video/audio timestamp, chapter/section marker.
 _GENERATED_PAGE_REF_RE = re.compile(r"\b(?:p\.?\s*|page\s+)(\d{1,4})\b", re.IGNORECASE)
+_TIMESTAMP_RE = re.compile(r"\[?\b(\d{1,2}:[0-5]\d(?::[0-5]\d)?)\b\]?")
+_CHAPTER_RE = re.compile(
+    r"(?:§|第\s*)(\d+(?:\.\d+)?)(?:\s*章|\s*节)?|"
+    r"\b(?:ch\.|chapter|chap\.)\s*(\d+(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+
+_EVIDENCE_ANCHOR_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    # (kind, regex, format-template). format-template gets ``{0}`` substituted
+    # with the captured anchor (first non-None group). The kind label is what
+    # gets stored in the evidence ``page`` field as a human-readable anchor.
+    ("page", _GENERATED_PAGE_REF_RE, "p.{0}"),
+    ("timestamp", _TIMESTAMP_RE, "{0}"),
+    ("chapter", _CHAPTER_RE, "§{0}"),
+)
 
 
 def _strip_frontmatter_block(text: str) -> str:
@@ -1881,8 +2401,61 @@ def _clean_evidence_snippet(line: str, limit: int = 220) -> str:
     snippet = re.sub(r"^\d+[.)]\s+", "", snippet)
     snippet = re.sub(r"\[\[summaries/[^|\]]+(?:\|[^\]]+)?\]\]", "", snippet)
     snippet = _GENERATED_PAGE_REF_RE.sub("", snippet, count=1)
+    snippet = _TIMESTAMP_RE.sub("", snippet, count=1)
     snippet = snippet.lstrip(" :-")
     return snippet[:limit].rstrip()
+
+
+def _detect_evidence_anchor(line: str) -> tuple[str, str] | None:
+    """Detect the best evidence anchor in ``line``.
+
+    Returns ``(anchor_kind, formatted_anchor)`` or ``None``. Patterns are
+    tried in priority order: PDF page > timestamp > chapter. The first match
+    wins so PDF-rich summaries keep their familiar ``p.N`` output.
+    """
+    for kind, regex, template in _EVIDENCE_ANCHOR_PATTERNS:
+        match = regex.search(line)
+        if not match:
+            continue
+        # Use the first non-empty capturing group so multi-branch patterns
+        # (e.g. the chapter regex) still produce a clean anchor.
+        for group in match.groups():
+            if group:
+                return kind, template.format(group)
+    return None
+
+
+def _section_anchors_from_summary(content: str, max_items: int = 12) -> list[dict[str, str]]:
+    """Fallback evidence for transcripts: emit ``section: <H2>`` anchors.
+
+    Used when a summary lacks any page/timestamp marker — common for mp4 or
+    audio transcripts where the upstream pipeline didn't preserve timing.
+    Each non-trivial H2 becomes one evidence row pointing back to the
+    same source, so the query agent at least has a section-level handle.
+    """
+    body = _strip_frontmatter_block(content)
+    anchors: list[dict[str, str]] = []
+    current_h2: str | None = None
+    for raw_line in body.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("## ") and not stripped.startswith("### "):
+            current_h2 = stripped[3:].strip().lstrip("#").strip()
+            continue
+        if not current_h2:
+            continue
+        line = " ".join(stripped.split())
+        if not line or stripped.startswith("#"):
+            continue
+        snippet = _clean_evidence_snippet(line)
+        if not snippet or len(snippet) < 20:
+            continue
+        anchors.append({
+            "anchor": f"§{current_h2}",
+            "snippet": snippet,
+        })
+        if len(anchors) >= max_items:
+            break
+    return anchors
 
 
 def _extract_page_reference_evidence(
@@ -1892,17 +2465,23 @@ def _extract_page_reference_evidence(
     *,
     max_items: int = 12,
 ) -> list[dict[str, str]]:
-    """Extract page-reference evidence from generated Markdown content."""
+    """Extract multi-modal evidence anchors from generated Markdown content.
+
+    Recognises PDF page refs (``p.N``), video/audio timestamps
+    (``[01:23:45]`` / ``12:34``), and chapter markers (``§3.2`` / ``Ch.5``
+    / ``第3章``). If none of those exist (typical for transcript summaries),
+    falls back to section anchors derived from the document's H2 headings.
+    """
     evidence: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for raw_line in _strip_frontmatter_block(content).splitlines():
         line = " ".join(raw_line.strip().split())
         if not line or line.startswith("#"):
             continue
-        match = _GENERATED_PAGE_REF_RE.search(line)
-        if not match:
+        anchor = _detect_evidence_anchor(line)
+        if anchor is None:
             continue
-        page = match.group(1)
+        _kind, page = anchor
         snippet = _clean_evidence_snippet(line)
         if not snippet:
             continue
@@ -1918,6 +2497,23 @@ def _extract_page_reference_evidence(
         })
         if len(evidence) >= max_items:
             break
+
+    if evidence:
+        return evidence
+
+    # Transcript fallback: section-level anchors so evidence_map.json still
+    # gets populated for mp4/audio summaries that have no page markers.
+    for item in _section_anchors_from_summary(content, max_items=max_items):
+        key = (item["anchor"], item["snippet"].casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append({
+            "source": source_file,
+            "link": source_link,
+            "page": item["anchor"],
+            "snippet": item["snippet"],
+        })
     return evidence
 
 
@@ -2465,6 +3061,7 @@ async def _compile_concepts(
         investment_page_parsed = {}
 
     investment_page_plan = _parse_investment_page_plan(investment_page_parsed)
+    investment_page_plan = _dedupe_investment_page_plan(wiki_dir, investment_page_plan)
     planned_investment_slugs = _planned_investment_page_slugs(investment_page_plan)
 
     # --- Step 2c: Get concepts plan (A cached) ---
@@ -2616,6 +3213,7 @@ async def _compile_concepts(
             content = parsed.get("content", raw)
         except (json.JSONDecodeError, ValueError):
             brief, content = "", raw
+        content = _ensure_h1(content, title)
         return name, content, is_update, brief
 
     async def _gen_investment_page(subdir: str, page: dict) -> tuple[str, str, str, bool, str]:
@@ -2659,6 +3257,7 @@ async def _compile_concepts(
             content = parsed.get("content", raw)
         except (json.JSONDecodeError, ValueError):
             brief, content = "", raw
+        content = _ensure_h1(content, title)
         return subdir, name, content, is_update, brief
 
     async def _gen_create(concept: dict) -> tuple[str, str, bool, str]:
@@ -2680,6 +3279,7 @@ async def _compile_concepts(
             content = parsed.get("content", raw)
         except (json.JSONDecodeError, ValueError):
             brief, content = "", raw
+        content = _ensure_h1(content, title)
         return name, content, False, brief
 
     async def _gen_update(concept: dict) -> tuple[str, str, bool, str]:
@@ -2711,6 +3311,7 @@ async def _compile_concepts(
             content = parsed.get("content", raw)
         except (json.JSONDecodeError, ValueError):
             brief, content = "", raw
+        content = _ensure_h1(content, title)
         return name, content, True, brief
 
     company_tasks = [_gen_company(c) for c in company_items]

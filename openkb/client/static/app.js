@@ -79,6 +79,10 @@ const jobLabels = {
   lint: "Lint",
   lint_fix_plan: "Fix Plan",
   lint_fix_apply: "Apply Fixes",
+  lint_h1_fix: "H1 Auto-fix",
+  concept_merges_propose: "Scan Duplicates",
+  concept_merges_apply: "Merge Concepts",
+  compact: "KB Compact",
   model_pool_probe: "Model Probe",
   query: "Query",
 };

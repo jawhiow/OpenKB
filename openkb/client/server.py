@@ -1357,6 +1357,186 @@ def create_app(registry: JobRegistry | None = None):
         job = registry.submit("lint_fix_apply", run, message="Applying approved lint fixes")
         return {"job": job.to_dict()}
 
+    @app.post("/api/concept-merges/propose")
+    def propose_concept_merges(payload: dict[str, Any]) -> dict[str, Any]:
+        """Dry-run: scan the KB for duplicate concept clusters."""
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            from openkb.concept_merge import propose_merges
+
+            job.raise_if_stopped()
+            job.add_log("Scanning concepts/ for duplicate clusters")
+            proposals = propose_merges(target_kb)
+            job.raise_if_stopped()
+            payload_out = [
+                {
+                    "canonical": p.canonical,
+                    "merged": list(p.merged),
+                    "rationale": dict(p.rationale),
+                    "sources_union": list(p.sources_union),
+                }
+                for p in proposals
+            ]
+            total_dupes = sum(len(p["merged"]) - 1 for p in payload_out)
+            job.add_log(f"Found {len(payload_out)} cluster(s), {total_dupes} duplicate page(s)")
+            return {
+                "proposals": payload_out,
+                "total_clusters": len(payload_out),
+                "total_duplicates": total_dupes,
+            }
+
+        job = registry.submit("concept_merges_propose", run, message="Scanning for duplicate concepts")
+        return {"job": job.to_dict()}
+
+    @app.post("/api/concept-merges/apply")
+    def apply_concept_merges(payload: dict[str, Any]) -> dict[str, Any]:
+        """Execute concept merges. Accepts either the previously-returned
+        proposal list (filtered by the user) or recomputes them when omitted.
+        """
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+        client_proposals = payload.get("proposals")
+
+        def run(job):
+            from openkb.concept_merge import MergeProposal, propose_merges, apply_merges
+
+            job.raise_if_stopped()
+            if isinstance(client_proposals, list) and client_proposals:
+                proposals = [
+                    MergeProposal(
+                        canonical=str(item.get("canonical") or ""),
+                        merged=list(item.get("merged") or []),
+                        rationale={k: float(v) for k, v in (item.get("rationale") or {}).items()},
+                        sources_union=list(item.get("sources_union") or []),
+                    )
+                    for item in client_proposals
+                    if isinstance(item, dict) and item.get("canonical") and len(item.get("merged") or []) >= 2
+                ]
+                job.add_log(f"Applying {len(proposals)} user-selected cluster(s)")
+            else:
+                job.add_log("No proposals supplied; recomputing")
+                proposals = propose_merges(target_kb)
+            job.raise_if_stopped()
+            result = apply_merges(target_kb, proposals)
+            job.add_log(
+                f"Merged {result['clusters_merged']} cluster(s); "
+                f"deleted {result['files_deleted']} file(s); "
+                f"rewrote refs in {result['files_rewritten']} file(s)"
+            )
+            return result
+
+        job = registry.submit("concept_merges_apply", run, message="Applying concept merges")
+        return {"job": job.to_dict()}
+
+    @app.post("/api/lint/h1-fix")
+    def lint_h1_fix(payload: dict[str, Any]) -> dict[str, Any]:
+        """Apply safe in-place H1 repairs across concepts/companies/industries."""
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            from openkb.lint import apply_safe_h1_fix, iter_h1_violations
+
+            job.raise_if_stopped()
+            wiki = target_kb / "wiki"
+            fixed: list[str] = []
+            scanned = 0
+            for namespace in ("concepts", "companies", "industries"):
+                for path, kinds in iter_h1_violations(wiki, namespace):
+                    scanned += 1
+                    if apply_safe_h1_fix(path):
+                        fixed.append(f"{namespace}/{path.name}")
+            job.add_log(f"Scanned {scanned} flagged page(s); fixed {len(fixed)}")
+            return {"fixed_files": fixed, "fixed_count": len(fixed), "scanned": scanned}
+
+        job = registry.submit("lint_h1_fix", run, message="Applying safe H1 fixes")
+        return {"job": job.to_dict()}
+
+    @app.post("/api/compact")
+    def compact_kb(payload: dict[str, Any]) -> dict[str, Any]:
+        """One-shot KB hygiene: H1 audit + dedupe scan + structural lint.
+
+        Writes a report file under ``wiki/reports/`` and returns its path.
+        Always dry-run from the API; users trigger merges/fixes through the
+        dedicated endpoints after reviewing.
+        """
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            from datetime import datetime
+            from openkb.lint import find_h1_issues, run_structural_lint
+            from openkb.concept_merge import propose_merges
+
+            job.raise_if_stopped()
+            wiki = target_kb / "wiki"
+            today = datetime.now().strftime("%Y%m%d")
+
+            job.add_log("H1 audit")
+            h1_issues = find_h1_issues(wiki)
+
+            job.raise_if_stopped()
+            job.add_log("Duplicate concept scan")
+            proposals = propose_merges(target_kb)
+            total_dupes = sum(len(p.merged) - 1 for p in proposals)
+
+            job.raise_if_stopped()
+            job.add_log("Structural lint")
+            structural = run_structural_lint(target_kb)
+
+            reports_dir = wiki / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            report_path = reports_dir / f"compact-{today}.md"
+            lines = [
+                f"# KB Compact Report — {today}",
+                "",
+                f"- H1 issues: **{len(h1_issues)}**",
+                f"- Duplicate clusters: **{len(proposals)}** covering **{total_dupes}** page(s)",
+                "",
+                "## H1 issues",
+            ]
+            if h1_issues:
+                lines.extend(f"- {it}" for it in h1_issues[:200])
+                if len(h1_issues) > 200:
+                    lines.append(f"- ... and {len(h1_issues) - 200} more")
+            else:
+                lines.append("- (none)")
+            lines.append("")
+            lines.append("## Duplicate concept clusters")
+            if proposals:
+                for proposal in proposals:
+                    lines.append(f"- canonical: `{proposal.canonical}`")
+                    for slug in proposal.merged[1:]:
+                        sim = proposal.rationale.get(slug, 0.0)
+                        lines.append(f"  - merge: `{slug}` (sim={sim:.3f})")
+            else:
+                lines.append("- (none)")
+            lines.append("")
+            lines.append("## Structural lint")
+            lines.append("")
+            lines.append(structural)
+            report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            job.add_log(f"Report written: {report_path.relative_to(target_kb)}")
+            return {
+                "report_path": str(report_path.relative_to(target_kb)).replace("\\", "/"),
+                "h1_issue_count": len(h1_issues),
+                "cluster_count": len(proposals),
+                "duplicate_count": total_dupes,
+            }
+
+        job = registry.submit("compact", run, message="Running KB compact audit")
+        return {"job": job.to_dict()}
+
     @app.get("/api/jobs")
     def jobs() -> dict[str, Any]:
         return {"jobs": [job.to_dict() for job in registry.list_jobs()]}

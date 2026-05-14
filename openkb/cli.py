@@ -14,6 +14,7 @@ import logging
 import sys
 import time
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -2121,6 +2122,169 @@ def status(ctx):
         return
     _ensure_wiki_schema(kb_dir)
     print_status(kb_dir)
+
+
+@cli.command(name="compact")
+@click.option("--apply-merges", is_flag=True, default=False,
+              help="Apply the proposed concept merges (deletes duplicate pages).")
+@click.option("--fix-h1", is_flag=True, default=False,
+              help="Run safe H1 fixes (recover missing H1, strip noise prefix).")
+@click.pass_context
+def compact(ctx, apply_merges: bool, fix_h1: bool):
+    """One-shot KB hygiene: H1 audit + dedupe proposal + structural lint.
+
+    Always writes a report to ``wiki/reports/compact-YYYYMMDD.md``. Default
+    behaviour is read-only (dry-run). Pass ``--fix-h1`` to apply safe H1
+    repairs in place, and ``--apply-merges`` to execute the suggested
+    concept merges (after a confirmation prompt).
+    """
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    _ensure_wiki_schema(kb_dir)
+
+    from openkb.lint import (
+        apply_safe_h1_fix,
+        find_concept_duplicate_clusters,
+        find_h1_issues,
+        iter_h1_violations,
+        run_structural_lint,
+    )
+    from openkb.concept_merge import propose_merges, apply_merges as do_apply
+
+    wiki = kb_dir / "wiki"
+    today = datetime.now().strftime("%Y%m%d")
+
+    click.echo("[1/3] H1 audit...")
+    h1_issues = find_h1_issues(wiki)
+    click.echo(f"      {len(h1_issues)} issue(s) found.")
+
+    click.echo("[2/3] Concept duplicate scan...")
+    proposals = propose_merges(kb_dir)
+    total_dupes = sum(len(p.merged) - 1 for p in proposals)
+    click.echo(f"      {len(proposals)} cluster(s), {total_dupes} duplicate page(s).")
+
+    click.echo("[3/3] Structural lint...")
+    structural = run_structural_lint(kb_dir)
+
+    # Optional in-place repairs
+    fixed_h1 = 0
+    if fix_h1 and h1_issues:
+        for namespace in ("concepts", "companies", "industries"):
+            for path, _kinds in iter_h1_violations(wiki, namespace):
+                if apply_safe_h1_fix(path):
+                    fixed_h1 += 1
+        click.echo(f"      Applied safe H1 fixes to {fixed_h1} file(s).")
+
+    merged_clusters = 0
+    if apply_merges and proposals:
+        if click.confirm(f"Apply {len(proposals)} merge cluster(s)? Deletes {total_dupes} file(s).",
+                         default=False):
+            result = do_apply(kb_dir, proposals)
+            merged_clusters = result["clusters_merged"]
+            click.echo(
+                f"      Merged {result['clusters_merged']} cluster(s); "
+                f"deleted {result['files_deleted']} file(s); "
+                f"rewrote refs in {result['files_rewritten']} file(s)."
+            )
+
+    # Write report
+    reports_dir = wiki / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / f"compact-{today}.md"
+    report_lines = [
+        f"# KB Compact Report — {today}",
+        "",
+        f"- H1 issues: **{len(h1_issues)}**  (fixed in-place: {fixed_h1})",
+        f"- Duplicate clusters: **{len(proposals)}** covering **{total_dupes}** page(s)  (merged: {merged_clusters})",
+        "",
+        "## H1 issues",
+    ]
+    if h1_issues:
+        report_lines.extend(f"- {it}" for it in h1_issues[:200])
+        if len(h1_issues) > 200:
+            report_lines.append(f"- ... and {len(h1_issues) - 200} more")
+    else:
+        report_lines.append("- (none)")
+    report_lines.append("")
+    report_lines.append("## Duplicate concept clusters")
+    if proposals:
+        for proposal in proposals:
+            report_lines.append(f"- canonical: `{proposal.canonical}`")
+            for slug in proposal.merged[1:]:
+                sim = proposal.rationale.get(slug, 0.0)
+                report_lines.append(f"  - merge: `{slug}` (sim={sim:.3f})")
+    else:
+        report_lines.append("- (none)")
+    report_lines.append("")
+    report_lines.append("## Structural lint")
+    report_lines.append("")
+    report_lines.append(structural)
+    report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+    click.echo(f"\nReport written to {report_path.relative_to(kb_dir)}")
+    append_log(wiki, "compact", f"h1={len(h1_issues)}/fixed={fixed_h1}, clusters={len(proposals)}/merged={merged_clusters}")
+
+
+@cli.command(name="merge-concepts")
+@click.option("--apply", "do_apply", is_flag=True, default=False,
+              help="Execute the merges (rewrites files and deletes duplicates). Default is dry-run.")
+@click.option("--tight", type=float, default=0.55, show_default=True,
+              help="Tight Jaccard threshold over slug+title.")
+@click.option("--wide", type=float, default=0.45, show_default=True,
+              help="Wide Jaccard threshold over slug+title+brief.")
+@click.pass_context
+def merge_concepts(ctx, do_apply: bool, tight: float, wide: float):
+    """Cluster near-duplicate concept pages and (optionally) merge them.
+
+    Without --apply, prints the proposed merge groups so you can review.
+    With --apply, rewrites the canonical page (frontmatter sources unioned,
+    sibling bodies appended), deletes duplicates, and patches every wikilink
+    in the wiki to point at the canonical slug.
+    """
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    _ensure_wiki_schema(kb_dir)
+
+    from openkb.concept_merge import propose_merges, apply_merges
+
+    proposals = propose_merges(kb_dir, tight_threshold=tight, wide_threshold=wide)
+    if not proposals:
+        click.echo("No duplicate clusters found above the configured thresholds.")
+        return
+
+    total_dupes = sum(len(p.merged) - 1 for p in proposals)
+    click.echo(f"Found {len(proposals)} cluster(s) covering {total_dupes} duplicate page(s).\n")
+    for proposal in proposals:
+        click.echo(f"  canonical: {proposal.canonical}")
+        for slug in proposal.merged[1:]:
+            sim = proposal.rationale.get(slug, 0.0)
+            click.echo(f"    └─ merge: {slug}  (sim={sim:.3f})")
+        if proposal.sources_union:
+            click.echo(f"    sources(union, {len(proposal.sources_union)}): "
+                       + ", ".join(proposal.sources_union[:6])
+                       + (" ..." if len(proposal.sources_union) > 6 else ""))
+        click.echo("")
+
+    if not do_apply:
+        click.echo("Dry-run complete. Re-run with --apply to execute.")
+        return
+
+    if not click.confirm(f"Apply {len(proposals)} merge cluster(s)? This deletes {total_dupes} file(s).",
+                         default=False):
+        click.echo("Aborted.")
+        return
+    result = apply_merges(kb_dir, proposals)
+    click.echo(
+        f"Done. Merged {result['clusters_merged']} cluster(s); "
+        f"deleted {result['files_deleted']} file(s); "
+        f"rewrote refs in {result['files_rewritten']} file(s)."
+    )
+    append_log(kb_dir / "wiki", "merge-concepts",
+               f"{result['clusters_merged']} clusters, "
+               f"{result['files_deleted']} deletions")
 
 
 @cli.command()

@@ -86,13 +86,20 @@ def audit_one(path: Path) -> dict | None:
             issues.append("missing_h1")
         elif H1_PREFIX_NOISE.match(h1_text):
             issues.append("h1_prefix_noise")
-        # H1 与文件名（去标点折叠后）完全相同的英文 slug
-        if h1_text and h1_text.strip() == stem:
+        # 仅标记 H1 是英文 slug 字面（缺少人类可读标题）
+        if h1_text and h1_text.strip() == stem and not CJK_RE.search(h1_text):
             issues.append("h1_is_slug")
-        # 严重不一致：bigram Jaccard < 0.2 且双方都非空（且文件名不只是英文 slug）
-        if h1_text:
-            sim = _jaccard(_norm_token_set(stem), _norm_token_set(h1_text))
-            if sim < 0.2 and CJK_RE.search(h1_text) and CJK_RE.search(stem):
+        # 严重不一致：bigram Jaccard < 0.25 且双方都含中文（文件名一般是 H1 slug 化版本）
+        if h1_text and CJK_RE.search(h1_text) and CJK_RE.search(stem):
+            # 豁免：文件名是 H1 主名（H1 = "X：副标题" 或 "X - 副标题"），或反之
+            h1_main = re.split(r"[：:—\-\(（]", h1_text, 1)[0].strip()
+            stem_main = re.split(r"[：:—\-\(（]", stem, 1)[0].strip()
+            sim = max(
+                _jaccard(_norm_token_set(stem), _norm_token_set(h1_text)),
+                _jaccard(_norm_token_set(stem_main), _norm_token_set(h1_text)),
+                _jaccard(_norm_token_set(stem), _norm_token_set(h1_main)),
+            )
+            if sim < 0.25:
                 issues.append("h1_mismatch")
 
     if is_english_slug:
@@ -109,42 +116,41 @@ def audit_one(path: Path) -> dict | None:
     }
 
 
+def _compose(raw: str, body: str) -> str:
+    if raw.startswith("---"):
+        end = raw.find("\n---", 3)
+        if end != -1:
+            return raw[: end + 4].rstrip("\n") + "\n" + body
+    return body
+
+
 def safe_fix(path: Path, report: dict) -> bool:
     """Apply only obviously safe fixes; return True if mutated."""
     raw = path.read_text(encoding="utf-8")
-    fm, body = _extract_frontmatter_and_body(raw)
-    h1_info = _first_h1(body)
+    _fm, body = _extract_frontmatter_and_body(raw)
     issues = set(report["issues"])
     changed = False
 
+    # 顺序：先脱前缀噪声 → 再补 H1（避免双 H1）
+    h1_info = _first_h1(body)
     if "h1_prefix_noise" in issues and h1_info is not None:
         h1_text, idx = h1_info
         cleaned = H1_PREFIX_NOISE.sub("", h1_text).strip()
         if cleaned and cleaned != h1_text:
             lines = body.splitlines()
             lines[idx] = f"# {cleaned}"
-            body = "\n".join(lines) + ("\n" if raw.endswith("\n") else "")
+            body = "\n".join(lines)
+            if raw.endswith("\n"):
+                body += "\n"
             changed = True
 
-    if "missing_h1" in issues:
-        # Fallback H1 = stem (best-effort; user should still review)
-        new_h1 = f"# {path.stem}"
-        body = new_h1 + "\n\n" + body.lstrip("\n")
+    h1_info = _first_h1(body)
+    if "missing_h1" in issues and h1_info is None:
+        body = f"# {path.stem}\n\n" + body.lstrip("\n")
         changed = True
 
     if changed:
-        head = raw[: len(raw) - len(body) - len(body.lstrip())] if False else ""  # rebuilt below
-        # Recompose with original frontmatter
-        if raw.startswith("---"):
-            end = raw.find("\n---", 3)
-            if end != -1:
-                fm_block = raw[: end + 4]
-                new_raw = fm_block.rstrip("\n") + "\n" + body
-            else:
-                new_raw = body
-        else:
-            new_raw = body
-        path.write_text(new_raw, encoding="utf-8")
+        path.write_text(_compose(raw, body), encoding="utf-8")
     return changed
 
 

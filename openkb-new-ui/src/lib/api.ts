@@ -533,6 +533,66 @@ export const applyLintFixes = async (
   return response.data;
 };
 
+// --- Concept merge / compact / H1 auto-fix (new) -------------------------
+
+export interface ConceptMergeProposal {
+  canonical: string;
+  merged: string[];
+  rationale: Record<string, number>;
+  sources_union: string[];
+}
+
+export interface ConceptMergeProposalResult {
+  proposals: ConceptMergeProposal[];
+  total_clusters: number;
+  total_duplicates: number;
+}
+
+export interface ConceptMergeApplyResult {
+  clusters_merged: number;
+  files_deleted: number;
+  files_rewritten: number;
+}
+
+export interface H1FixResult {
+  fixed_files: string[];
+  fixed_count: number;
+  scanned: number;
+}
+
+export interface CompactResult {
+  report_path: string;
+  h1_issue_count: number;
+  cluster_count: number;
+  duplicate_count: number;
+}
+
+export const proposeConceptMerges = async (kbDir: string): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/concept-merges/propose', { kb_dir: kbDir });
+  return response.data;
+};
+
+export const applyConceptMerges = async (
+  kbDir: string,
+  proposals?: ConceptMergeProposal[],
+): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/concept-merges/apply', {
+    kb_dir: kbDir,
+    proposals,
+  });
+  return response.data;
+};
+
+export const applyH1Fix = async (kbDir: string): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/lint/h1-fix', { kb_dir: kbDir });
+  return response.data;
+};
+
+export const runCompact = async (kbDir: string): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/compact', { kb_dir: kbDir });
+  return response.data;
+};
+
 export const getWikiFile = async (kbDir: string, path: string): Promise<WikiFileResponse> => {
   const response = await apiClient.get('/wiki/file', {
     params: { kb_dir: kbDir, path },

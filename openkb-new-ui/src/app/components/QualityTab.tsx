@@ -8,21 +8,33 @@ import {
   CheckSquare,
   ClipboardList,
   FileText,
+  GitMerge,
+  Heading1,
   Loader2,
   Play,
   RefreshCcw,
   Square,
+  Stethoscope,
   Wand2,
 } from 'lucide-react';
 import {
+  applyConceptMerges,
+  applyH1Fix,
   applyLintFixes,
+  CompactResult,
+  ConceptMergeApplyResult,
+  ConceptMergeProposal,
+  ConceptMergeProposalResult,
   generateLintFixPlan,
   getDocuments,
   getJob,
   getWikiFile,
+  H1FixResult,
   LintApplyResult,
   LintFixCandidate,
   LintFixPlan,
+  proposeConceptMerges,
+  runCompact,
   runLint,
 } from '@/lib/api';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -30,7 +42,14 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
-type JobPurpose = 'lint' | 'plan' | 'apply';
+type JobPurpose =
+  | 'lint'
+  | 'plan'
+  | 'apply'
+  | 'compact'
+  | 'scan-dupes'
+  | 'merge-apply'
+  | 'h1-fix';
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'stopped']);
 
@@ -66,6 +85,10 @@ export function QualityTab({
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [jobPurpose, setJobPurpose] = useState<JobPurpose | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  // Hygiene workflow state (concept dedupe / H1 / compact)
+  const [duplicateClusters, setDuplicateClusters] = useState<ConceptMergeProposal[]>([]);
+  const [selectedClusters, setSelectedClusters] = useState<Record<string, boolean>>({});
+  const [hygieneNotice, setHygieneNotice] = useState<string>('');
 
   // Reports list from documents API
   const { data: documentsData, isLoading: isLoadingDocuments, refetch: refetchDocuments } = useQuery({
@@ -131,6 +154,56 @@ export function QualityTab({
         if (kbDir) {
           queryClient.invalidateQueries({ queryKey: ['documents', kbDir] });
         }
+      } else if (jobPurpose === 'scan-dupes') {
+        const result = (activeJob.result || null) as ConceptMergeProposalResult | null;
+        const proposals = result?.proposals ?? [];
+        setDuplicateClusters(proposals);
+        // Default-select every cluster so user can quickly merge-all.
+        const init: Record<string, boolean> = {};
+        proposals.forEach((p) => {
+          init[p.canonical] = true;
+        });
+        setSelectedClusters(init);
+        setHygieneNotice(
+          proposals.length === 0
+            ? 'No duplicate concept clusters detected.'
+            : `Found ${proposals.length} cluster(s), ${result?.total_duplicates ?? 0} duplicate page(s).`,
+        );
+      } else if (jobPurpose === 'merge-apply') {
+        const result = (activeJob.result || null) as ConceptMergeApplyResult | null;
+        setDuplicateClusters([]);
+        setSelectedClusters({});
+        setHygieneNotice(
+          result
+            ? `Merged ${result.clusters_merged} cluster(s); deleted ${result.files_deleted} file(s); rewrote refs in ${result.files_rewritten} file(s).`
+            : 'Merge applied.',
+        );
+        if (kbDir) {
+          queryClient.invalidateQueries({ queryKey: ['wikiTree', kbDir] });
+          queryClient.invalidateQueries({ queryKey: ['documents', kbDir] });
+          queryClient.invalidateQueries({ queryKey: ['kbStats', kbDir] });
+        }
+      } else if (jobPurpose === 'h1-fix') {
+        const result = (activeJob.result || null) as H1FixResult | null;
+        setHygieneNotice(
+          result
+            ? `Auto-fixed H1 in ${result.fixed_count} of ${result.scanned} flagged file(s).`
+            : 'H1 auto-fix completed.',
+        );
+        if (kbDir) {
+          queryClient.invalidateQueries({ queryKey: ['wikiTree', kbDir] });
+        }
+      } else if (jobPurpose === 'compact') {
+        const result = (activeJob.result || null) as CompactResult | null;
+        if (result?.report_path) {
+          setSelectedReport(result.report_path);
+          setHygieneNotice(
+            `Compact report ready: ${result.report_path} (H1 issues: ${result.h1_issue_count}, duplicate clusters: ${result.cluster_count}).`,
+          );
+        } else {
+          setHygieneNotice('Compact audit complete.');
+        }
+        refetchDocuments();
       }
     } else {
       setErrorMessage(activeJob.error || `${jobPurpose} job ${status}`);
@@ -177,13 +250,80 @@ export function QualityTab({
     onError: (error: Error) => setErrorMessage(error.message),
   });
 
+  const compactMutation = useMutation({
+    mutationFn: () => runCompact(kbDir!),
+    onSuccess: ({ job }) => {
+      setErrorMessage('');
+      setHygieneNotice('');
+      setActiveJobId(job.id);
+      setJobPurpose('compact');
+      onJobStarted?.(job.id);
+    },
+    onError: (error: Error) => setErrorMessage(error.message),
+  });
+
+  const scanDupesMutation = useMutation({
+    mutationFn: () => proposeConceptMerges(kbDir!),
+    onSuccess: ({ job }) => {
+      setErrorMessage('');
+      setHygieneNotice('');
+      setActiveJobId(job.id);
+      setJobPurpose('scan-dupes');
+      onJobStarted?.(job.id);
+    },
+    onError: (error: Error) => setErrorMessage(error.message),
+  });
+
+  const mergeApplyMutation = useMutation({
+    mutationFn: () => {
+      const selected = duplicateClusters.filter((p) => selectedClusters[p.canonical]);
+      return applyConceptMerges(kbDir!, selected);
+    },
+    onSuccess: ({ job }) => {
+      setErrorMessage('');
+      setHygieneNotice('');
+      setActiveJobId(job.id);
+      setJobPurpose('merge-apply');
+      onJobStarted?.(job.id);
+    },
+    onError: (error: Error) => setErrorMessage(error.message),
+  });
+
+  const h1FixMutation = useMutation({
+    mutationFn: () => applyH1Fix(kbDir!),
+    onSuccess: ({ job }) => {
+      setErrorMessage('');
+      setHygieneNotice('');
+      setActiveJobId(job.id);
+      setJobPurpose('h1-fix');
+      onJobStarted?.(job.id);
+    },
+    onError: (error: Error) => setErrorMessage(error.message),
+  });
+
   const candidates = fixPlan?.candidates ?? [];
   const selectableCandidates = candidates.filter(isSelectable);
   const approvedCount = selectableCandidates.filter((item) => selectedFixes[candidateKey(item)]).length;
+  const selectedClusterCount = duplicateClusters.filter((p) => selectedClusters[p.canonical]).length;
+  const totalDuplicateCount = duplicateClusters.reduce((acc, p) => acc + Math.max(p.merged.length - 1, 0), 0);
 
   const isBusy = !!activeJobId;
   const busyLabel =
-    jobPurpose === 'lint' ? 'Running lint…' : jobPurpose === 'plan' ? 'Generating plan…' : jobPurpose === 'apply' ? 'Applying fixes…' : '';
+    jobPurpose === 'lint'
+      ? 'Running lint…'
+      : jobPurpose === 'plan'
+        ? 'Generating plan…'
+        : jobPurpose === 'apply'
+          ? 'Applying fixes…'
+          : jobPurpose === 'compact'
+            ? 'Running compact audit…'
+            : jobPurpose === 'scan-dupes'
+              ? 'Scanning duplicates…'
+              : jobPurpose === 'merge-apply'
+                ? 'Merging concepts…'
+                : jobPurpose === 'h1-fix'
+                  ? 'Fixing H1…'
+                  : '';
 
   const handleSelectAll = (value: boolean) => {
     const next: Record<string, boolean> = {};
@@ -248,6 +388,53 @@ export function QualityTab({
               )}
               Apply Approved ({approvedCount})
             </Button>
+            <div className="mx-1 h-5 w-px bg-border" aria-hidden />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => compactMutation.mutate()}
+              disabled={isBusy || compactMutation.isPending}
+              title="One-shot KB hygiene: H1 audit + dedupe scan + structural lint"
+            >
+              {jobPurpose === 'compact' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Stethoscope className="h-3.5 w-3.5" />
+              )}
+              KB Compact
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => scanDupesMutation.mutate()}
+              disabled={isBusy || scanDupesMutation.isPending}
+              title="Scan concepts/ for duplicate clusters (dry-run)"
+            >
+              {jobPurpose === 'scan-dupes' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <GitMerge className="h-3.5 w-3.5" />
+              )}
+              Scan Duplicates
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (window.confirm('Apply safe H1 repairs across concepts/, companies/, industries/?')) {
+                  h1FixMutation.mutate();
+                }
+              }}
+              disabled={isBusy || h1FixMutation.isPending}
+              title="Safe in-place H1 repairs (missing H1, prefix noise)"
+            >
+              {jobPurpose === 'h1-fix' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Heading1 className="h-3.5 w-3.5" />
+              )}
+              Auto-fix H1
+            </Button>
           </div>
         </div>
 
@@ -264,6 +451,12 @@ export function QualityTab({
           <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
             {busyLabel}
+          </div>
+        ) : null}
+
+        {hygieneNotice ? (
+          <div className="mt-3 text-xs rounded-md border border-emerald-200/60 bg-emerald-50/40 dark:bg-emerald-500/5 dark:border-emerald-500/30 px-3 py-2 text-emerald-800 dark:text-emerald-200">
+            {hygieneNotice}
           </div>
         ) : null}
 
@@ -330,9 +523,13 @@ export function QualityTab({
           <div className="flex flex-col min-h-0 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/10 shrink-0">
               <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {fixPlan ? 'Fix Plan' : 'Report Preview'}
+                {duplicateClusters.length > 0
+                  ? 'Duplicate Clusters'
+                  : fixPlan
+                    ? 'Fix Plan'
+                    : 'Report Preview'}
               </div>
-              {fixPlan && selectableCandidates.length > 0 ? (
+              {fixPlan && selectableCandidates.length > 0 && duplicateClusters.length === 0 ? (
                 <div className="flex gap-1">
                   <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => handleSelectAll(true)}>
                     <CheckSquare className="h-3 w-3 mr-1" />
@@ -347,7 +544,44 @@ export function QualityTab({
             </div>
 
             <ScrollArea className="flex-1 min-h-0 overflow-hidden">
-              {fixPlan ? (
+              {duplicateClusters.length > 0 ? (
+                <DuplicateClusterPanel
+                  clusters={duplicateClusters}
+                  selected={selectedClusters}
+                  onToggle={(canonical, value) =>
+                    setSelectedClusters((prev) => ({ ...prev, [canonical]: value }))
+                  }
+                  onSelectAll={(value) => {
+                    const next: Record<string, boolean> = {};
+                    duplicateClusters.forEach((p) => {
+                      next[p.canonical] = value;
+                    });
+                    setSelectedClusters(next);
+                  }}
+                  onMerge={() => {
+                    if (selectedClusterCount === 0) return;
+                    const total = duplicateClusters
+                      .filter((p) => selectedClusters[p.canonical])
+                      .reduce((acc, p) => acc + Math.max(p.merged.length - 1, 0), 0);
+                    if (
+                      window.confirm(
+                        `Merge ${selectedClusterCount} cluster(s)? This deletes ${total} duplicate page(s) and rewrites wikilinks.`,
+                      )
+                    ) {
+                      mergeApplyMutation.mutate();
+                    }
+                  }}
+                  onCancel={() => {
+                    setDuplicateClusters([]);
+                    setSelectedClusters({});
+                    setHygieneNotice('');
+                  }}
+                  selectedCount={selectedClusterCount}
+                  totalDuplicates={totalDuplicateCount}
+                  disabled={isBusy}
+                  busy={jobPurpose === 'merge-apply'}
+                />
+              ) : fixPlan ? (
                 <FixPlanList
                   candidates={candidates}
                   selectedFixes={selectedFixes}
@@ -376,6 +610,113 @@ export function QualityTab({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function DuplicateClusterPanel({
+  clusters,
+  selected,
+  onToggle,
+  onSelectAll,
+  onMerge,
+  onCancel,
+  selectedCount,
+  totalDuplicates,
+  disabled,
+  busy,
+}: {
+  clusters: ConceptMergeProposal[];
+  selected: Record<string, boolean>;
+  onToggle: (canonical: string, value: boolean) => void;
+  onSelectAll: (value: boolean) => void;
+  onMerge: () => void;
+  onCancel: () => void;
+  selectedCount: number;
+  totalDuplicates: number;
+  disabled: boolean;
+  busy: boolean;
+}) {
+  return (
+    <div className="flex flex-col">
+      <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 backdrop-blur px-4 py-2.5">
+        <div className="text-xs text-muted-foreground">
+          {clusters.length} cluster(s), {totalDuplicates} duplicate page(s). Selected: {selectedCount}
+        </div>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onSelectAll(true)} disabled={disabled}>
+            <CheckSquare className="h-3 w-3 mr-1" />
+            All
+          </Button>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onSelectAll(false)} disabled={disabled}>
+            <Square className="h-3 w-3 mr-1" />
+            None
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={onCancel} disabled={disabled}>
+            Close
+          </Button>
+          <Button
+            size="sm"
+            className="h-7 px-3 text-xs"
+            onClick={onMerge}
+            disabled={disabled || selectedCount === 0}
+          >
+            {busy ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <GitMerge className="h-3 w-3 mr-1" />}
+            Merge Selected ({selectedCount})
+          </Button>
+        </div>
+      </div>
+      <div className="divide-y">
+        {clusters.map((cluster) => {
+          const checked = !!selected[cluster.canonical];
+          return (
+            <div key={cluster.canonical} className={`p-4 ${checked ? '' : 'opacity-70'}`}>
+              <div className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 rounded border-input"
+                  checked={checked}
+                  disabled={disabled}
+                  onChange={(event) => onToggle(cluster.canonical, event.target.checked)}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <strong className="text-sm truncate">{cluster.canonical}</strong>
+                    <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                      canonical
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">
+                      will absorb {cluster.merged.length - 1} duplicate(s)
+                    </span>
+                  </div>
+                  <ul className="mt-2 space-y-1">
+                    {cluster.merged.slice(1).map((slug) => {
+                      const sim = cluster.rationale[slug];
+                      return (
+                        <li key={slug} className="text-xs flex items-center gap-2">
+                          <span className="text-muted-foreground">└─ merge:</span>
+                          <code className="text-foreground/90 truncate">{slug}</code>
+                          {typeof sim === 'number' ? (
+                            <span className="text-[10px] text-muted-foreground tabular-nums">
+                              sim={sim.toFixed(3)}
+                            </span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  {cluster.sources_union.length > 0 ? (
+                    <div className="text-[11px] text-muted-foreground mt-2 truncate">
+                      sources ({cluster.sources_union.length}): {cluster.sources_union.slice(0, 4).join(', ')}
+                      {cluster.sources_union.length > 4 ? ` …+${cluster.sources_union.length - 4}` : ''}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
