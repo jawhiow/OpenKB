@@ -158,6 +158,26 @@ def test_create_chat_endpoint_persists_empty_session(tmp_path):
     assert _git(kb_dir, "log", "-1", "--pretty=%s") == f"Create chat {session['id']}"
 
 
+def test_wiki_file_put_saves_content(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    page = kb_dir / "wiki" / "concepts" / "edit-me.md"
+    page.write_text("# Before\n", encoding="utf-8")
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/wiki/file",
+        json={
+            "kb_dir": str(kb_dir),
+            "path": "concepts/edit-me.md",
+            "content": "# After\n\nUpdated body.\n",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"path": "concepts/edit-me.md"}
+    assert page.read_text(encoding="utf-8") == "# After\n\nUpdated body.\n"
+
+
 def test_llm_usage_endpoints_support_list_search_pagination_and_export(tmp_path):
     kb_dir = _make_kb(tmp_path)
     _seed_llm_usage_rows(kb_dir)

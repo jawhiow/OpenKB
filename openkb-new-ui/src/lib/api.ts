@@ -512,6 +512,10 @@ export interface WikiFileResponse {
   content: string;
 }
 
+export interface WikiFileSaveResponse {
+  path: string;
+}
+
 export const runLint = async (kbDir: string): Promise<JobEnvelope> => {
   const response = await apiClient.post('/lint', { kb_dir: kbDir });
   return response.data;
@@ -667,6 +671,19 @@ export const getWikiFile = async (kbDir: string, path: string): Promise<WikiFile
 export const getReviewSummaryFile = async (kbDir: string, path: string): Promise<WikiFileResponse> => {
   const response = await apiClient.get('/review-summary/file', {
     params: { kb_dir: kbDir, path },
+  });
+  return response.data;
+};
+
+export const saveWikiFile = async (
+  kbDir: string,
+  path: string,
+  content: string,
+): Promise<WikiFileSaveResponse> => {
+  const response = await apiClient.put('/wiki/file', {
+    kb_dir: kbDir,
+    path,
+    content,
   });
   return response.data;
 };

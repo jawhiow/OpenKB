@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   AlertCircle,
   CheckCircle2,
@@ -748,9 +750,11 @@ export function QualityTab({
                   <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                 </div>
               ) : reportFile?.content ? (
-                <pre className="p-4 text-xs whitespace-pre-wrap break-words font-mono leading-relaxed">
-                  {reportFile.content}
-                </pre>
+                <div className="prose prose-slate max-w-none p-6 dark:prose-invert">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {reportFile.content}
+                  </ReactMarkdown>
+                </div>
               ) : selectedReport ? (
                 <div className="p-6 text-sm text-muted-foreground italic text-center">
                   Empty report.

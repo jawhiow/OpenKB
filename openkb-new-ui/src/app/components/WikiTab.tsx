@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery } from '@tanstack/react-query';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -9,10 +10,13 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   ChevronDown,
   ChevronRight,
+  Edit3,
   FileText,
   Folder,
   FolderTree,
   List,
+  Loader2,
+  Save,
   Search,
   X,
 } from 'lucide-react';
@@ -21,7 +25,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { usePersistentState } from '@/lib/use-persistent-state';
-import { getReviewSummaryFile, getWikiFile } from '@/lib/api';
+import { getReviewSummaryFile, getWikiFile, saveWikiFile } from '@/lib/api';
 
 interface WikiFileNode {
   path: string;
@@ -141,10 +145,13 @@ function groupFiles(files: WikiFileNode[]): FileGroup[] {
 }
 
 export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: string | null }) {
+  const queryClient = useQueryClient();
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(initialPath ?? null);
   const [lastInitialPath, setLastInitialPath] = useState<string | null>(initialPath ?? null);
   const [activeHeadingId, setActiveHeadingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftContent, setDraftContent] = useState('');
   const [collapsedGroups, setCollapsedGroups] = usePersistentState<string[]>(
     `openkb:wiki-collapsed:${kbDir}`,
     [],
@@ -180,6 +187,20 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
       return getWikiFile(kbDir, selectedFilePath);
     },
     enabled: !!kbDir && !!selectedFilePath,
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedFilePath) {
+        throw new Error('No wiki file selected.');
+      }
+      return saveWikiFile(kbDir, selectedFilePath, draftContent);
+    },
+    onSuccess: async () => {
+      setIsEditing(false);
+      await queryClient.invalidateQueries({ queryKey: ['wikiFile', kbDir, selectedFilePath] });
+      await queryClient.invalidateQueries({ queryKey: ['wikiTree', kbDir] });
+    },
   });
 
   const allFiles: WikiFileNode[] = useMemo(() => {
@@ -233,15 +254,26 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
   };
 
   const markdown: string = fileData?.content ?? '';
-  const toc = useMemo(() => extractToc(markdown), [markdown]);
-  const markdownComponents = useMemo(() => buildMarkdownComponents(toc), [toc]);
+  const isReviewSummary = Boolean(selectedFilePath?.startsWith('review_summaries/'));
+  const canEdit = Boolean(selectedFilePath) && !isReviewSummary;
+  const previewContent = isEditing ? draftContent : markdown;
+  const previewToc = useMemo(() => extractToc(previewContent), [previewContent]);
+  const markdownComponents = useMemo(() => buildMarkdownComponents(previewToc), [previewToc]);
+
+  const syncKey = `${selectedFilePath ?? ''}|${markdown}`;
+  const [lastSyncKey, setLastSyncKey] = useState(syncKey);
+  if (syncKey !== lastSyncKey) {
+    setLastSyncKey(syncKey);
+    setDraftContent(markdown);
+    setIsEditing(false);
+  }
 
   // Reset spy state when switching file.
-  const fileKey = `${kbDir}|${selectedFilePath ?? ''}`;
+  const fileKey = `${kbDir}|${selectedFilePath ?? ''}|${isEditing ? 'edit' : 'view'}`;
   const [lastFileKey, setLastFileKey] = useState(fileKey);
   if (fileKey !== lastFileKey) {
     setLastFileKey(fileKey);
-    setActiveHeadingId(toc[0]?.id ?? null);
+    setActiveHeadingId(previewToc[0]?.id ?? null);
   }
 
   // Only collapse "Show more" expansions when the knowledge base itself changes;
@@ -259,7 +291,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
 
   // Scroll-spy: keep a set of currently visible headings; the topmost (by ToC order) wins.
   useEffect(() => {
-    if (toc.length === 0) return;
+    if (previewToc.length === 0 || isEditing) return;
     const root = scrollRef.current;
     if (!root) return;
 
@@ -273,7 +305,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
           else visible.delete(id);
         }
         // Pick the first heading (in document order) that is still visible.
-        for (const item of toc) {
+        for (const item of previewToc) {
           if (visible.has(item.id)) {
             setActiveHeadingId(item.id);
             return;
@@ -291,7 +323,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
     );
 
     const elements: Element[] = [];
-    for (const item of toc) {
+    for (const item of previewToc) {
       const el = root.querySelector(`#${CSS.escape(item.id)}`);
       if (el) {
         observer.observe(el);
@@ -302,7 +334,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
       for (const el of elements) observer.unobserve(el);
       observer.disconnect();
     };
-  }, [toc, selectedFilePath]);
+  }, [previewToc, selectedFilePath, isEditing]);
 
   const handleTocClick = (id: string) => {
     const root = scrollRef.current;
@@ -432,14 +464,61 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
               <p>Select a document from the index to view its content.</p>
             </div>
           ) : (
-            <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto scroll-smooth">
-              <div className="p-8 prose prose-slate dark:prose-invert max-w-3xl">
-                {markdown ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {markdown}
-                  </ReactMarkdown>
+            <div className="flex flex-1 min-h-0 flex-col">
+              <div className="flex items-center justify-between border-b bg-muted/10 px-4 py-2.5">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">{selectedFilePath}</div>
+                  {isReviewSummary ? (
+                    <div className="text-xs text-muted-foreground">Review summary is preview-only.</div>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2">
+                  {isEditing ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setDraftContent(markdown);
+                          setIsEditing(false);
+                        }}
+                        disabled={saveMutation.isPending}
+                      >
+                        Cancel
+                      </Button>
+                      <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
+                        {saveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                        Save
+                      </Button>
+                    </>
+                  ) : canEdit ? (
+                    <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
+                      <Edit3 className="h-3.5 w-3.5" />
+                      Edit
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto scroll-smooth">
+                {isEditing ? (
+                  <div className="p-6">
+                    <textarea
+                      value={draftContent}
+                      onChange={(event) => setDraftContent(event.target.value)}
+                      className="min-h-[70vh] w-full rounded-xl border border-border bg-background px-4 py-3 font-mono text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      spellCheck={false}
+                    />
+                  </div>
                 ) : (
-                  <div className="text-muted-foreground italic">Document is empty or cannot be read.</div>
+                  <div className="p-8 prose prose-slate dark:prose-invert max-w-3xl">
+                    {previewContent ? (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                        {previewContent}
+                      </ReactMarkdown>
+                    ) : (
+                      <div className="text-muted-foreground italic">Document is empty or cannot be read.</div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -447,7 +526,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
         </div>
 
         {/* Right: ToC (xl+ screens) */}
-        {selectedFilePath && toc.length > 1 ? (
+        {selectedFilePath && !isEditing && previewToc.length > 1 ? (
           <aside className="hidden xl:flex w-[220px] shrink-0 flex-col border-l bg-muted/10 min-h-0">
             <div className="flex items-center gap-2 border-b px-4 py-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               <List className="h-3.5 w-3.5" />
@@ -455,7 +534,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
             </div>
             <ScrollArea className="flex-1 min-h-0">
               <nav className="p-2 space-y-0.5 text-xs" aria-label="Document outline">
-                {toc.map((item) => (
+                {previewToc.map((item) => (
                   <button
                     key={item.id}
                     type="button"

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ConfigData,
@@ -135,7 +135,7 @@ export function SettingsTab({
     setSuccessMessage('');
   };
 
-  const refreshKbQueries = async (nextKbDir?: string) => {
+  const refreshKbQueries = useCallback(async (nextKbDir?: string) => {
     const targetKb = nextKbDir ?? kbDir;
     await queryClient.invalidateQueries({ queryKey: ['kbs'] });
     if (targetKb) {
@@ -146,7 +146,7 @@ export function SettingsTab({
       await queryClient.invalidateQueries({ queryKey: ['documents', targetKb] });
       await queryClient.invalidateQueries({ queryKey: ['chats', targetKb] });
     }
-  };
+  }, [kbDir, queryClient]);
 
   const saveSettingsMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => updateConfig(kbDir!, payload),
@@ -214,6 +214,23 @@ export function SettingsTab({
       setErrorMessage(error instanceof Error ? error.message : 'Probe failed');
     },
   });
+
+  useEffect(() => {
+    if (!kbDir || section !== 'model-pool') return;
+    const pool = modelPoolQuery.data;
+    if (!pool?.enabled || probeAllMutation.isPending) return;
+    const intervalSeconds = Math.max(Number(pool.probe_interval_seconds || 600), 1);
+    const timer = window.setTimeout(() => {
+      void probeAllModelPoolProfiles(kbDir)
+        .then(async () => {
+          await refreshKbQueries();
+        })
+        .catch(() => {
+          // Silent background probe: keep manual controls responsible for surfaced errors.
+        });
+    }, intervalSeconds * 1000);
+    return () => window.clearTimeout(timer);
+  }, [kbDir, modelPoolQuery.data, probeAllMutation.isPending, refreshKbQueries, section]);
 
   const saveProfileMutation = useMutation({
     mutationFn: async (draft: ProfileDraft) => {
