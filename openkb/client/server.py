@@ -1460,6 +1460,99 @@ def create_app(registry: JobRegistry | None = None):
         job = registry.submit("lint_h1_fix", run, message="Applying safe H1 fixes")
         return {"job": job.to_dict()}
 
+    @app.post("/api/lint/h1-rename/suggest")
+    def lint_h1_rename_suggest(payload: dict[str, Any]) -> dict[str, Any]:
+        """Ask the LLM how to repair H1↔stem mismatches in concepts/.
+
+        Dry-run; returns a list of suggestions. The caller submits the
+        approved subset to ``/api/lint/h1-rename/apply`` to execute.
+        """
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        try:
+            confidence = float(payload.get("confidence") or 0.7)
+        except (TypeError, ValueError):
+            confidence = 0.7
+        language = str(payload.get("language") or "Chinese")
+
+        def run(job):
+            from openkb.agent.h1_rename import propose_h1_renames
+            from openkb.model_pool import select_model_route
+
+            job.raise_if_stopped()
+            try:
+                route = select_model_route(target_kb)
+            except RuntimeError as exc:
+                raise RuntimeError(str(exc)) from exc
+            job.add_log(f"Using model: {route.model}")
+
+            def _progress(message: str) -> None:
+                job.raise_if_stopped()
+                job.add_log(message)
+
+            suggestions = propose_h1_renames(
+                target_kb,
+                model=route.model,
+                language=language,
+                auto_apply_threshold=confidence,
+                on_progress=_progress,
+            )
+            auto_count = sum(1 for s in suggestions if s.auto_applicable)
+            job.add_log(
+                f"{len(suggestions)} suggestion(s); {auto_count} auto-applicable "
+                f"(conf≥{confidence})"
+            )
+            return {
+                "suggestions": [s.to_dict() for s in suggestions],
+                "total": len(suggestions),
+                "auto_applicable_count": auto_count,
+                "confidence_threshold": confidence,
+                "model": route.model,
+            }
+
+        job = registry.submit(
+            "lint_h1_rename_suggest",
+            run,
+            message="Asking LLM how to repair H1↔stem mismatches",
+        )
+        return {"job": job.to_dict()}
+
+    @app.post("/api/lint/h1-rename/apply")
+    def lint_h1_rename_apply(payload: dict[str, Any]) -> dict[str, Any]:
+        """Apply the user-approved subset of H1 rename suggestions."""
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        raw_suggestions = payload.get("suggestions")
+        if not isinstance(raw_suggestions, list) or not raw_suggestions:
+            raise translate_error(ValueError("`suggestions` must be a non-empty list."))
+
+        def run(job):
+            from openkb.agent.h1_rename import apply_h1_renames
+
+            job.raise_if_stopped()
+            job.add_log(f"Applying {len(raw_suggestions)} suggestion(s)")
+            result = apply_h1_renames(target_kb, raw_suggestions)
+            job.add_log(
+                f"Rewrote H1 in {len(result['h1_rewritten'])} file(s); "
+                f"renamed {len(result['renamed'])} file(s); "
+                f"refs rewritten in {result['files_rewritten']} file(s); "
+                f"skipped {len(result['skipped'])}; errors {len(result['errors'])}"
+            )
+            return result
+
+        job = registry.submit(
+            "lint_h1_rename_apply",
+            run,
+            message="Applying H1 rename suggestions",
+        )
+        return {"job": job.to_dict()}
+
     @app.post("/api/compact")
     def compact_kb(payload: dict[str, Any]) -> dict[str, Any]:
         """One-shot KB hygiene: H1 audit + dedupe scan + structural lint.

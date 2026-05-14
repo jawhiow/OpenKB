@@ -2287,6 +2287,107 @@ def merge_concepts(ctx, do_apply: bool, tight: float, wide: float):
                f"{result['files_deleted']} deletions")
 
 
+@cli.command(name="h1-rename")
+@click.option("--apply", "do_apply", is_flag=True, default=False,
+              help="Execute auto-applicable suggestions. Default is dry-run.")
+@click.option("--confidence", type=float, default=0.7, show_default=True,
+              help="Minimum LLM confidence for auto-apply.")
+@click.option("--language", default="Chinese", show_default=True,
+              help="Language for the LLM's rationale text.")
+@click.pass_context
+def h1_rename(ctx, do_apply: bool, confidence: float, language: str):
+    """LLM-assisted repair of H1↔filename mismatches in concepts/.
+
+    Targets the two failure modes that ``compact --fix-h1`` deliberately
+    avoids (``h1_mismatch`` and ``h1_is_english_slug``). For each affected
+    page the LLM picks one of:
+
+      * ``rewrite_h1`` — stem is canonical → overwrite H1.
+      * ``rename_file`` — H1 is canonical → mv file + rewrite all wikilinks.
+      * ``split`` / ``manual`` — suggestion only (no auto-execute).
+
+    Without --apply, only writes a suggestion report. With --apply, executes
+    suggestions whose confidence ≥ --confidence threshold.
+    """
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    _ensure_wiki_schema(kb_dir)
+
+    from openkb.agent.h1_rename import (
+        apply_h1_renames,
+        propose_h1_renames,
+        render_suggestions_report,
+    )
+    from openkb.model_pool import select_model_route
+
+    try:
+        route = select_model_route(kb_dir)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    model = route.model
+    click.echo(f"Using model: {model}")
+
+    def _progress(message: str) -> None:
+        click.echo(f"  {message}")
+
+    suggestions = propose_h1_renames(
+        kb_dir,
+        model=model,
+        language=language,
+        auto_apply_threshold=confidence,
+        on_progress=_progress,
+    )
+    if not suggestions:
+        click.echo("No H1 mismatches or English-slug cases requiring LLM judgement.")
+        return
+
+    # Always write a report so users can audit.
+    wiki = kb_dir / "wiki"
+    reports_dir = wiki / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y%m%d")
+    report_path = reports_dir / f"h1-rename-{today}.md"
+    report_path.write_text(render_suggestions_report(suggestions), encoding="utf-8")
+    click.echo(f"Report written to {report_path.relative_to(kb_dir)}")
+
+    auto_count = sum(1 for s in suggestions if s.auto_applicable)
+    manual_count = len(suggestions) - auto_count
+    click.echo(f"\nSummary: {len(suggestions)} suggestion(s); "
+               f"{auto_count} auto-applicable (conf≥{confidence}), {manual_count} need review.")
+
+    if not do_apply:
+        click.echo("Dry-run complete. Re-run with --apply to execute auto-applicable suggestions.")
+        return
+
+    if auto_count == 0:
+        click.echo("No auto-applicable suggestions; nothing to do.")
+        return
+
+    if not click.confirm(
+        f"Apply {auto_count} suggestion(s)? This rewrites H1 in some files and renames others.",
+        default=False,
+    ):
+        click.echo("Aborted.")
+        return
+
+    approved = [s for s in suggestions if s.auto_applicable]
+    result = apply_h1_renames(kb_dir, approved)
+    click.echo(
+        f"Done. Rewrote H1 in {len(result['h1_rewritten'])} file(s); "
+        f"renamed {len(result['renamed'])} file(s); "
+        f"rewrote refs in {result['files_rewritten']} file(s); "
+        f"skipped {len(result['skipped'])}; errors {len(result['errors'])}."
+    )
+    append_log(
+        kb_dir / "wiki",
+        "h1-rename",
+        f"rewrote_h1={len(result['h1_rewritten'])} renamed={len(result['renamed'])} "
+        f"errors={len(result['errors'])}",
+    )
+
+
 @cli.command()
 @click.option("--host", default="0.0.0.0", show_default=True, help="Host to bind the local client server.")
 @click.option("--port", default=8765, show_default=True, type=int, help="Port for the local client server.")

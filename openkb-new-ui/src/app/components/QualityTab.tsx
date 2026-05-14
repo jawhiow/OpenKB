@@ -13,6 +13,7 @@ import {
   Loader2,
   Play,
   RefreshCcw,
+  Sparkles,
   Square,
   Stethoscope,
   Wand2,
@@ -20,6 +21,7 @@ import {
 import {
   applyConceptMerges,
   applyH1Fix,
+  applyH1Rename,
   applyLintFixes,
   CompactResult,
   ConceptMergeApplyResult,
@@ -30,12 +32,16 @@ import {
   getJob,
   getWikiFile,
   H1FixResult,
+  H1RenameApplyResult,
+  H1RenameSuggestion,
+  H1RenameSuggestResult,
   LintApplyResult,
   LintFixCandidate,
   LintFixPlan,
   proposeConceptMerges,
   runCompact,
   runLint,
+  suggestH1Rename,
 } from '@/lib/api';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -49,7 +55,9 @@ type JobPurpose =
   | 'compact'
   | 'scan-dupes'
   | 'merge-apply'
-  | 'h1-fix';
+  | 'h1-fix'
+  | 'h1-rename-suggest'
+  | 'h1-rename-apply';
 
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'stopped']);
 
@@ -89,6 +97,11 @@ export function QualityTab({
   const [duplicateClusters, setDuplicateClusters] = useState<ConceptMergeProposal[]>([]);
   const [selectedClusters, setSelectedClusters] = useState<Record<string, boolean>>({});
   const [hygieneNotice, setHygieneNotice] = useState<string>('');
+  // AI-assisted H1 rename state
+  const [renameSuggestions, setRenameSuggestions] = useState<H1RenameSuggestion[]>([]);
+  const [renameDrafts, setRenameDrafts] = useState<Record<string, H1RenameSuggestion>>({});
+  const [renameSelected, setRenameSelected] = useState<Record<string, boolean>>({});
+  const [renameMeta, setRenameMeta] = useState<{ model: string; threshold: number } | null>(null);
 
   // Reports list from documents API
   const { data: documentsData, isLoading: isLoadingDocuments, refetch: refetchDocuments } = useQuery({
@@ -192,6 +205,47 @@ export function QualityTab({
         );
         if (kbDir) {
           queryClient.invalidateQueries({ queryKey: ['wikiTree', kbDir] });
+        }
+      } else if (jobPurpose === 'h1-rename-suggest') {
+        const result = (activeJob.result || null) as H1RenameSuggestResult | null;
+        const list = result?.suggestions ?? [];
+        setRenameSuggestions(list);
+        const drafts: Record<string, H1RenameSuggestion> = {};
+        const sel: Record<string, boolean> = {};
+        list.forEach((s) => {
+          drafts[s.path] = s;
+          sel[s.path] = s.auto_applicable;
+        });
+        setRenameDrafts(drafts);
+        setRenameSelected(sel);
+        setRenameMeta({
+          model: result?.model ?? '',
+          threshold: result?.confidence_threshold ?? 0.7,
+        });
+        setHygieneNotice(
+          list.length === 0
+            ? 'No concept pages need LLM-assisted rename.'
+            : `LLM produced ${list.length} suggestion(s); ${result?.auto_applicable_count ?? 0} auto-applicable at conf≥${result?.confidence_threshold ?? 0.7}.`,
+        );
+      } else if (jobPurpose === 'h1-rename-apply') {
+        const result = (activeJob.result || null) as H1RenameApplyResult | null;
+        setRenameSuggestions([]);
+        setRenameDrafts({});
+        setRenameSelected({});
+        setRenameMeta(null);
+        if (result) {
+          setHygieneNotice(
+            `Rewrote H1 in ${result.h1_rewritten.length} file(s); ` +
+              `renamed ${result.renamed.length} file(s); ` +
+              `rewrote refs in ${result.files_rewritten} file(s); ` +
+              `skipped ${result.skipped.length}; errors ${result.errors.length}.`,
+          );
+        } else {
+          setHygieneNotice('H1 rename apply completed.');
+        }
+        if (kbDir) {
+          queryClient.invalidateQueries({ queryKey: ['wikiTree', kbDir] });
+          queryClient.invalidateQueries({ queryKey: ['documents', kbDir] });
         }
       } else if (jobPurpose === 'compact') {
         const result = (activeJob.result || null) as CompactResult | null;
@@ -301,11 +355,45 @@ export function QualityTab({
     onError: (error: Error) => setErrorMessage(error.message),
   });
 
+  const h1RenameSuggestMutation = useMutation({
+    mutationFn: () => suggestH1Rename(kbDir!),
+    onSuccess: ({ job }) => {
+      setErrorMessage('');
+      setHygieneNotice('');
+      setRenameSuggestions([]);
+      setRenameDrafts({});
+      setRenameSelected({});
+      setRenameMeta(null);
+      setActiveJobId(job.id);
+      setJobPurpose('h1-rename-suggest');
+      onJobStarted?.(job.id);
+    },
+    onError: (error: Error) => setErrorMessage(error.message),
+  });
+
+  const h1RenameApplyMutation = useMutation({
+    mutationFn: () => {
+      const approved = renameSuggestions
+        .map((s) => renameDrafts[s.path] || s)
+        .filter((s) => renameSelected[s.path]);
+      return applyH1Rename(kbDir!, approved);
+    },
+    onSuccess: ({ job }) => {
+      setErrorMessage('');
+      setHygieneNotice('');
+      setActiveJobId(job.id);
+      setJobPurpose('h1-rename-apply');
+      onJobStarted?.(job.id);
+    },
+    onError: (error: Error) => setErrorMessage(error.message),
+  });
+
   const candidates = fixPlan?.candidates ?? [];
   const selectableCandidates = candidates.filter(isSelectable);
   const approvedCount = selectableCandidates.filter((item) => selectedFixes[candidateKey(item)]).length;
   const selectedClusterCount = duplicateClusters.filter((p) => selectedClusters[p.canonical]).length;
   const totalDuplicateCount = duplicateClusters.reduce((acc, p) => acc + Math.max(p.merged.length - 1, 0), 0);
+  const renameSelectedCount = renameSuggestions.filter((s) => renameSelected[s.path]).length;
 
   const isBusy = !!activeJobId;
   const busyLabel =
@@ -323,7 +411,11 @@ export function QualityTab({
                 ? 'Merging concepts…'
                 : jobPurpose === 'h1-fix'
                   ? 'Fixing H1…'
-                  : '';
+                  : jobPurpose === 'h1-rename-suggest'
+                    ? 'Asking LLM to repair H1↔stem…'
+                    : jobPurpose === 'h1-rename-apply'
+                      ? 'Applying H1 rename…'
+                      : '';
 
   const handleSelectAll = (value: boolean) => {
     const next: Record<string, boolean> = {};
@@ -435,6 +527,20 @@ export function QualityTab({
               )}
               Auto-fix H1
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => h1RenameSuggestMutation.mutate()}
+              disabled={isBusy || h1RenameSuggestMutation.isPending}
+              title="Use LLM to suggest H1/filename repairs for concepts/ (mismatch + english-slug)"
+            >
+              {jobPurpose === 'h1-rename-suggest' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5" />
+              )}
+              AI Suggest Rename
+            </Button>
           </div>
         </div>
 
@@ -523,13 +629,15 @@ export function QualityTab({
           <div className="flex flex-col min-h-0 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/10 shrink-0">
               <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {duplicateClusters.length > 0
-                  ? 'Duplicate Clusters'
-                  : fixPlan
-                    ? 'Fix Plan'
-                    : 'Report Preview'}
+                {renameSuggestions.length > 0
+                  ? 'H1 Rename Suggestions'
+                  : duplicateClusters.length > 0
+                    ? 'Duplicate Clusters'
+                    : fixPlan
+                      ? 'Fix Plan'
+                      : 'Report Preview'}
               </div>
-              {fixPlan && selectableCandidates.length > 0 && duplicateClusters.length === 0 ? (
+              {fixPlan && selectableCandidates.length > 0 && duplicateClusters.length === 0 && renameSuggestions.length === 0 ? (
                 <div className="flex gap-1">
                   <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => handleSelectAll(true)}>
                     <CheckSquare className="h-3 w-3 mr-1" />
@@ -544,7 +652,54 @@ export function QualityTab({
             </div>
 
             <ScrollArea className="flex-1 min-h-0 overflow-hidden">
-              {duplicateClusters.length > 0 ? (
+              {renameSuggestions.length > 0 ? (
+                <H1RenameSuggestionPanel
+                  suggestions={renameSuggestions}
+                  drafts={renameDrafts}
+                  selected={renameSelected}
+                  meta={renameMeta}
+                  onToggle={(path, value) =>
+                    setRenameSelected((prev) => ({ ...prev, [path]: value }))
+                  }
+                  onSelectAll={(value) => {
+                    const next: Record<string, boolean> = {};
+                    renameSuggestions.forEach((s) => {
+                      // manual / split can't be applied at all — never auto-tick
+                      next[s.path] =
+                        value &&
+                        ((renameDrafts[s.path] || s).action === 'rewrite_h1' ||
+                          (renameDrafts[s.path] || s).action === 'rename_file');
+                    });
+                    setRenameSelected(next);
+                  }}
+                  onDraftChange={(path, patch) =>
+                    setRenameDrafts((prev) => ({
+                      ...prev,
+                      [path]: { ...(prev[path] || renameSuggestions.find((x) => x.path === path)!), ...patch },
+                    }))
+                  }
+                  onApply={() => {
+                    if (renameSelectedCount === 0) return;
+                    if (
+                      window.confirm(
+                        `Apply ${renameSelectedCount} suggestion(s)? Files may be renamed and wikilinks rewritten.`,
+                      )
+                    ) {
+                      h1RenameApplyMutation.mutate();
+                    }
+                  }}
+                  onCancel={() => {
+                    setRenameSuggestions([]);
+                    setRenameDrafts({});
+                    setRenameSelected({});
+                    setRenameMeta(null);
+                    setHygieneNotice('');
+                  }}
+                  selectedCount={renameSelectedCount}
+                  disabled={isBusy}
+                  busy={jobPurpose === 'h1-rename-apply'}
+                />
+              ) : duplicateClusters.length > 0 ? (
                 <DuplicateClusterPanel
                   clusters={duplicateClusters}
                   selected={selectedClusters}
@@ -857,6 +1012,178 @@ function AppliedResultsBlock({ result }: { result: LintApplyResult }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+const ACTION_BADGE: Record<string, string> = {
+  rewrite_h1: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
+  rename_file: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
+  split: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
+  manual: 'bg-muted text-muted-foreground',
+};
+
+function H1RenameSuggestionPanel({
+  suggestions,
+  drafts,
+  selected,
+  meta,
+  onToggle,
+  onSelectAll,
+  onDraftChange,
+  onApply,
+  onCancel,
+  selectedCount,
+  disabled,
+  busy,
+}: {
+  suggestions: H1RenameSuggestion[];
+  drafts: Record<string, H1RenameSuggestion>;
+  selected: Record<string, boolean>;
+  meta: { model: string; threshold: number } | null;
+  onToggle: (path: string, value: boolean) => void;
+  onSelectAll: (value: boolean) => void;
+  onDraftChange: (path: string, patch: Partial<H1RenameSuggestion>) => void;
+  onApply: () => void;
+  onCancel: () => void;
+  selectedCount: number;
+  disabled: boolean;
+  busy: boolean;
+}) {
+  const executableCount = suggestions.filter((s) => {
+    const draft = drafts[s.path] || s;
+    return draft.action === 'rewrite_h1' || draft.action === 'rename_file';
+  }).length;
+
+  return (
+    <div className="flex flex-col">
+      <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 backdrop-blur px-4 py-2.5">
+        <div className="text-xs text-muted-foreground">
+          {suggestions.length} suggestion(s); {executableCount} executable. Selected: {selectedCount}
+          {meta?.model ? <span className="ml-2 opacity-70">· model: {meta.model}</span> : null}
+          {meta ? <span className="ml-2 opacity-70">· conf≥{meta.threshold}</span> : null}
+        </div>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onSelectAll(true)} disabled={disabled}>
+            <CheckSquare className="h-3 w-3 mr-1" />
+            All Executable
+          </Button>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onSelectAll(false)} disabled={disabled}>
+            <Square className="h-3 w-3 mr-1" />
+            None
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={onCancel} disabled={disabled}>
+            Close
+          </Button>
+          <Button size="sm" className="h-7 px-3 text-xs" onClick={onApply} disabled={disabled || selectedCount === 0}>
+            {busy ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Sparkles className="h-3 w-3 mr-1" />}
+            Apply Selected ({selectedCount})
+          </Button>
+        </div>
+      </div>
+      <div className="divide-y">
+        {suggestions.map((original) => {
+          const draft = drafts[original.path] || original;
+          const checked = !!selected[original.path];
+          const executable = draft.action === 'rewrite_h1' || draft.action === 'rename_file';
+          return (
+            <div key={original.path} className={`p-4 ${executable ? '' : 'opacity-70'}`}>
+              <div className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 rounded border-input"
+                  checked={checked}
+                  disabled={disabled || !executable}
+                  onChange={(event) => onToggle(original.path, event.target.checked)}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="text-sm truncate font-mono">{draft.path}</code>
+                    <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${ACTION_BADGE[draft.action] || ACTION_BADGE.manual}`}>
+                      {draft.action}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground tabular-nums">
+                      conf={draft.confidence.toFixed(2)}
+                    </span>
+                    {draft.auto_applicable ? (
+                      <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                        auto
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <div className="text-muted-foreground">Current H1</div>
+                      <div className="font-medium truncate">{draft.h1 || <em className="text-muted-foreground">(missing)</em>}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Current stem</div>
+                      <div className="font-medium truncate">{draft.stem}</div>
+                    </div>
+                  </div>
+
+                  {draft.action === 'rewrite_h1' ? (
+                    <div className="mt-2 text-xs">
+                      <label className="text-muted-foreground block mb-1">Target H1 (editable)</label>
+                      <input
+                        type="text"
+                        className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-mono"
+                        value={draft.target_h1}
+                        disabled={disabled}
+                        onChange={(event) => onDraftChange(original.path, { target_h1: event.target.value })}
+                      />
+                    </div>
+                  ) : null}
+
+                  {draft.action === 'rename_file' ? (
+                    <div className="mt-2 text-xs">
+                      <label className="text-muted-foreground block mb-1">Target stem (editable, file will become {`{stem}`}.md)</label>
+                      <input
+                        type="text"
+                        className="w-full rounded border border-input bg-background px-2 py-1 text-xs font-mono"
+                        value={draft.target_stem}
+                        disabled={disabled}
+                        onChange={(event) => onDraftChange(original.path, { target_stem: event.target.value })}
+                      />
+                    </div>
+                  ) : null}
+
+                  {draft.action === 'split' && draft.split_concepts?.length ? (
+                    <div className="mt-2 text-xs">
+                      <div className="text-muted-foreground mb-1">Suggested split (advisory, not executed):</div>
+                      <ul className="space-y-1 ml-2">
+                        {draft.split_concepts.map((c, idx) => (
+                          <li key={idx} className="leading-relaxed">
+                            <code className="text-foreground/90">{c.name}</code>
+                            <span className="text-muted-foreground"> — {c.title}</span>
+                            {c.summary ? <div className="text-muted-foreground mt-0.5">{c.summary}</div> : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {draft.rationale ? (
+                    <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                      <span className="font-semibold">Reason: </span>
+                      {draft.rationale}
+                    </p>
+                  ) : null}
+
+                  {draft.error ? (
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-1">{draft.error}</p>
+                  ) : null}
+
+                  {draft.brief ? (
+                    <p className="text-[11px] text-muted-foreground mt-1 truncate">brief: {draft.brief}</p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

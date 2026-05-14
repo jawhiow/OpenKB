@@ -560,6 +560,47 @@ export interface H1FixResult {
   scanned: number;
 }
 
+export type H1RenameAction = 'rewrite_h1' | 'rename_file' | 'split' | 'manual';
+
+export interface H1RenameSplitConcept {
+  name: string;
+  title: string;
+  summary: string;
+}
+
+export interface H1RenameSuggestion {
+  stem: string;
+  path: string;
+  h1: string;
+  brief: string;
+  violation_kinds: string[];
+  action: H1RenameAction;
+  target_h1: string;
+  target_stem: string;
+  split_concepts: H1RenameSplitConcept[];
+  rationale: string;
+  confidence: number;
+  auto_applicable: boolean;
+  error: string;
+}
+
+export interface H1RenameSuggestResult {
+  suggestions: H1RenameSuggestion[];
+  total: number;
+  auto_applicable_count: number;
+  confidence_threshold: number;
+  model: string;
+}
+
+export interface H1RenameApplyResult {
+  h1_rewritten: { path: string; old_h1: string; new_h1: string }[];
+  renamed: { path: string; old_stem: string; new_stem: string }[];
+  skipped: { path: string; reason: string }[];
+  errors: { path: string; reason: string }[];
+  files_rewritten: number;
+  rename_map: Record<string, string>;
+}
+
 export interface CompactResult {
   report_path: string;
   h1_issue_count: number;
@@ -585,6 +626,29 @@ export const applyConceptMerges = async (
 
 export const applyH1Fix = async (kbDir: string): Promise<JobEnvelope> => {
   const response = await apiClient.post('/lint/h1-fix', { kb_dir: kbDir });
+  return response.data;
+};
+
+export const suggestH1Rename = async (
+  kbDir: string,
+  options?: { confidence?: number; language?: string },
+): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/lint/h1-rename/suggest', {
+    kb_dir: kbDir,
+    confidence: options?.confidence,
+    language: options?.language,
+  });
+  return response.data;
+};
+
+export const applyH1Rename = async (
+  kbDir: string,
+  suggestions: H1RenameSuggestion[],
+): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/lint/h1-rename/apply', {
+    kb_dir: kbDir,
+    suggestions,
+  });
   return response.data;
 };
 
