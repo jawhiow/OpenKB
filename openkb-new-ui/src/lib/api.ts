@@ -393,6 +393,19 @@ export const importDocuments = async (
   return response.data;
 };
 
+export const retryDocumentImport = async (
+  kbDir: string,
+  selector: string,
+  options: { force?: boolean; strategy_override?: string | null } = {},
+): Promise<JobEnvelope> => {
+  const response = await apiClient.post(`/documents/${encodeURIComponent(selector)}/retry-import`, {
+    kb_dir: kbDir,
+    force: options.force ?? true,
+    strategy_override: options.strategy_override ?? null,
+  });
+  return response.data;
+};
+
 export const uploadDocuments = async (
   kbDir: string,
   files: File[],

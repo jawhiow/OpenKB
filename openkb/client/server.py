@@ -811,6 +811,49 @@ def create_app(registry: JobRegistry | None = None):
         )
         return {"job": job.to_dict()}
 
+    @app.post("/api/documents/{selector}/retry-import")
+    def retry_document_import(selector: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from openkb.document_ledger import list_effective_document_ledger_records
+            from openkb.source_relations import normalize_kb_relative_path
+
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            records = list_effective_document_ledger_records(target_kb)
+            normalized_selector = str(selector or "").strip()
+            record = records.get(normalized_selector)
+            if record is None:
+                matches = [
+                    item
+                    for file_hash, item in records.items()
+                    if file_hash.startswith(normalized_selector)
+                ]
+                if len(matches) == 1:
+                    record = matches[0]
+                elif len(matches) > 1:
+                    raise ValueError(f"Ambiguous document selector: {selector}")
+            if record is None:
+                raise ValueError(f"No inventory document matches: {selector}")
+
+            raw_rel = normalize_kb_relative_path(record.get("raw_path"))
+            if not raw_rel:
+                raise ValueError(f"Document has no raw source path: {record.get('name') or selector}")
+            source = (target_kb / raw_rel).resolve()
+            if not source.is_relative_to(target_kb.resolve()):
+                raise ValueError("Raw source path escapes knowledge base root.")
+            if not source.exists():
+                raise FileNotFoundError(f"Raw source not found: {raw_rel}")
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        job = _submit_import_job(
+            target_kb,
+            source,
+            message_source=f"retry {record.get('name') or selector}",
+            strategy_override=str(payload.get("strategy_override") or "").strip() or None,
+            force=bool(payload.get("force", True)),
+        )
+        return {"job": job.to_dict()}
+
     @app.post("/api/documents/summarize")
     def summarize_documents(payload: dict[str, Any]) -> dict[str, Any]:
         try:

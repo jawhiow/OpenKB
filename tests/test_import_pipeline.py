@@ -56,6 +56,8 @@ def test_import_document_source_records_failed_source_state(kb_dir: Path):
     record = get_document_ledger_record(kb_dir, file_hash)
     assert record is not None
     assert record["name"] == "broken.md"
+    assert record["raw_path"].startswith(".openkb/raw/")
+    assert (kb_dir / record["raw_path"]).exists()
     assert record["workflow_state"]["source_state"] == "failed"
     assert record["workflow_state"]["summary_state"] == "not_started"
     assert record["execution"]["last_error"] == "conversion exploded"

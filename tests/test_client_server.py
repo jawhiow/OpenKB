@@ -669,6 +669,56 @@ def test_import_document_job_uses_source_only_pipeline(tmp_path, monkeypatch):
     }
 
 
+def test_retry_import_document_uses_failed_inventory_raw_path(tmp_path, monkeypatch):
+    from openkb.document_ledger import upsert_document_ledger_record
+
+    kb_dir = _make_kb(tmp_path)
+    raw = kb_dir / ".openkb" / "raw" / "2026-05-14" / "broken.txt"
+    raw.parent.mkdir(parents=True)
+    raw.write_text("retry me", encoding="utf-8")
+    upsert_document_ledger_record(
+        kb_dir,
+        "hash-broken",
+        {
+            "name": "broken.txt",
+            "stem": "broken",
+            "raw_path": ".openkb/raw/2026-05-14/broken.txt",
+            "workflow_state": {"source_state": "failed"},
+            "execution": {"last_error": "conversion exploded", "retry_count": 1},
+        },
+    )
+    registry = JobRegistry()
+    calls: dict[str, object] = {}
+
+    def fake_import_document_source(file_path, target_kb, *, force=False, strategy_override=None, job=None):
+        calls["file_path"] = file_path
+        calls["target_kb"] = target_kb
+        calls["force"] = force
+        calls["strategy_override"] = strategy_override
+        return {"name": file_path.name, "file_hash": "hash-broken", "skipped": False}
+
+    monkeypatch.setattr("openkb.workflows.import_pipeline.import_document_source", fake_import_document_source)
+    monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
+
+    client = TestClient(create_app(registry=registry))
+    response = client.post(
+        "/api/documents/hash-broken/retry-import",
+        json={"kb_dir": str(kb_dir)},
+    )
+
+    assert response.status_code == 200
+    job = registry.wait(response.json()["job"]["id"], timeout=10)
+    assert job is not None
+    assert job.status == "succeeded"
+    assert job.type == "import"
+    assert calls == {
+        "file_path": raw.resolve(),
+        "target_kb": kb_dir,
+        "force": True,
+        "strategy_override": None,
+    }
+
+
 def test_summarize_document_job_uses_summary_pipeline(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".env").write_text("LLM_API_KEY=sk-test\n", encoding="utf-8")

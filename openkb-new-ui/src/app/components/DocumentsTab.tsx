@@ -31,6 +31,7 @@ import {
   importDocuments,
   promoteDocuments,
   RelatedPageEntry,
+  retryDocumentImport,
   reviewSummaries,
   summarizeDocuments,
   uploadDocuments,
@@ -74,6 +75,8 @@ const INVENTORY_FILTERS: Array<{ label: string; value: string }> = [
   { label: 'Any failed', value: 'failed' },
 ];
 
+const INVENTORY_STATUS_FILTERS = INVENTORY_FILTERS.filter((filter) => filter.value);
+
 const REVIEW_FILTERS: Array<{ label: string; value: string }> = [
   { label: 'Needs review', value: 'unreviewed,held,scored' },
   { label: 'Approved', value: 'approved' },
@@ -111,7 +114,8 @@ export function DocumentsTab({
   const queryClient = useQueryClient();
   const [stageView, setStageView] = useState<StageView>('inventory');
   const [searchQuery, setSearchQuery] = useState('');
-  const [inventorySourceState, setInventorySourceState] = useState('');
+  const [inventoryStatusFilters, setInventoryStatusFilters] = useState<string[]>([]);
+  const [inventoryDateFilter, setInventoryDateFilter] = useState('');
   const [reviewStateFilter, setReviewStateFilter] = useState('unreviewed,held,scored');
   const [promotionReviewFilter, setPromotionReviewFilter] = useState('approved');
   const [promotionStateFilter, setPromotionStateFilter] = useState('not_selected,failed');
@@ -131,7 +135,7 @@ export function DocumentsTab({
   const [stageKey, setStageKey] = useState<string>(`${stageView}|`);
 
   // Reset page when stage/filters change (derived-state pattern, avoids set-state-in-effect).
-  const currentStageKey = `${stageView}|${searchQuery}|${inventorySourceState}|${reviewStateFilter}|${promotionReviewFilter}|${promotionStateFilter}|${scoreFilter}|${minScore}|${maxScore}`;
+  const currentStageKey = `${stageView}|${searchQuery}|${inventoryStatusFilters.join(',')}|${inventoryDateFilter}|${reviewStateFilter}|${promotionReviewFilter}|${promotionStateFilter}|${scoreFilter}|${minScore}|${maxScore}`;
   if (currentStageKey !== stageKey) {
     setStageKey(currentStageKey);
     setPage(1);
@@ -157,13 +161,21 @@ export function DocumentsTab({
         onRemove: () => setSearchQuery(''),
       });
     }
-    if (stageView === 'inventory' && inventorySourceState) {
-      const label = INVENTORY_FILTERS.find((f) => f.value === inventorySourceState)?.label
-        ?? inventorySourceState;
+    if (stageView === 'inventory') {
+      for (const statusFilter of inventoryStatusFilters) {
+        const label = INVENTORY_FILTERS.find((f) => f.value === statusFilter)?.label ?? statusFilter;
+        chips.push({
+          key: `inv-state-${statusFilter}`,
+          label: `Status: ${label}`,
+          onRemove: () => setInventoryStatusFilters((current) => current.filter((value) => value !== statusFilter)),
+        });
+      }
+    }
+    if (stageView === 'inventory' && inventoryDateFilter) {
       chips.push({
-        key: 'inv-state',
-        label: `Inventory: ${label}`,
-        onRemove: () => setInventorySourceState(''),
+        key: 'inv-date',
+        label: `Imported: ${inventoryDateFilter}`,
+        onRemove: () => setInventoryDateFilter(''),
       });
     }
     if (stageView === 'review' && reviewStateFilter !== 'unreviewed,held,scored') {
@@ -225,7 +237,10 @@ export function DocumentsTab({
     setScoreFilter('');
     setMinScore('');
     setMaxScore('');
-    if (stageView === 'inventory') setInventorySourceState('');
+    if (stageView === 'inventory') {
+      setInventoryStatusFilters([]);
+      setInventoryDateFilter('');
+    }
     if (stageView === 'review') setReviewStateFilter('unreviewed,held,scored');
     if (stageView === 'promotion') {
       setPromotionReviewFilter('approved');
@@ -235,31 +250,6 @@ export function DocumentsTab({
 
   const queryParams = useMemo<DocumentQueryParams>(() => {
     if (stageView === 'inventory') {
-      if (inventorySourceState === 'new') {
-        return {
-          q: searchQuery,
-          workflow_status: 'new',
-        };
-      }
-      if (inventorySourceState === 'ready_to_summarize') {
-        return {
-          q: searchQuery,
-          source_state: 'ready',
-          summary_state: 'not_started,failed',
-        };
-      }
-      if (inventorySourceState === 'needs_summary') {
-        return {
-          q: searchQuery,
-          summary_state: 'not_started,failed',
-        };
-      }
-      if (inventorySourceState === 'failed') {
-        return {
-          q: searchQuery,
-          workflow_status: 'failed',
-        };
-      }
       return {
         q: searchQuery,
       };
@@ -276,7 +266,7 @@ export function DocumentsTab({
       review_state: promotionReviewFilter,
       promotion_state: promotionStateFilter,
     };
-  }, [inventorySourceState, promotionReviewFilter, promotionStateFilter, reviewStateFilter, searchQuery, stageView]);
+  }, [promotionReviewFilter, promotionStateFilter, reviewStateFilter, searchQuery, stageView]);
 
   const { data, isLoading, isFetching, dataUpdatedAt, refetch } = useQuery({
     queryKey: ['documents', kbDir, stageView, queryParams],
@@ -289,12 +279,15 @@ export function DocumentsTab({
   const documents = useMemo(() => {
     const minValue = parseOptionalScore(minScore);
     const maxValue = parseOptionalScore(maxScore);
-    return serverDocuments.filter((document) => matchesScoreFilters(document, {
+    const stageFiltered = stageView === 'inventory'
+      ? serverDocuments.filter((document) => matchesInventoryFilters(document, inventoryStatusFilters, inventoryDateFilter))
+      : serverDocuments;
+    return stageFiltered.filter((document) => matchesScoreFilters(document, {
       scoreFilter,
       minScore: minValue,
       maxScore: maxValue,
     }));
-  }, [maxScore, minScore, scoreFilter, serverDocuments]);
+  }, [inventoryDateFilter, inventoryStatusFilters, maxScore, minScore, scoreFilter, serverDocuments, stageView]);
 
   const sortedDocuments = useMemo(() => {
     if (!sortKey) return documents;
@@ -348,7 +341,8 @@ export function DocumentsTab({
     onSuccess: (data) => {
       setLocalPath('');
       setStageView('inventory');
-      setInventorySourceState('');
+      setInventoryStatusFilters([]);
+      setInventoryDateFilter('');
       setSearchQuery('');
       setSelection({});
       handleJobStart(data?.job?.id);
@@ -361,7 +355,8 @@ export function DocumentsTab({
     mutationFn: (files: File[]) => uploadDocuments(kbDir, files, { import_only: true }),
     onSuccess: (data) => {
       setStageView('inventory');
-      setInventorySourceState('');
+      setInventoryStatusFilters([]);
+      setInventoryDateFilter('');
       setSearchQuery('');
       setSelection({});
       handleJobStart(data?.job?.id);
@@ -460,6 +455,15 @@ export function DocumentsTab({
     onError: (error) => toast.error('Delete failed', errorMessage(error)),
   });
 
+  const retryImportMutation = useMutation({
+    mutationFn: (selector: string) => retryDocumentImport(kbDir, selector),
+    onSuccess: (data) => {
+      handleJobStart(data?.job?.id);
+      toast.success('Import retry started');
+    },
+    onError: (error) => toast.error('Retry failed', errorMessage(error)),
+  });
+
   const busy =
     importMutation.isPending ||
     uploadMutation.isPending ||
@@ -468,7 +472,8 @@ export function DocumentsTab({
     holdMutation.isPending ||
     rejectMutation.isPending ||
     promoteMutation.isPending ||
-    deleteMutation.isPending;
+    deleteMutation.isPending ||
+    retryImportMutation.isPending;
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = event.target.files;
@@ -489,6 +494,15 @@ export function DocumentsTab({
         return next;
       }, {}),
     );
+  };
+
+  const toggleInventoryStatusFilter = (value: string) => {
+    setInventoryStatusFilters((current) => {
+      if (current.includes(value)) {
+        return current.filter((item) => item !== value);
+      }
+      return [...current, value];
+    });
   };
 
   return (
@@ -569,13 +583,13 @@ export function DocumentsTab({
           </div>
 
           <TabsContent value="inventory" className="m-0 flex min-h-0 flex-1 flex-col">
-            <StageToolbar
+            <InventoryToolbar
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
-              filterLabel="Inventory filter"
-              filterValue={inventorySourceState}
-              onFilterChange={setInventorySourceState}
-              filters={INVENTORY_FILTERS}
+              statusFilters={inventoryStatusFilters}
+              onToggleStatusFilter={toggleInventoryStatusFilter}
+              importDate={inventoryDateFilter}
+              onImportDateChange={setInventoryDateFilter}
               scoreFilter={scoreFilter}
               onScoreFilterChange={setScoreFilter}
               minScore={minScore}
@@ -605,6 +619,7 @@ export function DocumentsTab({
               hasActiveFilters={activeFilters.length > 0}
               onClearFilters={clearAllFilters}
               onDelete={(selector) => deleteMutation.mutate(selector)}
+              onRetryImport={(hash) => retryImportMutation.mutate(hash)}
               onSummarize={(hash) => summarizeMutation.mutate([hash])}
               onApprove={(hash) =>
                 approveMutation.mutate([hash])
@@ -945,6 +960,112 @@ function StageToolbar({
   );
 }
 
+function InventoryToolbar({
+  searchQuery,
+  onSearchChange,
+  statusFilters,
+  onToggleStatusFilter,
+  importDate,
+  onImportDateChange,
+  scoreFilter,
+  onScoreFilterChange,
+  minScore,
+  onMinScoreChange,
+  maxScore,
+  onMaxScoreChange,
+  rightSlot,
+}: {
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  statusFilters: string[];
+  onToggleStatusFilter: (value: string) => void;
+  importDate: string;
+  onImportDateChange: (value: string) => void;
+  scoreFilter: string;
+  onScoreFilterChange: (value: string) => void;
+  minScore: string;
+  onMinScoreChange: (value: string) => void;
+  maxScore: string;
+  onMaxScoreChange: (value: string) => void;
+  rightSlot?: React.ReactNode;
+}) {
+  return (
+    <div className="border-b bg-muted/30 px-6 py-4 dark:bg-muted/15">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="flex flex-1 flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              placeholder="Search documents, paths, or source kind"
+              value={searchQuery}
+              onChange={(event) => onSearchChange(event.target.value)}
+              className="w-full bg-background dark:bg-input/30 xl:w-80"
+            />
+            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              Imported
+            </label>
+            <Input
+              type="date"
+              value={importDate}
+              onChange={(event) => onImportDateChange(event.target.value)}
+              className="w-40 bg-background dark:bg-input/30"
+            />
+            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              Score
+            </label>
+            <select
+              value={scoreFilter}
+              onChange={(event) => onScoreFilterChange(event.target.value)}
+              className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground dark:bg-input/30"
+            >
+              {SCORE_FILTERS.map((filter) => (
+                <option key={filter.label} value={filter.value}>
+                  {filter.label}
+                </option>
+              ))}
+            </select>
+            <Input
+              placeholder="Min"
+              inputMode="numeric"
+              value={minScore}
+              onChange={(event) => onMinScoreChange(event.target.value)}
+              className="w-20 bg-background dark:bg-input/30"
+            />
+            <Input
+              placeholder="Max"
+              inputMode="numeric"
+              value={maxScore}
+              onChange={(event) => onMaxScoreChange(event.target.value)}
+              className="w-20 bg-background dark:bg-input/30"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              Status
+            </span>
+            {INVENTORY_STATUS_FILTERS.map((filter) => {
+              const selected = statusFilters.includes(filter.value);
+              return (
+                <Button
+                  key={filter.value}
+                  type="button"
+                  size="xs"
+                  variant={selected ? 'default' : 'outline'}
+                  onClick={() => onToggleStatusFilter(filter.value)}
+                  aria-pressed={selected}
+                  className={selected ? 'bg-[oklch(0.34_0.06_165)] text-white hover:bg-[oklch(0.29_0.06_165)]' : ''}
+                >
+                  {filter.label}
+                </Button>
+              );
+            })}
+          </div>
+        </div>
+        {rightSlot}
+      </div>
+    </div>
+  );
+}
+
 function DocumentStageTable({
   documents,
   isLoading,
@@ -957,6 +1078,7 @@ function DocumentStageTable({
   hasActiveFilters = false,
   onClearFilters,
   onDelete,
+  onRetryImport,
   onSummarize,
   onApprove,
   onHold,
@@ -977,6 +1099,7 @@ function DocumentStageTable({
   hasActiveFilters?: boolean;
   onClearFilters?: () => void;
   onDelete?: (selector: string) => void;
+  onRetryImport?: (selector: string) => void;
   onSummarize?: (hash: string) => void;
   onApprove?: (hash: string) => void;
   onHold?: (hash: string) => void;
@@ -1115,6 +1238,16 @@ function DocumentStageTable({
                             title="Summarize"
                           >
                             <Sparkles className="h-4 w-4 text-amber-700 dark:text-amber-300" />
+                          </Button>
+                        ) : null}
+                        {onRetryImport && canRetryImport(document) ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => onRetryImport(document.hash)}
+                            title="Retry import"
+                          >
+                            <RefreshCcw className="h-4 w-4 text-red-700 dark:text-red-300" />
                           </Button>
                         ) : null}
                         {onApprove && document.workflow_state.summary_state === 'ready' ? (
@@ -1561,6 +1694,48 @@ function matchesScoreFilters(
   if (minScore !== null && (score === null || score < minScore)) return false;
   if (maxScore !== null && (score === null || score > maxScore)) return false;
   return true;
+}
+
+function matchesInventoryFilters(document: DocumentItem, statusFilters: string[], importDate: string): boolean {
+  if (importDate && document.ingested_date !== importDate) return false;
+  if (!statusFilters.length) return true;
+  return statusFilters.some((filter) => matchesInventoryStatusFilter(document, filter));
+}
+
+function matchesInventoryStatusFilter(document: DocumentItem, filter: string): boolean {
+  if (filter === 'new') {
+    const states = Object.values(document.workflow_state);
+    return (
+      !states.includes('failed') &&
+      document.workflow_state.ingest_state === 'imported' &&
+      document.workflow_state.summary_state === 'not_started' &&
+      document.workflow_state.review_state === 'unreviewed' &&
+      document.workflow_state.promotion_state === 'not_selected'
+    );
+  }
+  if (filter === 'ready_to_summarize') {
+    return (
+      document.workflow_state.source_state === 'ready' &&
+      ['not_started', 'failed'].includes(document.workflow_state.summary_state)
+    );
+  }
+  if (filter === 'needs_summary') {
+    return ['not_started', 'failed'].includes(document.workflow_state.summary_state);
+  }
+  if (filter === 'failed') {
+    return (
+      Object.values(document.workflow_state).includes('failed') ||
+      !!document.execution.last_error.trim()
+    );
+  }
+  return true;
+}
+
+function canRetryImport(document: DocumentItem): boolean {
+  return (
+    !!document.raw_path &&
+    (document.workflow_state.source_state === 'failed' || document.workflow_state.ocr_state === 'failed')
+  );
 }
 
 function errorMessage(error: unknown): string | undefined {

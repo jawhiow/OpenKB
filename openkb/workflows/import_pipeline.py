@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import shutil
 from typing import Any
 
 from openkb.converter import ConvertResult, convert_document
@@ -79,6 +80,15 @@ def register_import_failure(
     except OSError:
         return None
 
+    ingested_at = current_ingested_at()
+    failed_raw_path = staged_raw_full_path(kb_dir, file_path.name, ingested_at)
+    try:
+        failed_raw_path.parent.mkdir(parents=True, exist_ok=True)
+        if file_path.resolve() != failed_raw_path.resolve():
+            shutil.copy2(file_path, failed_raw_path)
+    except OSError:
+        failed_raw_path = Path(kb_dir) / f".openkb/raw/{datetime.now().astimezone().date().isoformat()}/{file_path.name}"
+
     registry = HashRegistry(Path(kb_dir) / ".openkb" / "hashes.json")
     if not registry.is_known(file_hash):
         registry.add(
@@ -86,8 +96,8 @@ def register_import_failure(
             {
                 "name": file_path.name,
                 "type": file_path.suffix.lstrip(".").lower(),
-                "ingested_at": current_ingested_at(),
-                "raw_path": f".openkb/raw/{datetime.now().astimezone().date().isoformat()}/{file_path.name}",
+                "ingested_at": ingested_at,
+                "raw_path": _relative_to_kb(kb_dir, failed_raw_path),
             },
         )
 
@@ -100,7 +110,8 @@ def register_import_failure(
         {
             "name": file_path.name,
             "stem": file_path.stem,
-            "raw_path": f".openkb/raw/{datetime.now().astimezone().date().isoformat()}/{file_path.name}",
+            "raw_path": _relative_to_kb(kb_dir, failed_raw_path),
+            "ingested_at": ingested_at,
             "source_kind": _source_kind_from_suffix(file_path),
             "workflow_state": {
                 "ingest_state": "imported",
