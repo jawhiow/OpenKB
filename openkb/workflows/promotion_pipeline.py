@@ -6,7 +6,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openkb.agent.compiler import (
     _SUMMARY_USER,
@@ -41,6 +41,9 @@ from openkb.state import HashRegistry
 from openkb.workflows.summary_pipeline import read_review_summary
 
 
+PromotionProgressCallback = Callable[[dict[str, Any]], None]
+
+
 def promote_summary_document(
     kb_dir: Path,
     selector: str,
@@ -65,11 +68,17 @@ def promote_summary_document(
     if workflow_state.get("review_state") != "approved" and not force:
         raise RuntimeError(f"Summary is not approved for promotion: {document['name']}")
     if workflow_state.get("promotion_state") == "promoted" and not force:
-        return {"file_hash": file_hash, "name": document["name"], "skipped": True}
+        return {
+            "file_hash": file_hash,
+            "name": document["name"],
+            "skipped": True,
+            "skip_reason": "already_promoted",
+            "promotion_state": "promoted",
+        }
 
     update_document_workflow_state(kb_dir, file_hash, {"promotion_state": "running"})
     try:
-        _run_promotion_compile(
+        artifacts = _run_promotion_compile(
             kb_dir,
             document,
             ledger_record=ledger_record,
@@ -88,7 +97,13 @@ def promote_summary_document(
             "execution": {"last_error": "", "updated_at": _now_iso()},
         },
     )
-    return {"file_hash": file_hash, "name": document["name"], "skipped": False}
+    return {
+        "file_hash": file_hash,
+        "name": document["name"],
+        "skipped": False,
+        "promotion_state": "promoted",
+        **artifacts,
+    }
 
 
 def promote_summary_documents(
@@ -97,6 +112,7 @@ def promote_summary_documents(
     file_hashes: list[str] | None = None,
     model: str | None = None,
     force: bool = False,
+    progress_callback: PromotionProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Batch-promote approved summaries."""
     selected_hashes = _selected_promotion_hashes(kb_dir, file_hashes=file_hashes)
@@ -104,22 +120,37 @@ def promote_summary_documents(
     failures: list[dict[str, str]] = []
     promoted = 0
     skipped = 0
-    for file_hash in selected_hashes:
+    total = len(selected_hashes)
+    completed = 0
+
+    def emit(event: str, **payload: Any) -> None:
+        if progress_callback is not None:
+            progress_callback({"event": event, "completed": completed, "total": total, **payload})
+
+    emit("selected")
+    for index, file_hash in enumerate(selected_hashes, 1):
+        emit("start", index=index, file_hash=file_hash)
         try:
             result = promote_summary_document(kb_dir, file_hash, model=model, force=force)
         except Exception as exc:
-            failures.append({"file_hash": file_hash, "error": str(exc)})
+            completed += 1
+            failure = {"file_hash": file_hash, "name": _promotion_document_name(kb_dir, file_hash), "error": str(exc)}
+            failures.append(failure)
+            emit("failure", index=index, **failure)
             continue
+        completed += 1
         results.append(result)
         if result.get("skipped"):
             skipped += 1
+            emit("skipped", index=index, **result)
         else:
             promoted += 1
+            emit("promoted", index=index, **result)
     return {
         "promoted": promoted,
         "skipped": skipped,
         "failed": len(failures),
-        "total": len(selected_hashes),
+        "total": total,
         "failures": failures,
         "documents": results,
     }
@@ -132,7 +163,7 @@ def _run_promotion_compile(
     ledger_record: dict[str, Any] | None,
     model: str | None,
     max_concurrency: int | None,
-) -> None:
+) -> dict[str, str]:
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     selected_model = model or str(config.get("model") or DEFAULT_CONFIG["model"])
     language = str(config.get("language") or DEFAULT_CONFIG["language"])
@@ -187,6 +218,13 @@ def _run_promotion_compile(
         raw_rel=promotion_artifacts["formal_raw_rel"],
         source_rel=promotion_artifacts["formal_source_rel"],
     )
+    return {
+        "model": selected_model,
+        "doc_type": doc_type,
+        "summary_path": f"summaries/{stem}.md",
+        "source_path": promotion_artifacts["formal_source_rel"],
+        "raw_path": promotion_artifacts["formal_raw_rel"],
+    }
 
 
 def _source_context(kb_dir: Path, document: dict[str, Any]) -> str:
@@ -349,6 +387,14 @@ def _selected_promotion_hashes(kb_dir: Path, *, file_hashes: list[str] | None) -
             promotion_state=["not_selected", "failed"],
         )
     ]
+
+
+def _promotion_document_name(kb_dir: Path, file_hash: str) -> str:
+    try:
+        document = resolve_source_document(kb_dir, file_hash)
+    except Exception:
+        return ""
+    return str(document.get("name") or "")
 
 
 def _mark_promotion_failed(kb_dir: Path, file_hash: str, error: Exception) -> None:

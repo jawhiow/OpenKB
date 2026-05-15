@@ -272,12 +272,10 @@ async def test_run_chat_uses_model_pool_routes_and_retries_failed_turn(tmp_path)
         patch("openkb.agent.chat.build_query_agent", side_effect=fake_build),
         patch("openkb.agent.chat._run_turn", side_effect=fake_run_turn),
         patch("openkb.cli._setup_llm_key", side_effect=fake_setup),
-        patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe,
     ):
         await run_chat(kb_dir, session, no_color=True)
 
     assert built_models == ["bad-model", "good-model"]
-    assert probe.call_args.args[1].model == "bad-model"
     assert setup_profiles[-2]["id"] == "primary"
     assert setup_profiles[-1]["id"] == "backup"
     assert session.assistant_texts == ["hello back"]

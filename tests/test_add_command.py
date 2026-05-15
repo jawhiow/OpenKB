@@ -978,7 +978,6 @@ class TestAddCommand:
         with (
             patch("openkb.cli.convert_document", return_value=mock_result),
             patch("openkb.cli._setup_llm_key", side_effect=fake_setup),
-            patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe,
             patch("openkb.indexer.index_ocr_with_local_pageindex", side_effect=fake_index),
             patch("openkb.agent.compiler.compile_local_long_doc", new_callable=AsyncMock, return_value=[]),
             patch("openkb.agent.compiler.compile_long_doc", new_callable=AsyncMock, return_value=[]),
@@ -986,7 +985,6 @@ class TestAddCommand:
             add_single_file(doc, kb_dir, strategy_override="ocr-pageindex-local")
 
         assert seen_models == ["bad-model", "good-model"]
-        assert probe.call_args.args[1].model == "bad-model"
         setup_ids = [profile["id"] for profile in setup_profiles]
         assert "primary" in setup_ids
         assert "backup" in setup_ids
@@ -1222,13 +1220,10 @@ class TestAddCommand:
 
         with patch("openkb.cli.convert_document", return_value=mock_result), \
              patch("openkb.cli._setup_llm_key", side_effect=fake_setup), \
-             patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe, \
              patch("openkb.agent.compiler.compile_short_doc", side_effect=compile_short_doc):
             add_single_file(doc, kb_dir, strict=True)
 
         assert calls == ["bad-model", "good-model"]
-        assert probe.call_count == 1
-        assert probe.call_args.args[1].model == "bad-model"
         assert setup_profiles[-2]["id"] == "primary"
         assert setup_profiles[-2]["model"] == "bad-model"
         assert setup_profiles[-1]["id"] == "backup"

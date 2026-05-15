@@ -59,6 +59,12 @@ def test_promote_summary_document_updates_promotion_state(kb_dir: Path):
         result = promote_summary_document(kb_dir, "hash-report", model="gpt-test")
 
     assert result["skipped"] is False
+    assert result["promotion_state"] == "promoted"
+    assert result["summary_path"] == "summaries/report.md"
+    assert result["source_path"] == "wiki/sources/report.md"
+    assert result["raw_path"] == "raw/report.md"
+    assert result["model"] == "gpt-test"
+    assert result["doc_type"] == "short"
     assert mock_compile.await_count == 1
     assert (kb_dir / "wiki" / "summaries" / "report.md").exists()
     record = get_document_ledger_record(kb_dir, "hash-report")
@@ -68,13 +74,18 @@ def test_promote_summary_document_updates_promotion_state(kb_dir: Path):
 
 def test_promote_summary_documents_selects_approved_records(kb_dir: Path):
     _add_reviewed_summary(kb_dir, review_state="approved")
+    events = []
 
     with patch("openkb.workflows.promotion_pipeline._compile_concepts", new_callable=AsyncMock):
-        result = promote_summary_documents(kb_dir)
+        result = promote_summary_documents(kb_dir, progress_callback=events.append)
 
     assert result["promoted"] == 1
     assert result["failed"] == 0
     assert result["total"] == 1
+    assert result["documents"][0]["summary_path"] == "summaries/report.md"
+    assert [event["event"] for event in events] == ["selected", "start", "promoted"]
+    assert events[-1]["completed"] == 1
+    assert events[-1]["name"] == "report.md"
 
 
 def test_promote_summary_document_supports_legacy_kb_without_persisted_ledger(kb_dir: Path):

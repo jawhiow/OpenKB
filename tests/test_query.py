@@ -219,13 +219,11 @@ class TestRunQuery:
 
         with (
             patch("openkb.cli._setup_llm_key", side_effect=fake_setup),
-            patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe,
             patch("openkb.agent.query.Runner.run", side_effect=fake_run),
         ):
             answer = await run_query("How does attention work?", tmp_path, "fallback-model")
 
         assert answer == "answer"
         assert [call.rsplit("/", 1)[-1] for call in calls] == ["bad-model", "good-model"]
-        assert probe.call_args.args[1].model == "bad-model"
         assert setup_profiles[-2]["id"] == "primary"
         assert setup_profiles[-1]["id"] == "backup"

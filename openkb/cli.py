@@ -387,16 +387,6 @@ def _runtime_context_for_profile(kb_dir: Path, profile: dict[str, Any]) -> dict[
     }
 
 
-def _probe_failed_model_route(kb_dir: Path, route) -> None:
-    from openkb.model_pool import probe_model_route, record_route_failure, record_route_success
-
-    try:
-        probe_model_route(kb_dir, route)
-        record_route_success(kb_dir, route.profile_id, route.model)
-    except Exception as exc:
-        record_route_failure(kb_dir, route.profile_id, route.model, exc)
-
-
 def _record_external_compile_usage(
     kb_dir: Path,
     *,
@@ -524,7 +514,6 @@ def _run_pageindex_with_model_pool(
                     input_payload=input_payload,
                     output_payload={},
                 )
-                _probe_failed_model_route(kb_dir, route)
                 continue
         if last_exc is not None:
             raise last_exc
@@ -601,7 +590,6 @@ def _run_compile_with_model_pool(
             last_exc = exc
             excluded_routes.add(route.route_id)
             record_route_failure(kb_dir, route.profile_id, route.model, exc)
-            _probe_failed_model_route(kb_dir, route)
             continue
     if last_exc is not None:
         raise last_exc
@@ -1765,7 +1753,6 @@ async def run_lint(kb_dir: Path, *, fix: bool = False) -> Path | None:
             except Exception as exc:
                 excluded_routes.add(route.route_id)
                 record_route_failure(kb_dir, route.profile_id, route.model, exc)
-                _probe_failed_model_route(kb_dir, route)
                 knowledge_report = f"Knowledge lint failed: {exc}"
                 continue
     else:

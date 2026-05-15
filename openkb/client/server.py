@@ -32,7 +32,7 @@ def _import_web_dependencies():
     try:
         import uvicorn
         from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-        from fastapi.responses import Response, StreamingResponse
+        from fastapi.responses import FileResponse, Response, StreamingResponse
     except ModuleNotFoundError as exc:
         raise ClientDependencyError(
             "OpenKB client dependencies are not installed."
@@ -40,8 +40,9 @@ def _import_web_dependencies():
     # `create_app()` defines routes under postponed evaluation of annotations,
     # so FastAPI resolves names like `UploadFile` from module globals.
     globals()["UploadFile"] = UploadFile
+    globals()["FileResponse"] = FileResponse
     globals()["StreamingResponse"] = StreamingResponse
-    return FastAPI, File, HTTPException, Query, Response, UploadFile, uvicorn
+    return FastAPI, File, HTTPException, Query, FileResponse, Response, UploadFile, uvicorn
 
 
 def _default_kb_dir() -> Path | None:
@@ -370,13 +371,88 @@ def _probe_model_pool_profile(target_kb: Path, profile_id: str, *, probe_source:
     )
 
 
-def create_app(registry: JobRegistry | None = None):
+class ModelPoolProbeScheduler:
+    def __init__(self, *, poll_seconds: float = 5.0) -> None:
+        self.poll_seconds = max(float(poll_seconds), 1.0)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._active_profiles: set[tuple[str, str]] = set()
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="openkb-model-pool-probe-scheduler", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float | None = 2.0) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.poll_seconds):
+            for kb_dir in self._kb_dirs():
+                self.run_once(kb_dir)
+
+    def _kb_dirs(self) -> list[Path]:
+        dirs: list[Path] = []
+        default = _default_kb_dir()
+        if default is not None:
+            dirs.append(default)
+        for item in kb_helpers.get_known_kbs().get("known_kbs", []):
+            if not isinstance(item, dict) or not item.get("is_kb"):
+                continue
+            try:
+                dirs.append(Path(str(item.get("path") or "")))
+            except TypeError:
+                continue
+        seen: set[str] = set()
+        unique: list[Path] = []
+        for kb_dir in dirs:
+            try:
+                resolved = str(kb_dir.resolve())
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            unique.append(kb_dir)
+        return unique
+
+    def run_once(self, kb_dir: Path) -> list[dict[str, Any]]:
+        try:
+            due_profile_ids = kb_helpers.due_model_pool_probe_profile_ids(kb_dir)
+        except Exception:
+            return []
+        results: list[dict[str, Any]] = []
+        for profile_id in due_profile_ids:
+            key = (str(kb_dir.resolve()), profile_id)
+            with self._lock:
+                if key in self._active_profiles:
+                    continue
+                self._active_profiles.add(key)
+            try:
+                results.append(_probe_model_pool_profile(kb_dir, profile_id, probe_source="auto"))
+            except Exception:
+                pass
+            finally:
+                with self._lock:
+                    self._active_profiles.discard(key)
+        return results
+
+
+default_model_pool_probe_scheduler = ModelPoolProbeScheduler()
+
+
+def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_scheduler: bool = False):
     """Create the FastAPI application.
 
     FastAPI and Uvicorn are imported lazily so base OpenKB installs can still
     import the package and use the CLI without the optional client extra.
     """
-    FastAPI, File, HTTPException, Query, Response, UploadFile, _uvicorn = _import_web_dependencies()
+    FastAPI, File, HTTPException, Query, FileResponse, Response, UploadFile, _uvicorn = _import_web_dependencies()
     from fastapi.middleware.cors import CORSMiddleware
     registry = registry or default_registry
     app = FastAPI(title="OpenKB Client", version="0.1.0")
@@ -390,6 +466,15 @@ def create_app(registry: JobRegistry | None = None):
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    if start_model_pool_probe_scheduler:
+        @app.on_event("startup")
+        def _start_model_pool_probe_scheduler() -> None:
+            default_model_pool_probe_scheduler.start()
+
+        @app.on_event("shutdown")
+        def _stop_model_pool_probe_scheduler() -> None:
+            default_model_pool_probe_scheduler.stop()
 
     def translate_error(exc: Exception) -> HTTPException:
         if isinstance(exc, FileNotFoundError):
@@ -1022,20 +1107,52 @@ def create_app(registry: JobRegistry | None = None):
 
             job.raise_if_stopped()
             job.add_log("Promoting approved summaries")
+
+            def progress(event: dict[str, Any]) -> None:
+                total = int(event.get("total") or 0)
+                completed = int(event.get("completed") or 0)
+                job.set_progress(completed, total)
+                index = event.get("index")
+                file_hash = str(event.get("file_hash") or "").strip()
+                name = str(event.get("name") or "").strip()
+                label = name or file_hash
+                if event.get("event") == "selected" and total == 0:
+                    job.add_log("No approved summaries selected for promotion.")
+                elif event.get("event") == "start":
+                    job.add_log(f"Promoting {index}: {label}")
+                elif event.get("event") == "promoted":
+                    message = f"Promoted {index}: {label}"
+                    summary_path = str(event.get("summary_path") or "").strip()
+                    source_path = str(event.get("source_path") or "").strip()
+                    if summary_path:
+                        message += f" -> {summary_path}"
+                    if source_path:
+                        message += f"; source {source_path}"
+                    job.add_log(message)
+                elif event.get("event") == "skipped":
+                    reason = str(event.get("skip_reason") or "already_skipped").replace("_", " ")
+                    job.add_log(f"Skipped {index}: {label} ({reason})")
+                elif event.get("event") == "failure":
+                    job.add_log(f"Failed {index}: {label}: {event.get('error')}", level="error")
+
             with _workflow_llm_context(
                 target_kb,
                 model=str(payload.get("model") or "").strip() or None,
                 feature="promotion",
             ) as selected_model:
-                result = promote_summary_documents(
-                    target_kb,
-                    file_hashes=[str(item) for item in file_hashes] if file_hashes else None,
-                    model=selected_model,
-                    force=bool(payload.get("force", False)),
-                )
+                kwargs: dict[str, Any] = {
+                    "file_hashes": [str(item) for item in file_hashes] if file_hashes else None,
+                    "model": selected_model,
+                    "force": bool(payload.get("force", False)),
+                }
+                if _callable_accepts_keyword(promote_summary_documents, "progress_callback"):
+                    kwargs["progress_callback"] = progress
+                result = promote_summary_documents(target_kb, **kwargs)
             if result["promoted"]:
                 commit_kb_changes(target_kb, f"Promote {result['promoted']} summary document(s)")
             job.raise_if_stopped()
+            if result.get("total"):
+                job.set_progress(int(result.get("total") or 0), int(result.get("total") or 0))
             job.add_log(
                 f"Promoted {result['promoted']} summary document(s), "
                 f"skipped {result['skipped']}, failed {result['failed']}"
@@ -1143,6 +1260,18 @@ def create_app(registry: JobRegistry | None = None):
         except Exception as exc:
             raise translate_error(exc) from exc
 
+    @app.get("/api/raw/file")
+    def raw_file(path: str, kb_dir: str | None = Query(default=None)):
+        try:
+            full_path = kb_helpers.resolve_raw_source_file(_resolve_kb_dir(kb_dir), path)
+            return FileResponse(
+                full_path,
+                filename=full_path.name,
+                content_disposition_type="inline",
+            )
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
     @app.put("/api/wiki/file")
     def save_wiki_file(payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -1207,12 +1336,6 @@ def create_app(registry: JobRegistry | None = None):
                         last_error = exc
                         excluded_routes.add(route.route_id)
                         record_route_failure(target_kb, route.profile_id, route.model, exc)
-                        try:
-                            from openkb.model_pool import probe_model_route
-
-                            probe_model_route(target_kb, route)
-                        except Exception as probe_exc:
-                            record_route_failure(target_kb, route.profile_id, route.model, probe_exc)
                 if query_result is None:
                     raise last_error or RuntimeError("Model pool query failed.")
             else:
@@ -1295,7 +1418,6 @@ def create_app(registry: JobRegistry | None = None):
                     try:
                         from openkb.model_pool import (
                             is_model_pool_enabled,
-                            probe_model_route,
                             record_route_failure,
                             record_route_success,
                             select_model_route,
@@ -1326,10 +1448,6 @@ def create_app(registry: JobRegistry | None = None):
                                     last_error = exc
                                     excluded_routes.add(route.route_id)
                                     record_route_failure(target_kb, route.profile_id, route.model, exc)
-                                    try:
-                                        probe_model_route(target_kb, route)
-                                    except Exception as probe_exc:
-                                        record_route_failure(target_kb, route.profile_id, route.model, probe_exc)
                             if result is None:
                                 raise last_error or RuntimeError("Model pool query failed.")
                         else:
@@ -2012,8 +2130,8 @@ def create_app(registry: JobRegistry | None = None):
 
 def serve_client(*, host: str = "0.0.0.0", port: int = 8765, open_browser: bool = True) -> None:
     """Start the local client API server."""
-    _FastAPI, _File, _HTTPException, _Query, _Response, _UploadFile, uvicorn = _import_web_dependencies()
+    _FastAPI, _File, _HTTPException, _Query, _FileResponse, _Response, _UploadFile, uvicorn = _import_web_dependencies()
     url = f"http://{host}:{port}"
     if open_browser:
         webbrowser.open(url)
-    uvicorn.run(create_app(), host=host, port=port)
+    uvicorn.run(create_app(start_model_pool_probe_scheduler=True), host=host, port=port)

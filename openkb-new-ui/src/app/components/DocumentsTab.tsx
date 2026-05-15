@@ -30,6 +30,7 @@ import {
   getDocuments,
   importDocuments,
   promoteDocuments,
+  rawFileUrl,
   RelatedPageEntry,
   retryDocumentImport,
   reviewSummaries,
@@ -464,6 +465,15 @@ export function DocumentsTab({
     onError: (error) => toast.error('Retry failed', errorMessage(error)),
   });
 
+  const openRawSource = (document: DocumentItem) => {
+    if (!document.raw_exists || !document.raw_path) {
+      toast.error('Raw source missing', document.raw_path || document.name);
+      return;
+    }
+    const target = rawFileUrl(kbDir, document.raw_path);
+    window.open(target, '_blank', 'noopener,noreferrer');
+  };
+
   const busy =
     importMutation.isPending ||
     uploadMutation.isPending ||
@@ -626,6 +636,7 @@ export function DocumentsTab({
               }
               onPromote={(hash) => promoteMutation.mutate([hash])}
               onViewDetail={setDetailDocument}
+              onViewRaw={openRawSource}
               showDelete
             />
             <Pagination
@@ -867,6 +878,7 @@ export function DocumentsTab({
           setDetailDocument(null);
           onNavigateToWiki?.(path);
         }}
+        onOpenRawSource={openRawSource}
       />
     </Card>
   );
@@ -1085,6 +1097,7 @@ function DocumentStageTable({
   onReject,
   onPromote,
   onViewDetail,
+  onViewRaw,
   inlineScorecard = false,
   showDelete = false,
 }: {
@@ -1106,6 +1119,7 @@ function DocumentStageTable({
   onReject?: (hash: string) => void;
   onPromote?: (hash: string) => void;
   onViewDetail?: (document: DocumentItem) => void;
+  onViewRaw?: (document: DocumentItem) => void;
   inlineScorecard?: boolean;
   showDelete?: boolean;
 }) {
@@ -1225,8 +1239,14 @@ function DocumentStageTable({
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          onClick={() => onViewDetail?.(document)}
-                          title="View detail"
+                          onClick={() => {
+                            if (onViewRaw && document.raw_exists && document.raw_path) {
+                              onViewRaw(document);
+                              return;
+                            }
+                            onViewDetail?.(document);
+                          }}
+                          title={onViewRaw && document.raw_exists && document.raw_path ? 'View raw source' : 'View detail'}
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
@@ -1400,10 +1420,12 @@ function DocumentDetailDialog({
   document,
   onOpenChange,
   onNavigateToWiki,
+  onOpenRawSource,
 }: {
   document: DocumentItem | null;
   onOpenChange: (open: boolean) => void;
   onNavigateToWiki?: (path: string) => void;
+  onOpenRawSource?: (document: DocumentItem) => void;
 }) {
   const relatedGroups: Array<{ key: 'summaries' | 'companies' | 'industries' | 'concepts'; label: string }> = [
     { key: 'summaries', label: 'Summaries' },
@@ -1467,6 +1489,27 @@ function DocumentDetailDialog({
                 ]}
               />
             </div>
+
+            {document.raw_exists && document.raw_path ? (
+              <div className="rounded-xl border bg-muted/30 p-4">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  Raw Source
+                </div>
+                <button
+                  type="button"
+                  className="group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted/70"
+                  onClick={() => onOpenRawSource?.(document)}
+                  disabled={!onOpenRawSource}
+                  title={document.raw_path}
+                >
+                  <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-50 group-hover:opacity-100" />
+                  <span className="min-w-0">
+                    <div className="font-medium">Open raw source file</div>
+                    <div className="truncate text-xs text-muted-foreground">{document.raw_path}</div>
+                  </span>
+                </button>
+              </div>
+            ) : null}
 
             {document.review_summary_exists && document.review_summary_path ? (
               <div className="rounded-xl border bg-muted/30 p-4">

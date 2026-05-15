@@ -496,7 +496,6 @@ def test_query_stream_uses_model_pool_and_retries_after_runtime_failure(tmp_path
     with (
         patch("openkb.cli._setup_llm_key"),
         patch("openkb.agent.query.Runner.run_streamed", side_effect=fake_run_streamed),
-        patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("upstream 500")) as probe,
     ):
         response = client.post(
             "/api/query/stream",
@@ -507,7 +506,6 @@ def test_query_stream_uses_model_pool_and_retries_after_runtime_failure(tmp_path
     body = response.text
     assert 'event: done\ndata: {"answer":"backup answer"' in body
     assert [call.rsplit("/", 1)[-1] for call in calls] == ["bad-model", "good-model"]
-    assert probe.call_args.args[1].model == "bad-model"
     status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
     assert status["routes"]["primary:bad-model"]["health"] == "offline"
     assert status["routes"]["backup:good-model"]["health"] == "healthy"
@@ -938,7 +936,7 @@ def test_promote_document_job_uses_promotion_pipeline(tmp_path, monkeypatch):
     registry = JobRegistry()
     calls: dict[str, object] = {}
 
-    def fake_promote_summary_documents(target_kb, *, file_hashes=None, model=None, force=False):
+    def fake_promote_summary_documents(target_kb, *, file_hashes=None, model=None, force=False, progress_callback=None):
         from openkb.llm_usage import get_llm_usage_context
 
         calls["target_kb"] = target_kb
@@ -946,7 +944,39 @@ def test_promote_document_job_uses_promotion_pipeline(tmp_path, monkeypatch):
         calls["model"] = model
         calls["force"] = force
         calls["usage_feature"] = get_llm_usage_context().feature if get_llm_usage_context() else None
-        return {"promoted": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []}
+        if progress_callback:
+            progress_callback({"event": "selected", "completed": 0, "total": 1})
+            progress_callback({"event": "start", "index": 1, "file_hash": "hash-a", "completed": 0, "total": 1})
+            progress_callback(
+                {
+                    "event": "promoted",
+                    "index": 1,
+                    "file_hash": "hash-a",
+                    "name": "report.md",
+                    "summary_path": "summaries/report.md",
+                    "source_path": "sources/report.md",
+                    "completed": 1,
+                    "total": 1,
+                }
+            )
+        return {
+            "promoted": 1,
+            "skipped": 0,
+            "failed": 0,
+            "total": 1,
+            "failures": [],
+            "documents": [
+                {
+                    "file_hash": "hash-a",
+                    "name": "report.md",
+                    "skipped": False,
+                    "promotion_state": "promoted",
+                    "summary_path": "summaries/report.md",
+                    "source_path": "sources/report.md",
+                    "model": "gpt-test",
+                }
+            ],
+        }
 
     monkeypatch.setattr("openkb.workflows.promotion_pipeline.promote_summary_documents", fake_promote_summary_documents)
     monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
@@ -960,6 +990,11 @@ def test_promote_document_job_uses_promotion_pipeline(tmp_path, monkeypatch):
     assert job.status == "succeeded"
     assert job.type == "promote"
     assert job.result["promoted"] == 1
+    assert job.result["documents"][0]["summary_path"] == "summaries/report.md"
+    assert job.progress_current == 1
+    assert job.progress_total == 1
+    assert any("Promoting 1: hash-a" in entry["message"] for entry in job.logs)
+    assert any("Promoted 1: report.md -> summaries/report.md" in entry["message"] for entry in job.logs)
     assert calls == {
         "target_kb": kb_dir,
         "file_hashes": ["hash-a"],
@@ -1358,6 +1393,34 @@ def test_review_summary_file_endpoint_reads_review_staging_area(tmp_path):
     body = response.json()
     assert body["path"] == "review_summaries/2026-05-10/paper.md"
     assert body["content"] == "# Review Summary"
+
+
+def test_raw_file_endpoint_serves_raw_source_inline(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    raw = kb_dir / "raw" / "paper.txt"
+    raw.write_text("raw source body", encoding="utf-8")
+
+    client = TestClient(create_app())
+    response = client.get(
+        "/api/raw/file",
+        params={"kb_dir": str(kb_dir), "path": "raw/paper.txt"},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "raw source body"
+    assert "inline" in response.headers["content-disposition"]
+
+
+def test_raw_file_endpoint_rejects_path_escape(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+
+    client = TestClient(create_app())
+    response = client.get(
+        "/api/raw/file",
+        params={"kb_dir": str(kb_dir), "path": "raw/../wiki/index.md"},
+    )
+
+    assert response.status_code == 400
 
 
 def test_delete_document_endpoint_runs_cleanup_job(tmp_path):
@@ -1878,6 +1941,84 @@ def test_model_pool_endpoint_merges_profiles_with_health_status(tmp_path):
     assert card["failed_models"] == {"gpt-5.4-mini": "model_not_found"}
 
 
+def test_model_pool_endpoint_does_not_probe_on_page_read(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: gpt-5.4-mini\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "model_pool:\n"
+        "  enabled: true\n"
+        "llm_profiles:\n"
+        "  - id: gateway\n"
+        "    name: Gateway\n"
+        "    model: gpt-4o-mini\n"
+        "    wire_api: chat_completions\n"
+        "    base_url: https://gateway.example.com/v1\n"
+        "    enabled: true\n"
+        "active_llm_profile: gateway\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("openkb.model_pool.probe_model_route", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected probe")))
+    client = TestClient(create_app())
+
+    response = client.get("/api/model-pool", params={"kb_dir": str(kb_dir)})
+
+    assert response.status_code == 200
+    assert response.json()["profiles"][0]["health"] == "unknown"
+
+
+def test_model_pool_probe_scheduler_probes_due_failed_enabled_profiles(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / ".openkb" / "config.yaml").write_text(
+        "model: gpt-5.4-mini\n"
+        "language: zh\n"
+        "wire_api: chat_completions\n"
+        "model_pool:\n"
+        "  enabled: true\n"
+        "  probe_interval_seconds: 1\n"
+        "llm_profiles:\n"
+        "  - id: gateway\n"
+        "    name: Gateway\n"
+        "    model: bad-model\n"
+        "    wire_api: chat_completions\n"
+        "    enabled: true\n"
+        "active_llm_profile: gateway\n",
+        encoding="utf-8",
+    )
+    (kb_dir / ".openkb" / "model-pool").mkdir(parents=True)
+    (kb_dir / ".openkb" / "model-pool" / "status.json").write_text(
+        json.dumps(
+            {
+                "routes": {
+                    "gateway:bad-model": {
+                        "profile_id": "gateway",
+                        "model": "bad-model",
+                        "health": "offline",
+                        "consecutive_failures": 1,
+                        "last_checked_at": "2026-05-06T10:00:00Z",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[str] = []
+
+    def fake_probe(_kb_dir, route, **_kwargs):
+        calls.append(route.model)
+        return {"ok": True}
+
+    monkeypatch.setattr("openkb.model_pool.probe_model_route", fake_probe)
+    from openkb.client.server import ModelPoolProbeScheduler
+
+    results = ModelPoolProbeScheduler().run_once(kb_dir)
+
+    assert calls == ["bad-model"]
+    assert results[0]["probe_source"] == "auto"
+    assert results[0]["health"] == "healthy"
+
+
 def test_model_pool_profile_probe_persists_status_without_deleting_config(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".openkb" / "config.yaml").write_text(
@@ -2138,7 +2279,6 @@ def test_query_job_uses_model_pool_and_retries_after_runtime_failure(tmp_path):
     with (
         patch("openkb.cli._setup_llm_key"),
         patch("openkb.agent.query.Runner.run", side_effect=fake_run),
-        patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("upstream 500")) as probe,
     ):
         response = client.post(
             "/api/query",
@@ -2151,7 +2291,6 @@ def test_query_job_uses_model_pool_and_retries_after_runtime_failure(tmp_path):
     assert job.status == "succeeded"
     assert job.result["answer"] == "backup answer"
     assert [call.rsplit("/", 1)[-1] for call in calls] == ["bad-model", "good-model"]
-    assert probe.call_args.args[1].model == "bad-model"
     status = json.loads((kb_dir / ".openkb" / "model-pool" / "status.json").read_text(encoding="utf-8"))
     assert status["routes"]["primary:bad-model"]["health"] == "offline"
     assert status["routes"]["backup:good-model"]["health"] == "healthy"

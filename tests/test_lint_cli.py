@@ -223,13 +223,10 @@ class TestLintCommand:
             setup_profiles.append(profile)
 
         with patch("openkb.cli._setup_llm_key", side_effect=fake_setup), \
-             patch("openkb.model_pool.probe_model_route", side_effect=RuntimeError("probe failed")) as probe, \
              patch("openkb.agent.linter.run_knowledge_lint", side_effect=run_knowledge_lint):
             report_path = await run_lint(kb_dir)
 
         assert calls == ["bad-model", "good-model"]
-        assert probe.call_count == 1
-        assert probe.call_args.args[1].model == "bad-model"
         assert setup_profiles[-2]["id"] == "primary"
         assert setup_profiles[-2]["model"] == "bad-model"
         assert setup_profiles[-1]["id"] == "backup"

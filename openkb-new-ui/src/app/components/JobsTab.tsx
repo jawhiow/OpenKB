@@ -262,6 +262,8 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
                 </section>
               )}
 
+              <JobResult result={selectedJob.result} />
+
               <section>
                 <div className="mb-2 flex items-center justify-between">
                   <h3 className="text-sm font-medium">Logs</h3>
@@ -361,6 +363,130 @@ function DetailItem({ label, value }: { label: string; value: string }) {
       </div>
     </div>
   );
+}
+
+function JobResult({ result }: { result: unknown }) {
+  if (result === undefined || result === null) return null;
+
+  if (!isRecord(result)) {
+    return (
+      <section className="rounded-lg border p-4">
+        <h3 className="mb-3 text-sm font-medium">Result</h3>
+        <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 text-xs text-muted-foreground">
+          {String(result)}
+        </pre>
+      </section>
+    );
+  }
+
+  const stats = [
+    ['Total', asNumber(result.total)],
+    ['Generated', asNumber(result.generated)],
+    ['Promoted', asNumber(result.promoted)],
+    ['Updated', asNumber(result.updated)],
+    ['Skipped', asNumber(result.skipped)],
+    ['Failed', asNumber(result.failed)],
+  ].filter((entry): entry is [string, number] => entry[1] !== null);
+  const documents = Array.isArray(result.documents) ? result.documents.filter(isRecord) : [];
+  const failures = Array.isArray(result.failures) ? result.failures.filter(isRecord) : [];
+  const hasStructuredContent = stats.length > 0 || documents.length > 0 || failures.length > 0;
+
+  if (!hasStructuredContent) {
+    return (
+      <section className="rounded-lg border p-4">
+        <h3 className="mb-3 text-sm font-medium">Result</h3>
+        <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 text-xs text-muted-foreground">
+          {JSON.stringify(result, null, 2)}
+        </pre>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-lg border p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium">Result</h3>
+        {stats.length > 0 && (
+          <div className="flex flex-wrap justify-end gap-2">
+            {stats.map(([label, value]) => (
+              <span key={label} className="rounded-full border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                {label}: <span className="font-medium text-foreground">{value}</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {documents.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Documents</div>
+          <div className="space-y-2">
+            {documents.map((document, index) => (
+              <ResultDocument key={`${asString(document.file_hash) || index}-${index}`} document={document} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {failures.length > 0 && (
+        <div className="mt-4 space-y-2">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Failures</div>
+          <div className="space-y-2">
+            {failures.map((failure, index) => (
+              <div key={`${asString(failure.file_hash) || index}-${index}`} className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+                <div className="font-medium">{asString(failure.name) || asString(failure.file_hash) || 'Unknown document'}</div>
+                <div className="mt-1 whitespace-pre-wrap break-words text-xs">{asString(failure.error) || 'No error details'}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ResultDocument({ document }: { document: Record<string, unknown> }) {
+  const name = asString(document.name) || asString(document.file_hash) || 'Unknown document';
+  const status = document.skipped === true ? 'Skipped' : asString(document.promotion_state) || 'Completed';
+  const details = [
+    ['Summary', asString(document.summary_path)],
+    ['Source', asString(document.source_path)],
+    ['Raw', asString(document.raw_path)],
+    ['Model', asString(document.model)],
+    ['Type', asString(document.doc_type)],
+    ['Reason', asString(document.skip_reason)?.replace(/_/g, ' ') || ''],
+  ].filter((entry): entry is [string, string] => Boolean(entry[1]));
+
+  return (
+    <div className="rounded-md border bg-background p-3 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 font-medium" title={name}>{name}</div>
+        <span className="shrink-0 rounded-full border bg-muted px-2 py-0.5 text-xs text-muted-foreground">{status}</span>
+      </div>
+      {details.length > 0 && (
+        <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
+          {details.map(([label, value]) => (
+            <div key={label} className="min-w-0">
+              <dt className="inline font-medium text-foreground">{label}: </dt>
+              <dd className="inline break-words">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function formatJobType(type: string): string {

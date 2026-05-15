@@ -156,7 +156,6 @@ async def run_with_query_model_pool(
     from openkb.model_pool import (
         configured_routes,
         is_model_pool_enabled,
-        probe_model_route,
         record_route_failure,
         record_route_success,
         route_profile,
@@ -180,11 +179,6 @@ async def run_with_query_model_pool(
             last_error = exc
             excluded_routes.add(route.route_id)
             record_route_failure(kb_dir, route.profile_id, route.model, exc)
-            try:
-                probe_model_route(kb_dir, route)
-                record_route_success(kb_dir, route.profile_id, route.model)
-            except Exception as probe_exc:
-                record_route_failure(kb_dir, route.profile_id, route.model, probe_exc)
     raise last_error or RuntimeError("Model pool query failed.")
 
 

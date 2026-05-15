@@ -19,6 +19,8 @@ from openkb.client.kb import (
     get_status_data,
     import_config_data,
     init_kb,
+    due_model_pool_probe_profile_ids,
+    resolve_raw_source_file,
     read_wiki_file,
     save_model_pool_profile,
     update_config_data,
@@ -313,6 +315,22 @@ def test_get_document_data_filters_new_and_any_failed_workflow_status(tmp_path: 
 
     new = get_document_data(kb_dir, workflow_status="new")
     assert [document["hash"] for document in new["documents"]] == ["hash-c"]
+
+
+def test_resolve_raw_source_file_constrains_paths_to_raw_storage(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    staged = kb_dir / ".openkb" / "raw" / "2026-05-14" / "manual.pdf"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"%PDF staged")
+
+    assert resolve_raw_source_file(kb_dir, "raw/paper.pdf") == (kb_dir / "raw" / "paper.pdf").resolve()
+    assert resolve_raw_source_file(kb_dir, ".openkb/raw/2026-05-14/manual.pdf") == staged.resolve()
+
+    with pytest.raises(PathSecurityError):
+        resolve_raw_source_file(kb_dir, "wiki/index.md")
+
+    with pytest.raises(PathSecurityError):
+        resolve_raw_source_file(kb_dir, "raw/../wiki/index.md")
 
 
 def test_source_document_data_and_delete_are_shared_with_client(tmp_path: Path):
@@ -931,3 +949,88 @@ def test_model_pool_enabled_can_be_toggled_via_config_update(tmp_path: Path):
 
     enabled_pool = get_model_pool_data(kb_dir)
     assert enabled_pool["enabled"] is True
+
+
+def test_model_pool_profile_status_derives_runtime_route_failures(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    config = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    config["llm_profiles"] = [
+        {
+            "id": "gateway",
+            "name": "Gateway",
+            "model": "good-model",
+            "wire_api": "chat_completions",
+            "enabled": True,
+            "models": [
+                {"name": "good-model", "weight": 100},
+                {"name": "bad-model", "weight": 50},
+            ],
+        }
+    ]
+    (kb_dir / ".openkb" / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    from openkb.model_pool import record_route_failure, record_route_success
+
+    record_route_success(kb_dir, "gateway", "good-model", latency_ms=42)
+    record_route_failure(kb_dir, "gateway", "bad-model", RuntimeError("upstream 500"))
+
+    pool = get_model_pool_data(kb_dir)
+    profile = pool["profiles"][0]
+
+    assert pool["summary"]["degraded"] == 1
+    assert profile["health"] == "degraded"
+    assert profile["available_models"] == ["good-model"]
+    assert profile["failed_models"] == {"bad-model": "upstream 500"}
+    assert profile["probe_source"] == "runtime"
+
+
+def test_due_model_pool_probe_profile_ids_only_returns_enabled_failed_due_routes(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    config = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))
+    config["model_pool"] = {"enabled": True, "probe_interval_seconds": 60}
+    config["llm_profiles"] = [
+        {"id": "due", "name": "Due", "model": "due-model", "enabled": True},
+        {"id": "healthy", "name": "Healthy", "model": "healthy-model", "enabled": True},
+        {"id": "recent", "name": "Recent", "model": "recent-model", "enabled": True},
+        {"id": "disabled", "name": "Disabled", "model": "disabled-model", "enabled": False},
+    ]
+    (kb_dir / ".openkb" / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    (kb_dir / ".openkb" / "model-pool").mkdir(parents=True)
+    (kb_dir / ".openkb" / "model-pool" / "status.json").write_text(
+        json.dumps(
+            {
+                "routes": {
+                    "due:due-model": {
+                        "profile_id": "due",
+                        "model": "due-model",
+                        "health": "offline",
+                        "consecutive_failures": 1,
+                        "last_checked_at": "2026-05-06T10:00:00Z",
+                    },
+                    "healthy:healthy-model": {
+                        "profile_id": "healthy",
+                        "model": "healthy-model",
+                        "health": "healthy",
+                        "last_checked_at": "2026-05-06T10:00:00Z",
+                    },
+                    "recent:recent-model": {
+                        "profile_id": "recent",
+                        "model": "recent-model",
+                        "health": "offline",
+                        "consecutive_failures": 1,
+                        "last_checked_at": "2026-05-06T10:00:30Z",
+                    },
+                    "disabled:disabled-model": {
+                        "profile_id": "disabled",
+                        "model": "disabled-model",
+                        "health": "offline",
+                        "consecutive_failures": 1,
+                        "last_checked_at": "2026-05-06T10:00:00Z",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert due_model_pool_probe_profile_ids(kb_dir, now=1778061661) == ["due"]

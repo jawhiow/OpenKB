@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -636,6 +637,25 @@ def read_review_summary_file(kb_dir: Path, relative_path: str) -> dict[str, str]
         "path": full_path.relative_to(root).as_posix(),
         "content": full_path.read_text(encoding="utf-8"),
     }
+
+
+def resolve_raw_source_file(kb_dir: Path, relative_path: str) -> Path:
+    """Resolve a raw source file path after constraining it to raw storage roots."""
+    kb_dir = require_kb_dir(kb_dir)
+    raw = normalize_kb_relative_path(relative_path)
+    if not raw.startswith(("raw/", ".openkb/raw/")):
+        raise PathSecurityError("Raw source path must be under raw/ or .openkb/raw/.")
+
+    full_path = (kb_dir / raw).resolve()
+    allowed_roots = [
+        (kb_dir / "raw").resolve(),
+        (kb_dir / ".openkb" / "raw").resolve(),
+    ]
+    if not any(full_path.is_relative_to(root) for root in allowed_roots):
+        raise PathSecurityError("Path escapes raw source storage.")
+    if not full_path.exists() or not full_path.is_file():
+        raise FileNotFoundError(relative_path)
+    return full_path
 
 
 def write_wiki_file(kb_dir: Path, relative_path: str, content: str) -> dict[str, str]:
@@ -1353,6 +1373,23 @@ def _model_pool_status_path(kb_dir: Path) -> Path:
     return kb_dir / ".openkb" / "model-pool" / "status.json"
 
 
+def _iso_to_epoch(value: str) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _status_is_due(status: dict[str, Any], interval_seconds: int, *, now: float) -> bool:
+    last_checked = _iso_to_epoch(str(status.get("last_checked_at") or ""))
+    if last_checked is None:
+        return True
+    return last_checked + max(int(interval_seconds), 1) <= now
+
+
 def _load_model_pool_status(kb_dir: Path) -> dict[str, Any]:
     path = _model_pool_status_path(kb_dir)
     if not path.exists():
@@ -1373,6 +1410,69 @@ def _save_model_pool_status(kb_dir: Path, status: dict[str, Any]) -> None:
     path = _model_pool_status_path(kb_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _derive_profile_status_from_routes(
+    profile: dict[str, Any],
+    profile_status: dict[str, Any] | None,
+    route_statuses: list[dict[str, Any]],
+) -> dict[str, Any]:
+    derived = dict(profile_status or {})
+    if profile.get("enabled", True) is False or not route_statuses:
+        return derived
+
+    available_models: list[str] = []
+    failed_models: dict[str, str] = {}
+    latencies: list[int] = []
+    last_checked_values: list[tuple[float, str]] = []
+    consecutive_failures = 0
+    failure_count = 0
+
+    for route_status in route_statuses:
+        model = str(route_status.get("model") or "").strip()
+        health = str(route_status.get("health") or "unknown")
+        checked_at = str(route_status.get("last_checked_at") or "")
+        checked_epoch = _iso_to_epoch(checked_at)
+        if checked_epoch is not None:
+            last_checked_values.append((checked_epoch, checked_at))
+        if health == "healthy":
+            if model:
+                available_models.append(model)
+            latency = route_status.get("latency_ms")
+            if isinstance(latency, int):
+                latencies.append(latency)
+        if health in {"offline", "degraded"}:
+            route_failures = int(route_status.get("consecutive_failures") or 0)
+            route_failure_count = int(route_status.get("failure_count") or 0)
+            consecutive_failures = max(consecutive_failures, route_failures)
+            failure_count += route_failure_count
+            if route_failures > 0 or route_failure_count > 0 or route_status.get("last_error"):
+                failed_models[model] = str(route_status.get("last_error") or "route unavailable")
+
+    if not available_models and not failed_models:
+        return derived
+
+    if available_models and failed_models:
+        health = "degraded"
+    elif failed_models:
+        health = "offline"
+    else:
+        health = "healthy"
+
+    derived["health"] = health
+    derived["available_models"] = available_models
+    derived["failed_models"] = failed_models
+    derived["consecutive_failures"] = 0 if available_models else consecutive_failures
+    derived["last_error"] = "; ".join(f"{model}: {error}" for model, error in failed_models.items())
+    if latencies:
+        derived["latency_ms"] = min(latencies)
+    elif failed_models:
+        derived["latency_ms"] = None
+    if last_checked_values:
+        derived["last_checked_at"] = max(last_checked_values, key=lambda item: item[0])[1]
+    if failure_count and not derived.get("probe_source"):
+        derived["probe_source"] = "runtime"
+    return derived
 
 
 def _profile_model_pool_payload(
@@ -1437,14 +1537,15 @@ def get_model_pool_data(kb_dir: Path) -> dict[str, Any]:
     kb_dir = require_kb_dir(kb_dir)
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     profiles, active_id = _normalize_profiles(config)
-    raw_status = _load_model_pool_status(kb_dir).get("profiles", {})
-    cards = [
-        _profile_model_pool_payload(kb_dir, profile, active_id, raw_status.get(profile["id"]) if isinstance(raw_status, dict) else None)
-        for profile in profiles
-    ]
+    status = _load_model_pool_status(kb_dir)
+    raw_profile_status = status.get("profiles", {})
+    raw_route_status = status.get("routes", {})
     pool_config = config.get("model_pool") if isinstance(config.get("model_pool"), dict) else {}
     routes_by_profile: dict[str, list[dict[str, Any]]] = {}
+    route_status_by_profile: dict[str, list[dict[str, Any]]] = {}
     for route in configured_routes(kb_dir):
+        route_status = (raw_route_status.get(route.route_id, {}) or {}) if isinstance(raw_route_status, dict) else {}
+        route_status_by_profile.setdefault(route.profile_id, []).append(route_status)
         routes_by_profile.setdefault(route.profile_id, []).append(
             {
                 "id": route.route_id,
@@ -1457,6 +1558,15 @@ def get_model_pool_data(kb_dir: Path) -> dict[str, Any]:
                 "wire_api": route.wire_api,
             }
         )
+    cards = []
+    for profile in profiles:
+        profile_status = raw_profile_status.get(profile["id"]) if isinstance(raw_profile_status, dict) else None
+        derived_status = _derive_profile_status_from_routes(
+            profile,
+            profile_status if isinstance(profile_status, dict) else None,
+            route_status_by_profile.get(profile["id"], []),
+        )
+        cards.append(_profile_model_pool_payload(kb_dir, profile, active_id, derived_status))
     for card in cards:
         card["routes"] = routes_by_profile.get(card["id"], [])
     return {
@@ -1480,8 +1590,25 @@ def get_model_pool_profile(kb_dir: Path, profile_id: str) -> dict[str, Any]:
     profile = _find_profile(profiles, str(profile_id).strip())
     if profile is None:
         raise ClientError(f"Unknown LLM profile: {profile_id}")
-    raw_status = _load_model_pool_status(kb_dir).get("profiles", {})
-    payload = _profile_model_pool_payload(kb_dir, profile, active_id, raw_status.get(profile["id"]) if isinstance(raw_status, dict) else None)
+    status = _load_model_pool_status(kb_dir)
+    raw_profile_status = status.get("profiles", {})
+    raw_route_status = status.get("routes", {})
+    profile_status = raw_profile_status.get(profile["id"]) if isinstance(raw_profile_status, dict) else None
+    route_statuses = []
+    for route in configured_routes(kb_dir):
+        if route.profile_id != profile["id"]:
+            continue
+        route_statuses.append((raw_route_status.get(route.route_id, {}) or {}) if isinstance(raw_route_status, dict) else {})
+    payload = _profile_model_pool_payload(
+        kb_dir,
+        profile,
+        active_id,
+        _derive_profile_status_from_routes(
+            profile,
+            profile_status if isinstance(profile_status, dict) else None,
+            route_statuses,
+        ),
+    )
     payload["routes"] = [
         {
             "id": route.route_id,
@@ -1509,6 +1636,47 @@ def save_model_pool_profile_status(kb_dir: Path, profile_id: str, status_update:
     profiles[profile_id] = current
     _save_model_pool_status(kb_dir, status)
     return get_model_pool_profile(kb_dir, profile_id)
+
+
+def due_model_pool_probe_profile_ids(kb_dir: Path, *, now: float | None = None) -> list[str]:
+    from openkb.model_pool import configured_routes
+
+    kb_dir = require_kb_dir(kb_dir)
+    config = load_config(kb_dir / ".openkb" / "config.yaml")
+    pool_config = config.get("model_pool") if isinstance(config.get("model_pool"), dict) else {}
+    if not pool_config.get("enabled", False):
+        return []
+    profiles, _active_id = _normalize_profiles(config)
+    enabled_profile_ids = {profile["id"] for profile in profiles if profile.get("enabled", True)}
+    if not enabled_profile_ids:
+        return []
+
+    status = _load_model_pool_status(kb_dir)
+    raw_profiles = status.get("profiles", {})
+    raw_routes = status.get("routes", {})
+    if not isinstance(raw_profiles, dict):
+        raw_profiles = {}
+    if not isinstance(raw_routes, dict):
+        raw_routes = {}
+
+    interval_seconds = int(pool_config.get("probe_interval_seconds") or DEFAULT_CONFIG["model_pool"]["probe_interval_seconds"])
+    timestamp = time.time() if now is None else float(now)
+    due_ids: set[str] = set()
+    for route in configured_routes(kb_dir):
+        if route.profile_id not in enabled_profile_ids:
+            continue
+        route_status = raw_routes.get(route.route_id, {}) or {}
+        if str(route_status.get("health") or "") not in {"offline", "degraded"}:
+            continue
+        if int(route_status.get("consecutive_failures") or 0) <= 0 and int(route_status.get("failure_count") or 0) <= 0:
+            continue
+        profile_status = raw_profiles.get(route.profile_id, {}) or {}
+        if profile_status.get("probing"):
+            continue
+        if not _status_is_due(route_status, interval_seconds, now=timestamp):
+            continue
+        due_ids.add(route.profile_id)
+    return sorted(due_ids)
 
 
 def list_ocr_cache_entries(kb_dir: Path) -> dict[str, Any]:

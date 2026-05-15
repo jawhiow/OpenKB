@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ConfigData,
@@ -91,20 +91,6 @@ function modelHealthTone(health: string) {
   return 'bg-slate-100 text-slate-700 border-slate-200';
 }
 
-function probeDueAt(profile: ModelPoolProfile, intervalSeconds: number): number | null {
-  const lastChecked = Date.parse(profile.last_checked_at || '');
-  if (Number.isNaN(lastChecked)) return null;
-  return lastChecked + Math.max(intervalSeconds, 1) * 1000;
-}
-
-function shouldAutoProbeProfile(profile: ModelPoolProfile, intervalSeconds: number, now = Date.now()): boolean {
-  if (!profile.enabled || profile.probing) return false;
-  if (!profile.last_checked_at) return true;
-  const dueAt = probeDueAt(profile, intervalSeconds);
-  if (dueAt === null) return true;
-  return dueAt <= now;
-}
-
 export function SettingsTab({
   kbDir,
   onKbChanged,
@@ -123,7 +109,6 @@ export function SettingsTab({
   const [successMessage, setSuccessMessage] = useState('');
   const [modelSearch, setModelSearch] = useState('');
   const [modelHealthFilter, setModelHealthFilter] = useState('all');
-  const [autoProbeTick, setAutoProbeTick] = useState(0);
   const [localProbingProfileIds, setLocalProbingProfileIds] = useState<string[]>([]);
 
   const configQuery = useQuery({
@@ -265,30 +250,6 @@ export function SettingsTab({
       setLocalProbingProfileIds((current) => current.filter((id) => id !== context.profileId));
     },
   });
-
-  useEffect(() => {
-    if (!kbDir || section !== 'model-pool') return;
-    const pool = modelPoolQuery.data;
-    if (!pool?.enabled || probeAllMutation.isPending) return;
-    const intervalSeconds = Math.max(Number(pool.probe_interval_seconds || 600), 1);
-    const dueProfiles = pool.profiles.filter((profile) => shouldAutoProbeProfile(profile, intervalSeconds));
-    if (dueProfiles.length > 0) {
-      void probeAllMutation.mutateAsync('auto').catch(() => {
-        // Silent background probe: keep manual controls responsible for surfaced errors.
-      });
-      return;
-    }
-
-    const dueTimes = pool.profiles
-      .filter((profile) => profile.enabled && !profile.probing)
-      .map((profile) => probeDueAt(profile, intervalSeconds))
-      .filter((value): value is number => value !== null);
-    const nextDelay = dueTimes.length
-      ? Math.max(Math.min(...dueTimes) - Date.now(), 1000)
-      : intervalSeconds * 1000;
-    const timer = window.setTimeout(() => setAutoProbeTick((current) => current + 1), nextDelay);
-    return () => window.clearTimeout(timer);
-  }, [autoProbeTick, kbDir, modelPoolQuery.data, probeAllMutation, refreshKbQueries, section]);
 
   const saveProfileMutation = useMutation({
     mutationFn: async (draft: ProfileDraft) => {

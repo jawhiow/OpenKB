@@ -691,6 +691,11 @@ export const getReviewSummaryFile = async (kbDir: string, path: string): Promise
   return response.data;
 };
 
+export const rawFileUrl = (kbDir: string, path: string): string => {
+  const params = new URLSearchParams({ kb_dir: kbDir, path });
+  return `/api/raw/file?${params.toString()}`;
+};
+
 export const saveWikiFile = async (
   kbDir: string,
   path: string,
