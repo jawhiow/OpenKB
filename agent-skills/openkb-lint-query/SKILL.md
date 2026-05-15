@@ -1,6 +1,6 @@
 ---
 name: openkb-lint-query
-description: Query, cite, lint, safely repair, add documents to, and delete indexed source documents from an OpenKB runtime knowledge base. Use when Codex is inside or near an OpenKB KB containing wiki/, .openkb/, or raw/ and the user asks to query the KB, ask questions over the wiki, compare, summarize, find evidence, save an exploration, run lint, inspect wiki health, fix broken links, create missing draft concept/company/industry pages, add/new/import files or documents, delete/remove a source document, or improve query usability. Do not use for editing the OpenKB source code repository unless the user explicitly asks to change OpenKB itself.
+description: Query, cite, lint, safely repair, inspect status/list/source inventory, add/import/rebuild documents, manage staged document ledgers, delete indexed source documents, and run compact/merge/H1 maintenance for an OpenKB runtime knowledge base. Use when Codex is inside or near an OpenKB KB containing wiki/, .openkb/, or raw/ and the user asks to query the KB, ask questions over the wiki, compare, summarize, find evidence, save an exploration, run lint, inspect wiki health, list documents, show source details, fix broken links, create missing draft concept/company/industry pages, add/new/import files or documents, import-only source artifacts, rebuild raw documents, backfill ledger records, compact/merge duplicate concepts, repair H1 names, delete/remove a source document, or improve query usability. Do not use for editing the OpenKB source code repository unless the user explicitly asks to change OpenKB itself.
 ---
 
 # OpenKB Lint Query
@@ -59,7 +59,48 @@ Force recompilation only when the user asks to re-add/rebuild/overwrite an alrea
 python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --force --json
 ```
 
+For staged source preparation without wiki compilation, use import-only mode:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --import-only --json
+```
+
+When the user explicitly asks for OCR/local PageIndex import strategy selection, pass the system strategy through rather than manually converting files:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file.pdf" --import-only --strategy-override ocr-pageindex-local --json
+```
+
+When ingest gate override is requested, include both a forced decision and a reason:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file.pdf" --force-pass --gate-reason "user approved" --json
+```
+
 The script skips unsupported extensions in directories and reports them in JSON. For a single unsupported file it returns an error. Adding may call the configured LLM/indexing pipeline, so report any conversion or compilation failures instead of inventing wiki pages manually.
+
+Use rebuild only when the user asks to rebuild all `raw/` documents. Preview first unless the user has already clearly requested execution:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode rebuild --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode rebuild --yes --json
+```
+
+## Inventory Workflow
+
+Use this when the user asks for status, list, source details, document inventory, or staged ledger state.
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\kb_inventory.py" --kb . --mode status --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\kb_inventory.py" --kb . --mode list --include-pages --include-ledger --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\kb_inventory.py" --kb . --mode source --selector "document-name-or-hash" --json
+```
+
+Backfill ledger records only when the user asks for ledger repair/backfill or staged workflow state normalization:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode backfill-ledger --json
+```
 
 ## Delete Source Workflow
 
@@ -115,6 +156,21 @@ python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\apply_fixes.py" --
 
 For more detail, read `references/lint-playbook.md`.
 
+## Maintenance Workflow
+
+Use this when the user asks for compact, duplicate concept review/merge, or H1 filename/title repair. Prefer dry-run/report modes first; only apply merges or LLM H1 suggestions when the user clearly asks for execution.
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode compact --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode compact --fix-h1 --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode merge-concepts --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode merge-concepts --apply --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode h1-rename --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode h1-rename --apply --confidence 0.7 --json
+```
+
+`compact --fix-h1` only applies safe structural H1 fixes. `merge-concepts --apply` deletes duplicate concept files after rewriting references. `h1-rename --apply` may rewrite H1s or rename concept files based on LLM suggestions above the confidence threshold. Treat split/manual H1 suggestions as report-only.
+
 ## Runtime Contract
 
 The KB is a compiled wiki:
@@ -123,6 +179,7 @@ The KB is a compiled wiki:
 - `wiki/sources/` is converted source evidence and should not be overwritten by this skill.
 - `wiki/summaries/`, `wiki/companies/`, `wiki/industries/`, `wiki/concepts/`, and `wiki/explorations/` are the query and synthesis layer.
 - `wiki/reports/` stores lint reports.
+- `.openkb/document_ledger.json` tracks staged ingest workflow state; inspect or backfill through OpenKB helpers rather than hand-editing it.
 - `wiki/index.md` and `wiki/log.md` must stay in sync when this skill writes.
 - `wiki/evidence_map.json`, when present, is preferred for citation grounding.
 

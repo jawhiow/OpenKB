@@ -158,6 +158,56 @@ def test_create_chat_endpoint_persists_empty_session(tmp_path):
     assert _git(kb_dir, "log", "-1", "--pretty=%s") == f"Create chat {session['id']}"
 
 
+def test_save_chat_exploration_endpoint_exports_existing_session(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    client = TestClient(create_app())
+    from openkb.agent.chat_session import ChatSession
+
+    session = ChatSession.new(kb_dir, "gpt-5.4-mini", "zh")
+    session.record_turn(
+        "后续是否值得保存？",
+        "这段对话可以作为探索记录。",
+        [
+            {"role": "user", "content": "后续是否值得保存？"},
+            {"role": "assistant", "content": "这段对话可以作为探索记录。"},
+        ],
+    )
+
+    response = client.post(
+        f"/api/chats/{session.id}/save-exploration",
+        json={"kb_dir": str(kb_dir), "name": "事后保存测试"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == session.id
+    assert body["path"].startswith("explorations/")
+    exported = kb_dir / "wiki" / body["path"]
+    text = exported.read_text(encoding="utf-8")
+    assert f'session: "{session.id}"' in text
+    assert "# Chat transcript" in text
+    assert "## [1] 后续是否值得保存？" in text
+    assert "这段对话可以作为探索记录。" in text
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == f"Save chat transcript {exported.name}"
+
+
+def test_save_chat_exploration_rejects_empty_session(tmp_path):
+    kb_dir = _make_kb(tmp_path)
+    client = TestClient(create_app())
+    from openkb.agent.chat_session import ChatSession
+
+    session = ChatSession.new(kb_dir, "gpt-5.4-mini", "zh")
+    session.save()
+
+    response = client.post(
+        f"/api/chats/{session.id}/save-exploration",
+        json={"kb_dir": str(kb_dir)},
+    )
+
+    assert response.status_code == 400
+    assert "empty chat session" in response.json()["detail"]
+
+
 def test_wiki_file_put_saves_content(tmp_path):
     kb_dir = _make_kb(tmp_path)
     page = kb_dir / "wiki" / "concepts" / "edit-me.md"

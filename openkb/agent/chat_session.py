@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import string
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -257,6 +258,36 @@ def delete_session(kb_dir: Path, session_id: str) -> bool:
         path.unlink()
         return True
     return False
+
+
+def export_session_to_exploration(kb_dir: Path, session: ChatSession, name: str | None = None) -> Path:
+    """Export a chat session transcript into ``wiki/explorations/``."""
+    explore_dir = kb_dir / "wiki" / "explorations"
+    explore_dir.mkdir(parents=True, exist_ok=True)
+
+    base = name or session.title or (session.user_turns[0] if session.user_turns else session.id)
+    slug = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "-", base.lower()).strip("-")[:60] or session.id
+    date = session.created_at[:10].replace("-", "")
+    path = explore_dir / f"{slug}-{date}.md"
+
+    lines: list[str] = [
+        "---",
+        f'session: "{session.id}"',
+        f'model: "{session.model}"',
+        f'created: "{session.created_at}"',
+        "---",
+        "",
+        f"# Chat transcript  {session.title or session.id}",
+        "",
+    ]
+    for index, (user_text, assistant_text) in enumerate(zip(session.user_turns, session.assistant_texts), 1):
+        lines.append(f"## [{index}] {user_text}")
+        lines.append("")
+        lines.append(assistant_text or "_(no response recorded)_")
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
 
 
 def relative_time(iso_str: str) -> str:

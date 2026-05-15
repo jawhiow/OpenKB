@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -22,7 +21,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.shortcuts import CompleteStyle, print_formatted_text
 from prompt_toolkit.styles import Style
 
-from openkb.agent.chat_session import ChatSession
+from openkb.agent.chat_session import ChatSession, export_session_to_exploration
 from openkb.kb_git import commit_kb_changes
 from openkb.agent.query import MAX_TURNS, build_query_agent, run_with_query_model_pool
 from openkb.llm_usage import llm_usage_context
@@ -407,31 +406,7 @@ async def _run_turn(
 
 
 def _save_transcript(kb_dir: Path, session: ChatSession, name: str | None) -> Path:
-    explore_dir = kb_dir / "wiki" / "explorations"
-    explore_dir.mkdir(parents=True, exist_ok=True)
-
-    base = name or session.title or (session.user_turns[0] if session.user_turns else session.id)
-    slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")[:60] or session.id
-    date = session.created_at[:10].replace("-", "")
-    path = explore_dir / f"{slug}-{date}.md"
-
-    lines: list[str] = [
-        "---",
-        f'session: "{session.id}"',
-        f'model: "{session.model}"',
-        f'created: "{session.created_at}"',
-        "---",
-        "",
-        f"# Chat transcript  {session.title or session.id}",
-        "",
-    ]
-    for i, (u, a) in enumerate(zip(session.user_turns, session.assistant_texts), 1):
-        lines.append(f"## [{i}] {u}")
-        lines.append("")
-        lines.append(a or "_(no response recorded)_")
-        lines.append("")
-
-    path.write_text("\n".join(lines), encoding="utf-8")
+    path = export_session_to_exploration(kb_dir, session, name)
     commit_kb_changes(kb_dir, f"Save chat transcript {path.name}")
     return path
 

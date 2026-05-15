@@ -188,6 +188,11 @@ export interface ChatListResponse {
   sessions: ChatSessionSummary[];
 }
 
+export interface SaveChatExplorationResponse {
+  path: string;
+  session_id: string;
+}
+
 export interface ChatReference {
   type?: string;
   path?: string;
@@ -883,6 +888,21 @@ export const deleteChatSession = async (kbDir: string, sessionId: string): Promi
     params: { kb_dir: kbDir },
   });
   return { deleted: Boolean(response.data?.deleted) };
+};
+
+export const saveChatExploration = async (
+  kbDir: string,
+  sessionId: string,
+  name?: string,
+): Promise<SaveChatExplorationResponse> => {
+  const response = await apiClient.post(`/chats/${encodeURIComponent(sessionId)}/save-exploration`, {
+    kb_dir: kbDir,
+    name: name ?? '',
+  });
+  return {
+    path: String(response.data?.path ?? ''),
+    session_id: String(response.data?.session_id ?? sessionId),
+  };
 };
 
 export const getConfig = async (kbDir: string): Promise<ConfigData> => {

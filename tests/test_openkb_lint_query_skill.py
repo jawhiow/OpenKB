@@ -33,6 +33,7 @@ def _load_script(name: str):
 
 def _make_skill_kb(tmp_path: Path) -> Path:
     kb = tmp_path / "kb"
+    (kb / ".openkb").mkdir(parents=True)
     (kb / "wiki" / "companies").mkdir(parents=True)
     (kb / "wiki" / "concepts").mkdir()
     (kb / "wiki" / "reports").mkdir()
@@ -206,10 +207,17 @@ def test_skill_metadata_mentions_add_and_delete_workflows():
 
     assert "add_documents.py" in skill_text
     assert "delete_source.py" in skill_text
+    assert "kb_inventory.py" in skill_text
+    assert "maintenance.py" in skill_text
+    assert "import-only" in skill_text
+    assert "backfill-ledger" in skill_text
+    assert "merge-concepts" in skill_text
+    assert "h1-rename" in skill_text
     assert "新增" in skill_text or "add" in skill_text.lower()
     assert "删除" in skill_text or "delete" in skill_text.lower()
     assert "Add" in openai_text or "add" in openai_text
     assert "delete" in openai_text.lower()
+    assert "maintain" in openai_text.lower()
 
 
 def test_add_documents_rejects_unsupported_extension(tmp_path):
@@ -261,7 +269,7 @@ def test_add_documents_reports_noop_as_skipped_when_hash_registry_unchanged(tmp_
     add_documents = _load_script("add_documents")
     kb = _make_skill_kb(tmp_path)
     openkb_dir = kb / ".openkb"
-    openkb_dir.mkdir()
+    openkb_dir.mkdir(exist_ok=True)
     (openkb_dir / "hashes.json").write_text(
         json.dumps({"hash-a": {"name": "already.md", "type": "md"}}),
         encoding="utf-8",
@@ -277,12 +285,135 @@ def test_add_documents_reports_noop_as_skipped_when_hash_registry_unchanged(tmp_
     assert result["skipped"] == [str(source)]
 
 
+def test_add_documents_validates_ingest_gate_force_reason(tmp_path):
+    add_documents = _load_script("add_documents")
+    kb = _make_skill_kb(tmp_path)
+    source = tmp_path / "paper.md"
+    source.write_text("# Paper", encoding="utf-8")
+
+    result = add_documents.add_documents(str(kb), str(source), force_gate_pass=True)
+
+    assert result["ok"] is False
+    assert "gate_reason" in result["error"]
+
+
+def test_add_documents_import_only_uses_import_pipeline_and_logs(tmp_path):
+    add_documents = _load_script("add_documents")
+    kb = _make_skill_kb(tmp_path)
+    source = tmp_path / "paper.md"
+    source.write_text("# Paper", encoding="utf-8")
+    calls: list[tuple[Path, Path, bool, str | None]] = []
+
+    def fake_import_document_source(file_path, kb_root, *, force=False, strategy_override=None):
+        calls.append((Path(file_path), Path(kb_root), force, strategy_override))
+        return {
+            "name": Path(file_path).name,
+            "file_hash": "hash-paper",
+            "skipped": False,
+            "raw_path": "raw/paper.md",
+            "source_path": "wiki/sources/paper.md",
+        }
+
+    with patch.object(add_documents, "import_document_source", side_effect=fake_import_document_source), \
+        patch.object(add_documents, "commit_kb_changes", return_value=None):
+        result = add_documents.add_documents(
+            str(kb),
+            str(source),
+            import_only=True,
+            force=True,
+            strategy_override="ocr-pageindex-local",
+        )
+
+    assert result["ok"] is True
+    assert result["import_only"] is True
+    assert result["imported"][0]["file_hash"] == "hash-paper"
+    assert calls == [(source, kb, True, "ocr-pageindex-local")]
+    assert "import | 1 source document(s)" in (kb / "wiki" / "log.md").read_text(encoding="utf-8")
+
+
+def test_kb_inventory_status_list_and_source_detail(tmp_path):
+    kb_inventory = _load_script("kb_inventory")
+    kb = _make_skill_kb(tmp_path)
+    (kb / ".openkb" / "hashes.json").write_text(
+        json.dumps({"hash-a": {"name": "paper.pdf", "type": "pdf"}}),
+        encoding="utf-8",
+    )
+    (kb / "raw").mkdir()
+    (kb / "raw" / "paper.pdf").write_bytes(b"%PDF")
+    (kb / "wiki" / "summaries" / "paper.md").write_text("# Paper\n", encoding="utf-8")
+
+    status = kb_inventory.status(str(kb))
+    listing = kb_inventory.inventory(str(kb), include_pages=True, include_ledger=True)
+    detail = kb_inventory.source_detail(str(kb), "paper")
+
+    assert status["ok"] is True
+    assert status["indexed_documents"] == 1
+    assert status["counts"]["summaries"] == 1
+    assert listing["ok"] is True
+    assert listing["documents"][0]["name"] == "paper.pdf"
+    assert listing["pages"]["summaries"][0]["path"] == "summaries/paper.md"
+    assert "hash-a" in listing["ledger"]
+    assert detail["ok"] is True
+    assert detail["document"]["name"] == "paper.pdf"
+
+
+def test_maintenance_rebuild_defaults_to_dry_run(tmp_path):
+    maintenance = _load_script("maintenance")
+    kb = _make_skill_kb(tmp_path)
+    raw = kb / "raw"
+    raw.mkdir()
+    source = raw / "paper.md"
+    source.write_text("# Paper", encoding="utf-8")
+
+    result = maintenance.rebuild(str(kb))
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["would_rebuild"] == [str(source)]
+
+
+def test_maintenance_merge_concepts_dry_run_uses_system_proposals(tmp_path):
+    maintenance = _load_script("maintenance")
+    kb = _make_skill_kb(tmp_path)
+
+    class Proposal:
+        canonical = "AI"
+        merged = ["AI", "人工智能"]
+        rationale = {"人工智能": 0.9}
+        sources_union = ["summaries/a.md"]
+
+    with patch.object(maintenance, "propose_merges", return_value=[Proposal()]):
+        result = maintenance.merge_concepts(str(kb))
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["proposals"] == [{
+        "canonical": "AI",
+        "merged": ["AI", "人工智能"],
+        "rationale": {"人工智能": 0.9},
+        "sources_union": ["summaries/a.md"],
+    }]
+
+
+def test_maintenance_backfill_ledger_commits_when_changed(tmp_path):
+    maintenance = _load_script("maintenance")
+    kb = _make_skill_kb(tmp_path)
+
+    with patch.object(maintenance, "backfill_document_ledger", return_value={"added": 1, "updated": 0, "unchanged": 0, "total": 1}), \
+        patch.object(maintenance, "commit_kb_changes", return_value=None) as commit:
+        result = maintenance.backfill_ledger(str(kb))
+
+    assert result["ok"] is True
+    assert result["result"]["added"] == 1
+    commit.assert_called_once_with(kb, "Backfill document ledger")
+
+
 def test_delete_source_defaults_to_dry_run_without_mutating(tmp_path):
     delete_source = _load_script("delete_source")
     kb = _make_skill_kb(tmp_path)
     raw = kb / "raw"
     raw.mkdir()
-    (kb / ".openkb").mkdir()
+    (kb / ".openkb").mkdir(exist_ok=True)
     (kb / ".openkb" / "hashes.json").write_text(
         json.dumps({"hash-a": {"name": "paper.pdf", "type": "pdf"}}),
         encoding="utf-8",
@@ -306,7 +437,7 @@ def test_delete_source_requires_yes_to_mutate(tmp_path):
     kb = _make_skill_kb(tmp_path)
     raw = kb / "raw"
     raw.mkdir()
-    (kb / ".openkb").mkdir()
+    (kb / ".openkb").mkdir(exist_ok=True)
     (kb / ".openkb" / "hashes.json").write_text(
         json.dumps({"hash-a": {"name": "paper.pdf", "type": "pdf"}}),
         encoding="utf-8",

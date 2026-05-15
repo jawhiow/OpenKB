@@ -11,6 +11,7 @@ import {
   deleteChatSession,
   getChatSession,
   getChats,
+  saveChatExploration,
   streamQuery,
   StreamQueryDonePayload,
 } from '@/lib/api';
@@ -19,7 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Bot, Copy, ExternalLink, Loader2, MessageSquare, Send, Trash2, User } from 'lucide-react';
+import { Bot, Copy, ExternalLink, Loader2, MessageSquare, Save, Send, Trash2, User } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toaster';
 import { confirm as confirmDialog } from '@/components/ui/confirm-dialog';
@@ -203,6 +204,20 @@ export function SessionsTab({
     },
     onError: (error) => {
       toast.error('Failed to create session', error instanceof Error ? error.message : undefined);
+    },
+  });
+
+  const saveSessionMutation = useMutation({
+    mutationFn: (session: ChatSessionDetail) => saveChatExploration(kbDir, session.id, sessionTitle(session)),
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ['wikiTree', kbDir] });
+      toast.success('Session saved to explorations', result.path || undefined);
+      if (result.path && onNavigateToWiki) {
+        onNavigateToWiki(result.path);
+      }
+    },
+    onError: (error) => {
+      toast.error('Failed to save session', error instanceof Error ? error.message : undefined);
     },
   });
 
@@ -397,6 +412,16 @@ export function SessionsTab({
               </p>
             </div>
             <div className="flex gap-2">
+              {activeSession ? (
+                <Button
+                  variant="outline"
+                  onClick={() => saveSessionMutation.mutate(activeSession)}
+                  disabled={saveSessionMutation.isPending || activeSession.turn_count <= 0 || isStreaming}
+                >
+                  {saveSessionMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                  Save
+                </Button>
+              ) : null}
               <Button variant="outline" onClick={handleCopy} disabled={!messages.length}>
                 <Copy className="mr-2 h-4 w-4" />
                 Copy

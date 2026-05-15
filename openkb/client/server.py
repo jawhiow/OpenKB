@@ -1541,6 +1541,24 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
         except Exception as exc:
             raise translate_error(exc) from exc
 
+    @app.post("/api/chats/{session_id}/save-exploration")
+    def save_chat_exploration(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from openkb.agent.chat_session import export_session_to_exploration, load_session
+
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            session = load_session(target_kb, session_id)
+            if session.turn_count <= 0:
+                raise ValueError("Cannot save an empty chat session.")
+            path = export_session_to_exploration(target_kb, session, str(payload.get("name") or "").strip() or None)
+            commit_kb_changes(target_kb, f"Save chat transcript {path.name}")
+            return {
+                "path": path.relative_to(target_kb / "wiki").as_posix(),
+                "session_id": session.id,
+            }
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
     @app.delete("/api/chats/{session_id}")
     def delete_chat(session_id: str, kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
         try:

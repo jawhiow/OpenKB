@@ -119,6 +119,26 @@ def test_get_source_documents_includes_related_pages_grouped_by_type(tmp_path: P
     ]
 
 
+def test_get_source_documents_handles_overlong_staged_source_candidates(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    long_stem = "长" * 260
+    hashes = json.loads((kb_dir / ".openkb" / "hashes.json").read_text(encoding="utf-8"))
+    hashes["hash-long"] = {
+        "name": f"{long_stem}.pdf",
+        "type": "long_pdf",
+        "raw_path": f".openkb/raw/2026-05-15/{long_stem}.pdf",
+    }
+    (kb_dir / ".openkb" / "hashes.json").write_text(json.dumps(hashes), encoding="utf-8")
+    (kb_dir / ".openkb" / "sources" / "2026-05-15").mkdir(parents=True)
+
+    data = get_source_documents(kb_dir)
+
+    long_doc = next(item for item in data if item["hash"] == "hash-long")
+    assert long_doc["source_path"] is None
+    assert long_doc["summary_exists"] is False
+    assert long_doc["raw_exists"] is False
+
+
 def test_resolve_source_document_accepts_hash_prefix_name_or_stem(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
 

@@ -86,16 +86,25 @@ def _read_ingest_log_dates(kb_dir: Path) -> dict[str, str]:
 
 def _mtime_ingested_at(kb_dir: Path, name: str) -> str | None:
     stem = Path(name).stem
+    raw_name = Path(name).name
     candidates = [
         Path(kb_dir) / "wiki" / "summaries" / f"{stem}.md",
         Path(kb_dir) / "wiki" / "sources" / f"{stem}.md",
         Path(kb_dir) / "wiki" / "sources" / f"{stem}.json",
         Path(kb_dir) / "raw" / name,
     ]
-    candidates.extend(sorted((Path(kb_dir) / ".openkb" / "sources").glob(f"*/{stem}.md")))
-    candidates.extend(sorted((Path(kb_dir) / ".openkb" / "sources").glob(f"*/{stem}.json")))
-    candidates.extend(sorted((Path(kb_dir) / ".openkb" / "raw").glob(f"*/{Path(name).name}")))
-    existing = [path for path in candidates if path.exists()]
+    for root, names in (
+        (Path(kb_dir) / ".openkb" / "sources", {f"{stem}.md", f"{stem}.json"}),
+        (Path(kb_dir) / ".openkb" / "raw", {raw_name}),
+    ):
+        if not _path_exists(root):
+            continue
+        try:
+            for date_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+                candidates.extend(date_dir / candidate_name for candidate_name in names)
+        except OSError:
+            continue
+    existing = [path for path in candidates if _path_exists(path)]
     if not existing:
         return None
     newest = max(existing, key=lambda path: path.stat().st_mtime)
@@ -116,9 +125,18 @@ def _resolve_ingested_at(kb_dir: Path, meta: dict[str, Any], name: str, ingest_l
 
 def _existing_review_summary_relative_path(kb_dir: Path, stem: str) -> str | None:
     root = review_summaries_dir(kb_dir)
-    if not root.exists():
+    if not _path_exists(root):
         return None
-    matches = sorted(root.glob(f"*/{stem}.md"))
+    try:
+        matches = sorted(
+            candidate
+            for date_dir in root.iterdir()
+            if date_dir.is_dir()
+            for candidate in [date_dir / f"{stem}.md"]
+            if _path_exists(candidate)
+        )
+    except OSError:
+        return None
     if not matches:
         return None
     newest = max(matches, key=lambda path: path.stat().st_mtime)
@@ -232,7 +250,7 @@ def resolve_source_artifact_path(kb_dir: Path, relative_path: object) -> Path | 
     if normalized.startswith("sources/"):
         candidates.append(Path(kb_dir) / "wiki" / normalized)
     for candidate in candidates:
-        if candidate.exists():
+        if _path_exists(candidate):
             return candidate
     return candidates[0]
 
@@ -290,6 +308,13 @@ def _write_hashes(kb_dir: Path, hashes: dict[str, dict[str, Any]]) -> None:
     path = _hashes_path(kb_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(hashes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def _safe_doc_name(name: object) -> str:
@@ -394,8 +419,17 @@ def _empty_related_pages() -> dict[str, list[dict[str, Any]]]:
 
 def _source_candidates(kb_dir: Path, stem: str) -> list[Path]:
     wiki_dir = kb_dir / "wiki"
-    staged_matches = sorted((Path(kb_dir) / ".openkb" / "sources").glob(f"*/{stem}.md"))
-    staged_matches.extend(sorted((Path(kb_dir) / ".openkb" / "sources").glob(f"*/{stem}.json")))
+    staged_root = Path(kb_dir) / ".openkb" / "sources"
+    staged_matches: list[Path] = []
+    if _path_exists(staged_root):
+        try:
+            for date_dir in sorted(path for path in staged_root.iterdir() if path.is_dir()):
+                for suffix in (".md", ".json"):
+                    candidate = date_dir / f"{stem}{suffix}"
+                    if _path_exists(candidate):
+                        staged_matches.append(candidate)
+        except OSError:
+            staged_matches = []
     return [
         wiki_dir / "sources" / f"{stem}.md",
         wiki_dir / "sources" / f"{stem}.json",
@@ -408,7 +442,7 @@ def _metadata_raw_relative_path(kb_dir: Path, meta: dict[str, Any], name: str, i
     if stored:
         return stored
     legacy = formal_raw_relative_path(name)
-    if (Path(kb_dir) / legacy).exists():
+    if _path_exists(Path(kb_dir) / legacy):
         return legacy
     return staged_raw_relative_path(name, ingested_at)
 
@@ -423,7 +457,7 @@ def _metadata_source_relative_path(kb_dir: Path, meta: dict[str, Any], stem: str
     stored = normalize_kb_relative_path(meta.get("source_path"))
     if stored:
         return _display_source_relative_path(stored)
-    candidate = next((path for path in _source_candidates(kb_dir, stem) if path.exists()), None)
+    candidate = next((path for path in _source_candidates(kb_dir, stem) if _path_exists(path)), None)
     if candidate is not None:
         return _display_source_relative_path(kb_relative_path(kb_dir, candidate))
     return None
@@ -446,7 +480,7 @@ def _resolve_source_display_path(
 
 def _source_path_from_summary(kb_dir: Path, stem: str) -> str | None:
     summary_path = kb_dir / "wiki" / "summaries" / f"{stem}.md"
-    if not summary_path.exists():
+    if not _path_exists(summary_path):
         return None
     try:
         return _frontmatter_full_text(summary_path.read_text(encoding="utf-8"))
@@ -532,7 +566,7 @@ def _build_source_document(
     stem = Path(name).stem
     source_summary = f"summaries/{stem}.md"
     review_summary_path = review_summary_relative_path(stem, _resolve_ingested_at(kb_dir, meta, name, ingest_log_dates))
-    formal_summary_exists = (wiki_dir / "summaries" / f"{stem}.md").exists()
+    formal_summary_exists = _path_exists(wiki_dir / "summaries" / f"{stem}.md")
 
     related_pages = _empty_related_pages()
     if related_pages_index is not None:
@@ -540,11 +574,11 @@ def _build_source_document(
             related_pages[group] = list(related_pages_index.get(group, {}).get(source_summary, []))
     else:
         summary_path = wiki_dir / "summaries" / f"{stem}.md"
-        if summary_path.exists():
+        if _path_exists(summary_path):
             related_pages["summaries"].append(_page_entry(summary_path, wiki_dir))
         for subdir in GENERATED_PAGE_DIRS:
             pages_dir = wiki_dir / subdir
-            if not pages_dir.exists():
+            if not _path_exists(pages_dir):
                 continue
             for path in sorted(pages_dir.glob("*.md")):
                 try:
@@ -559,7 +593,7 @@ def _build_source_document(
     raw_rel = _metadata_raw_relative_path(kb_dir, meta, name, ingested_at)
     raw_path = resolve_kb_relative_path(kb_dir, raw_rel)
     review_summary_path = review_summary_relative_path(stem, ingested_at)
-    review_summary_exists = (Path(kb_dir) / ".openkb" / review_summary_path).exists()
+    review_summary_exists = _path_exists(Path(kb_dir) / ".openkb" / review_summary_path)
     if not review_summary_exists:
         existing_review_summary = _existing_review_summary_relative_path(kb_dir, stem)
         if existing_review_summary is not None:
@@ -575,7 +609,7 @@ def _build_source_document(
         "ingested_at": ingested_at,
         "ingested_date": _ingested_date(ingested_at),
         "raw_path": raw_rel,
-        "raw_exists": bool(raw_path and raw_path.exists()),
+        "raw_exists": bool(raw_path and _path_exists(raw_path)),
         "source_path": source_text_path,
         "source_summary": source_summary,
         "summary_exists": formal_summary_exists,
