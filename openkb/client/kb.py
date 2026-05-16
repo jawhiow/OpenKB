@@ -215,10 +215,13 @@ def get_document_data(
                 "name": document["name"],
                 "type": _display_type(str(document.get("type", "unknown"))),
                 "pages": document.get("pages", ""),
-                "stem": document["stem"],
-                "raw_path": document.get("raw_path"),
-                "raw_exists": document.get("raw_exists", False),
-                "source_path": document.get("source_path"),
+                "stem": ledger_record.get("stem") or document["stem"],
+                "raw_path": ledger_record.get("raw_path") or document.get("raw_path"),
+                "raw_exists": bool(
+                    (ledger_record.get("raw_path") or document.get("raw_path"))
+                    and (kb_dir / normalize_kb_relative_path(ledger_record.get("raw_path") or document.get("raw_path"))).exists()
+                ),
+                "source_path": ledger_record.get("source_path") or document.get("source_path"),
                 "source_summary": document.get("source_summary"),
                 "summary_exists": document.get("summary_exists", False),
                 "review_summary_path": (

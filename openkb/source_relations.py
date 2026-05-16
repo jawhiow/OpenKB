@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from hashlib import sha256
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ GENERATED_PAGE_DIRS = ("companies", "industries", "concepts")
 LEGACY_GENERATED_PAGE_DIRS = ("themes", "metrics", "risks")
 ALL_MANAGED_PAGE_DIRS = (*GENERATED_PAGE_DIRS, *LEGACY_GENERATED_PAGE_DIRS)
 RELATED_PAGE_GROUPS = ("summaries", *GENERATED_PAGE_DIRS)
+MAX_FILENAME_BYTES = 255
+ARTIFACT_HASH_BYTES = 8
 
 _SOURCE_LIST_RE = re.compile(r"^sources:\s*\[(.*?)\]\s*$", re.MULTILINE)
 _FULL_TEXT_RE = re.compile(r"^full_text:\s*(.+?)\s*$", re.MULTILINE)
@@ -320,6 +323,30 @@ def _path_exists(path: Path) -> bool:
 def _safe_doc_name(name: object) -> str:
     value = str(name or "unknown").strip() or "unknown"
     return Path(value).name
+
+
+def _truncate_utf8_bytes(value: str, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+
+
+def safe_artifact_stem(stem: object, *, file_hash: str | None = None, suffix: str = "") -> str:
+    raw = Path(str(stem or "source").strip() or "source").stem.strip() or "source"
+    normalized_suffix = suffix if str(suffix).startswith(".") else (f".{suffix}" if suffix else "")
+    suffix_bytes = len(normalized_suffix.encode("utf-8"))
+    max_stem_bytes = max(MAX_FILENAME_BYTES - suffix_bytes, 32)
+    if len(raw.encode("utf-8")) <= max_stem_bytes:
+        return raw
+
+    digest = (file_hash or sha256(raw.encode("utf-8")).hexdigest())[:ARTIFACT_HASH_BYTES]
+    marker = f"-{digest}"
+    prefix_budget = max_stem_bytes - len(marker.encode("utf-8"))
+    prefix = _truncate_utf8_bytes(raw, prefix_budget).rstrip(" .-_")
+    return f"{prefix or 'source'}{marker}"
 
 
 def review_summaries_dir(kb_dir: Path) -> Path:

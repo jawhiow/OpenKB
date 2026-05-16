@@ -29,6 +29,7 @@ from openkb.pdf_strategy import (
     recommend_long_pdf_strategy,
     resolve_long_pdf_strategy,
 )
+from openkb.source_relations import safe_artifact_stem
 from openkb.state import HashRegistry
 
 logger = logging.getLogger(__name__)
@@ -150,7 +151,8 @@ def convert_document(
     # ------------------------------------------------------------------
     # 3. PDF long-doc detection
     # ------------------------------------------------------------------
-    doc_name = src.stem
+    artifact_suffix = ".json" if src.suffix.lower() == ".pdf" else ".md"
+    doc_name = safe_artifact_stem(src.stem, file_hash=file_hash, suffix=artifact_suffix)
     page_count: int | None = None
 
     if src.suffix.lower() == ".pdf":

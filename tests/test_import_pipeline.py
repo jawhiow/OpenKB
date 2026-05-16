@@ -44,6 +44,35 @@ def test_import_document_source_registers_source_without_summary(kb_dir: Path):
     assert document["workflow_state"]["promotion_state"] == "not_selected"
 
 
+def test_import_document_source_truncates_long_artifact_names(kb_dir: Path):
+    long_stem = "a" * 251
+    src = kb_dir / "incoming" / f"{long_stem}.pdf"
+    src.parent.mkdir()
+    src.write_bytes(b"%PDF-1.4 fake digital")
+
+    fake_doc = MagicMock()
+    fake_doc.page_count = 1
+    fake_doc.__enter__ = MagicMock(return_value=fake_doc)
+    fake_doc.__exit__ = MagicMock(return_value=False)
+
+    with patch("openkb.converter.pymupdf.open", return_value=fake_doc), \
+         patch("openkb.converter.is_probably_scanned_pdf", return_value=False), \
+         patch("openkb.converter.convert_pdf_with_images", return_value="# Long title\n\nSource only."):
+        result = import_document_source(src, kb_dir)
+
+    assert result["skipped"] is False
+    assert result["source_path"].startswith(".openkb/sources/")
+    source_name = Path(result["source_path"]).name
+    assert source_name.endswith(".md")
+    assert len(source_name.encode("utf-8")) <= 255
+    assert (kb_dir / result["source_path"]).exists()
+
+    document = get_document_data(kb_dir)["documents"][0]
+    assert document["name"] == src.name
+    assert document["stem"] == Path(result["source_path"]).stem
+    assert document["stem"] != long_stem
+
+
 def test_import_document_source_records_failed_source_state(kb_dir: Path):
     src = kb_dir / "incoming" / "broken.md"
     src.parent.mkdir()

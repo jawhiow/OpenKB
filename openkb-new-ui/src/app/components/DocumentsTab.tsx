@@ -75,6 +75,11 @@ const INVENTORY_FILTERS: Array<{ label: string; value: string }> = [
   { label: 'New imports', value: 'new' },
   { label: 'Ready to summarize', value: 'ready_to_summarize' },
   { label: 'Needs summary', value: 'needs_summary' },
+  { label: 'Has summary page', value: 'has_summary_page' },
+  { label: 'Has company page', value: 'has_company_page' },
+  { label: 'Has industry page', value: 'has_industry_page' },
+  { label: 'Has concept page', value: 'has_concept_page' },
+  { label: 'No related pages', value: 'no_related_pages' },
   { label: 'Any failed', value: 'failed' },
 ];
 
@@ -1491,7 +1496,7 @@ function DocumentStageTable({
   const allSelected = documents.length > 0 && documents.every((document) => selection[document.hash]);
 
   return (
-    <div className="flex-1 overflow-auto px-6 py-4">
+    <div className="min-w-0 flex-1 overflow-auto px-6 py-4">
       {isLoading ? (
         <div className="overflow-hidden rounded-2xl border bg-background/85 p-4 shadow-sm dark:bg-card/40">
           <TableSkeleton rows={6} columns={7} />
@@ -1514,30 +1519,30 @@ function DocumentStageTable({
           ) : null}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border bg-background/85 shadow-sm dark:bg-card/40">
-          <Table>
+        <div className="min-w-0 overflow-x-auto overflow-y-hidden rounded-2xl border bg-background/85 shadow-sm custom-scrollbar dark:bg-card/40">
+          <Table className={inlineScorecard ? "min-w-[1080px] table-fixed" : "min-w-[980px] table-fixed"}>
             <TableHeader>
               <TableRow className="bg-muted/40 dark:bg-muted/20">
                 <TableHead className="w-10">
                   <input type="checkbox" checked={allSelected} onChange={onToggleAll} aria-label="Select all visible rows" />
                 </TableHead>
-                <TableHead>
+                <TableHead className={inlineScorecard ? "w-[260px]" : "w-[300px]"}>
                   <SortableHeader label="Name" sortKey="name" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
                 </TableHead>
-                <TableHead>
+                <TableHead className="w-[96px]">
                   <SortableHeader label="Score" sortKey="summary_score" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
                 </TableHead>
-                <TableHead>
+                <TableHead className={inlineScorecard ? "w-[180px]" : "w-[220px]"}>
                   <SortableHeader label="Source" sortKey="source_state" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
                 </TableHead>
-                <TableHead>
+                <TableHead className="w-[220px]">
                   <SortableHeader label="Workflow" sortKey="summary_state" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
                 </TableHead>
-                <TableHead>
+                <TableHead className={inlineScorecard ? "w-[150px]" : "w-[180px]"}>
                   <SortableHeader label="Review" sortKey="review_state" current={sortKey ?? null} dir={sortDir ?? 'asc'} onSort={onSort} />
                 </TableHead>
-                <TableHead>Execution</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead className={inlineScorecard ? "w-[150px]" : "w-[220px]"}>Execution</TableHead>
+                <TableHead className="w-[128px] text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1552,11 +1557,11 @@ function DocumentStageTable({
                         aria-label={`Select ${document.name}`}
                       />
                     </TableCell>
-                    <TableCell className="max-w-[280px] whitespace-normal">
+                    <TableCell className="whitespace-normal">
                       <div className="font-medium">{document.name}</div>
                       <div className="mt-1 break-words text-xs text-muted-foreground">{document.raw_path || document.stem}</div>
                     </TableCell>
-                    <TableCell className="w-[120px] whitespace-normal text-xs">
+                    <TableCell className="whitespace-normal text-xs">
                       {document.review.summary_score !== null ? (
                         <div>
                           <div className="font-semibold text-sm">{document.review.summary_score}</div>
@@ -1568,17 +1573,17 @@ function DocumentStageTable({
                         <div className="text-muted-foreground">n/a</div>
                       )}
                     </TableCell>
-                    <TableCell className="max-w-[220px] whitespace-normal text-xs">
+                    <TableCell className="whitespace-normal text-xs">
                       <div>{document.type}</div>
                       <div className="mt-1 text-muted-foreground">
                         {document.source_path || document.source_kind || 'source pending'}
                       </div>
                       {document.pages ? <div className="mt-1 text-muted-foreground">{document.pages} pages</div> : null}
                     </TableCell>
-                    <TableCell className="max-w-[220px] whitespace-normal text-xs">
+                    <TableCell className="whitespace-normal text-xs">
                       <WorkflowPipeline state={document.workflow_state} />
                     </TableCell>
-                    <TableCell className="max-w-[200px] whitespace-normal text-xs">
+                    <TableCell className="whitespace-normal text-xs">
                       <div className="font-medium">{document.workflow_state.review_state}</div>
                       {document.review.summary_score !== null ? (
                         <div className="mt-1 text-muted-foreground">score {document.review.summary_score}</div>
@@ -1587,7 +1592,7 @@ function DocumentStageTable({
                         <div className="mt-1 text-muted-foreground">{document.review.review_notes}</div>
                       ) : null}
                     </TableCell>
-                    <TableCell className="max-w-[240px] whitespace-normal text-xs">
+                    <TableCell className="whitespace-normal text-xs">
                       {document.execution.last_error ? (
                         <div className="rounded-lg bg-red-50 px-2 py-1 text-red-700 dark:bg-red-500/10 dark:text-red-300">
                           {document.execution.last_error}
@@ -1676,29 +1681,29 @@ function DocumentStageTable({
                           </Button>
                         ) : null}
                         {showDelete ? (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-300 dark:hover:bg-red-500/10 dark:hover:text-red-200"
-                          onClick={async () => {
-                            const ok = await confirmDialog({
-                              title: 'Remove document?',
-                              description: `"${document.name}" will be removed from inventory.`,
-                              confirmLabel: 'Remove',
-                              variant: 'danger',
-                            });
-                            if (ok) onDelete?.(document.hash);
-                          }}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-300 dark:hover:bg-red-500/10 dark:hover:text-red-200"
+                            onClick={async () => {
+                              const ok = await confirmDialog({
+                                title: 'Remove document?',
+                                description: `"${document.name}" will be removed from inventory.`,
+                                confirmLabel: 'Remove',
+                                variant: 'danger',
+                              });
+                              if (ok) onDelete?.(document.hash);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         ) : null}
                       </div>
                     </TableCell>
                   </TableRow>
                   {inlineScorecard && document.review.summary_scorecard ? (
                     <TableRow key={`${document.hash}-scorecard`} className="bg-muted/10">
-                      <TableCell colSpan={8} className="px-4 py-3">
+                      <TableCell colSpan={8} className="min-w-0 whitespace-normal px-4 py-3">
                         <CompactSummaryScorecard scorecard={document.review.summary_scorecard} />
                       </TableCell>
                     </TableRow>
@@ -2250,6 +2255,21 @@ function matchesInventoryStatusFilter(document: DocumentItem, filter: string): b
   }
   if (filter === 'needs_summary') {
     return ['not_started', 'failed'].includes(document.workflow_state.summary_state);
+  }
+  if (filter === 'has_summary_page') {
+    return (document.related_pages?.summaries?.length ?? 0) > 0 || document.summary_exists;
+  }
+  if (filter === 'has_company_page') {
+    return (document.related_pages?.companies?.length ?? 0) > 0;
+  }
+  if (filter === 'has_industry_page') {
+    return (document.related_pages?.industries?.length ?? 0) > 0;
+  }
+  if (filter === 'has_concept_page') {
+    return (document.related_pages?.concepts?.length ?? 0) > 0;
+  }
+  if (filter === 'no_related_pages') {
+    return document.related_count === 0;
   }
   if (filter === 'failed') {
     return (

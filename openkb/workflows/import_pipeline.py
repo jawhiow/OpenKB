@@ -12,6 +12,7 @@ from openkb.pdf_strategy import OCR_PAGEINDEX_LOCAL, PAGEINDEX_LOCAL
 from openkb.source_relations import (
     current_ingested_at,
     kb_relative_path,
+    safe_artifact_stem,
     staged_raw_full_path,
     staged_source_full_path,
     staged_source_images_full_dir,
@@ -96,13 +97,14 @@ def register_import_failure(
         return None
 
     ingested_at = current_ingested_at()
-    failed_raw_path = staged_raw_full_path(kb_dir, file_path.name, ingested_at)
+    failed_name = f"{safe_artifact_stem(file_path.stem, file_hash=file_hash, suffix=file_path.suffix)}{file_path.suffix}"
+    failed_raw_path = staged_raw_full_path(kb_dir, failed_name, ingested_at)
     try:
         failed_raw_path.parent.mkdir(parents=True, exist_ok=True)
         if file_path.resolve() != failed_raw_path.resolve():
             shutil.copy2(file_path, failed_raw_path)
     except OSError:
-        failed_raw_path = Path(kb_dir) / f".openkb/raw/{datetime.now().astimezone().date().isoformat()}/{file_path.name}"
+        failed_raw_path = Path(kb_dir) / f".openkb/raw/{datetime.now().astimezone().date().isoformat()}/{failed_name}"
 
     registry = HashRegistry(Path(kb_dir) / ".openkb" / "hashes.json")
     if not registry.is_known(file_hash):
@@ -124,7 +126,7 @@ def register_import_failure(
         file_hash,
         {
             "name": file_path.name,
-            "stem": file_path.stem,
+            "stem": Path(failed_name).stem,
             "raw_path": _relative_to_kb(kb_dir, failed_raw_path),
             "ingested_at": ingested_at,
             "source_kind": _source_kind_from_suffix(file_path),
@@ -176,9 +178,14 @@ def register_converted_document(
     registry.add(result.file_hash, metadata)
 
     source_kind = source_kind_for_result(doc_type, result)
+    artifact_stem = Path(result.source_path).stem if result.source_path is not None else safe_artifact_stem(
+        file_path.stem,
+        file_hash=result.file_hash,
+        suffix=file_path.suffix,
+    )
     ledger_updates = {
         "name": file_path.name,
-        "stem": file_path.stem,
+        "stem": artifact_stem,
         "raw_path": _relative_to_kb(kb_dir, result.raw_path) or f"raw/{file_path.name}",
         "source_path": _relative_to_kb(kb_dir, result.source_path) or "",
         "ingested_at": ingested_at,
@@ -268,7 +275,8 @@ def _stage_import_artifacts(
     staged_source_path: Path | None = None
 
     if result.raw_path is not None and result.raw_path.exists():
-        staged_raw_path = staged_raw_full_path(kb_dir, file_path.name, ingested_at)
+        staged_raw_name = f"{safe_artifact_stem(file_path.stem, file_hash=result.file_hash, suffix=file_path.suffix)}{file_path.suffix}"
+        staged_raw_path = staged_raw_full_path(kb_dir, staged_raw_name, ingested_at)
         staged_raw_path.parent.mkdir(parents=True, exist_ok=True)
         if result.raw_path.resolve() != staged_raw_path.resolve():
             result.raw_path.replace(staged_raw_path)
@@ -277,16 +285,21 @@ def _stage_import_artifacts(
 
     if result.source_path is not None and result.source_path.exists():
         suffix = result.source_path.suffix
-        staged_source_path = staged_source_full_path(kb_dir, file_path.stem, suffix, ingested_at)
+        artifact_stem = safe_artifact_stem(
+            result.source_path.stem,
+            file_hash=result.file_hash,
+            suffix=suffix,
+        )
+        staged_source_path = staged_source_full_path(kb_dir, artifact_stem, suffix, ingested_at)
         staged_source_path.parent.mkdir(parents=True, exist_ok=True)
         source_text = result.source_path.read_text(encoding="utf-8")
-        source_text = _rewrite_staged_source_image_refs(source_text, file_path.stem, ingested_at)
+        source_text = _rewrite_staged_source_image_refs(source_text, result.source_path.stem, ingested_at, artifact_stem=artifact_stem)
         staged_source_path.write_text(source_text, encoding="utf-8")
         if result.source_path.exists() and result.source_path.resolve() != staged_source_path.resolve():
             result.source_path.unlink()
 
-        legacy_images_dir = kb_dir / "wiki" / "sources" / "images" / file_path.stem
-        staged_images_dir = staged_source_images_full_dir(kb_dir, file_path.stem, ingested_at)
+        legacy_images_dir = kb_dir / "wiki" / "sources" / "images" / result.source_path.stem
+        staged_images_dir = staged_source_images_full_dir(kb_dir, artifact_stem, ingested_at)
         if legacy_images_dir.exists():
             staged_images_dir.parent.mkdir(parents=True, exist_ok=True)
             if staged_images_dir.exists():
@@ -313,9 +326,9 @@ def _stage_import_artifacts(
     )
 
 
-def _rewrite_staged_source_image_refs(text: str, stem: str, ingested_at: str) -> str:
+def _rewrite_staged_source_image_refs(text: str, stem: str, ingested_at: str, *, artifact_stem: str | None = None) -> str:
     date_part = datetime.fromisoformat(ingested_at.replace("Z", "+00:00")).date().isoformat()
     return text.replace(
         f"(sources/images/{stem}/",
-        f"(.openkb/sources/images/{date_part}/{stem}/",
+        f"(.openkb/sources/images/{date_part}/{artifact_stem or stem}/",
     )
