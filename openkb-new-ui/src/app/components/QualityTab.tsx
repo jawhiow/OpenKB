@@ -750,7 +750,7 @@ export function QualityTab({
                   <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                 </div>
               ) : reportFile?.content ? (
-                <div className="prose prose-slate max-w-none p-6 dark:prose-invert">
+                <div className="prose prose-slate max-w-none p-4 dark:prose-invert md:p-6 [&_code]:break-words [&_code]:whitespace-pre-wrap [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_pre]:break-words">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {reportFile.content}
                   </ReactMarkdown>

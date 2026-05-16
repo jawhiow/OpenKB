@@ -10,6 +10,7 @@ import {
   FileUp,
   FolderPlus,
   Loader2,
+  MoreHorizontal,
   RefreshCcw,
   ShieldCheck,
   Sparkles,
@@ -57,6 +58,7 @@ type SelectionState = Record<string, boolean>;
 
 type SortKey = 'name' | 'type' | 'summary_score' | 'source_state' | 'summary_state' | 'review_state' | 'promotion_state';
 type SortDir = 'asc' | 'desc';
+type RawPreviewKind = 'pdf' | 'image' | 'text' | 'unsupported';
 
 const SORT_ACCESSORS: Record<SortKey, (d: DocumentItem) => string | number> = {
   name: (d) => d.name.toLowerCase(),
@@ -113,7 +115,7 @@ export function DocumentsTab({
   onNavigateToWiki?: (path: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [stageView, setStageView] = useState<StageView>('inventory');
+  const [stageView, setStageView] = useState<StageView>('review');
   const [searchQuery, setSearchQuery] = useState('');
   const [inventoryStatusFilters, setInventoryStatusFilters] = useState<string[]>([]);
   const [inventoryDateFilter, setInventoryDateFilter] = useState('');
@@ -129,6 +131,7 @@ export function DocumentsTab({
   const [reviewNotes, setReviewNotes] = useState('');
   const [summaryScore, setSummaryScore] = useState('');
   const [detailDocument, setDetailDocument] = useState<DocumentItem | null>(null);
+  const [rawPreviewDocument, setRawPreviewDocument] = useState<DocumentItem | null>(null);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [page, setPage] = useState(1);
@@ -470,8 +473,7 @@ export function DocumentsTab({
       toast.error('Raw source missing', document.raw_path || document.name);
       return;
     }
-    const target = rawFileUrl(kbDir, document.raw_path);
-    window.open(target, '_blank', 'noopener,noreferrer');
+    setRawPreviewDocument(document);
   };
 
   const busy =
@@ -517,7 +519,7 @@ export function DocumentsTab({
 
   return (
     <Card className="relative h-full flex flex-col rounded-none border-t-0 border-b-0 border-x-0 sm:border-x sm:rounded-lg overflow-hidden min-h-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(249,247,242,0.95))] dark:bg-[linear-gradient(180deg,rgba(24,24,27,0.96),rgba(33,33,36,0.96))]">
-      <CardHeader className="border-b bg-[linear-gradient(135deg,rgba(27,52,42,0.06),rgba(186,151,91,0.12))] dark:bg-[linear-gradient(135deg,rgba(16,28,24,0.82),rgba(79,58,24,0.38))]">
+      <CardHeader className="hidden border-b bg-[linear-gradient(135deg,rgba(27,52,42,0.06),rgba(186,151,91,0.12))] dark:bg-[linear-gradient(135deg,rgba(16,28,24,0.82),rgba(79,58,24,0.38))] md:block">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <CardTitle className="text-xl">Staged Document Workbench</CardTitle>
@@ -525,7 +527,7 @@ export function DocumentsTab({
               Import into inventory first, review summaries second, promote approved documents last.
             </CardDescription>
           </div>
-          <div className="flex flex-col gap-3 xl:items-end">
+          <div className="hidden flex-col gap-3 md:flex xl:items-end">
             <div className="flex flex-wrap gap-2">
               <Input
                 placeholder="Absolute local path"
@@ -579,11 +581,17 @@ export function DocumentsTab({
           onValueChange={(value) => setStageView(value as StageView)}
           className="flex h-full flex-col"
         >
-          <div className="border-b px-6 pt-4">
-            <TabsList className="grid w-full max-w-2xl grid-cols-3 bg-muted/70 dark:bg-muted/40">
+          <div className="border-b px-2 py-2 md:px-6 md:pb-0 md:pt-4">
+            <TabsList className="grid h-9 w-full grid-cols-3 bg-muted/70 dark:bg-muted/40 md:h-10 md:max-w-2xl">
               <TabsTrigger value="inventory">Inventory</TabsTrigger>
-              <TabsTrigger value="review">Summary Review</TabsTrigger>
-              <TabsTrigger value="promotion">Promotion</TabsTrigger>
+              <TabsTrigger value="review">
+                <span className="md:hidden">Review</span>
+                <span className="hidden md:inline">Summary Review</span>
+              </TabsTrigger>
+              <TabsTrigger value="promotion">
+                <span className="md:hidden">Promo</span>
+                <span className="hidden md:inline">Promotion</span>
+              </TabsTrigger>
             </TabsList>
             {activeFilters.length > 0 ? (
               <div className="pb-3 pt-3">
@@ -593,156 +601,194 @@ export function DocumentsTab({
           </div>
 
           <TabsContent value="inventory" className="m-0 flex min-h-0 flex-1 flex-col">
-            <InventoryToolbar
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              statusFilters={inventoryStatusFilters}
-              onToggleStatusFilter={toggleInventoryStatusFilter}
-              importDate={inventoryDateFilter}
-              onImportDateChange={setInventoryDateFilter}
-              scoreFilter={scoreFilter}
-              onScoreFilterChange={setScoreFilter}
-              minScore={minScore}
-              onMinScoreChange={setMinScore}
-              maxScore={maxScore}
-              onMaxScoreChange={setMaxScore}
-              rightSlot={
-                <Button
-                  onClick={() => summarizeMutation.mutate(summarizableSelectedHashes)}
-                  disabled={!summarizableSelectedHashes.length || summarizeMutation.isPending}
-                  className="bg-[oklch(0.55_0.11_70)] text-white hover:bg-[oklch(0.5_0.11_70)]"
-                >
-                  {summarizeMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-                  Summarize Selected
-                </Button>
-              }
-            />
-            <DocumentStageTable
+            <div className="hidden min-h-0 flex-1 flex-col md:flex">
+              <InventoryToolbar
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                statusFilters={inventoryStatusFilters}
+                onToggleStatusFilter={toggleInventoryStatusFilter}
+                importDate={inventoryDateFilter}
+                onImportDateChange={setInventoryDateFilter}
+                scoreFilter={scoreFilter}
+                onScoreFilterChange={setScoreFilter}
+                minScore={minScore}
+                onMinScoreChange={setMinScore}
+                maxScore={maxScore}
+                onMaxScoreChange={setMaxScore}
+                rightSlot={
+                  <Button
+                    onClick={() => summarizeMutation.mutate(summarizableSelectedHashes)}
+                    disabled={!summarizableSelectedHashes.length || summarizeMutation.isPending}
+                    className="bg-[oklch(0.55_0.11_70)] text-white hover:bg-[oklch(0.5_0.11_70)]"
+                  >
+                    {summarizeMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                    Summarize Selected
+                  </Button>
+                }
+              />
+              <DocumentStageTable
+                documents={displayDocuments}
+                isLoading={isLoading}
+                selection={visibleSelection}
+                onToggleSelection={toggleSelection}
+                onToggleAll={toggleAll}
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                hasActiveFilters={activeFilters.length > 0}
+                onClearFilters={clearAllFilters}
+                onDelete={(selector) => deleteMutation.mutate(selector)}
+                onRetryImport={(hash) => retryImportMutation.mutate(hash)}
+                onSummarize={(hash) => summarizeMutation.mutate([hash])}
+                onApprove={(hash) =>
+                  approveMutation.mutate([hash])
+                }
+                onPromote={(hash) => promoteMutation.mutate([hash])}
+                onViewDetail={setDetailDocument}
+                onViewRaw={openRawSource}
+                showDelete
+              />
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                total={sortedDocuments.length}
+                onPageChange={setPage}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }}
+                label="documents"
+              />
+            </div>
+            <MobileDocumentQueueList
+              stage="inventory"
               documents={displayDocuments}
               isLoading={isLoading}
-              selection={visibleSelection}
-              onToggleSelection={toggleSelection}
-              onToggleAll={toggleAll}
-              sortKey={sortKey}
-              sortDir={sortDir}
-              onSort={handleSort}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
               hasActiveFilters={activeFilters.length > 0}
               onClearFilters={clearAllFilters}
-              onDelete={(selector) => deleteMutation.mutate(selector)}
-              onRetryImport={(hash) => retryImportMutation.mutate(hash)}
-              onSummarize={(hash) => summarizeMutation.mutate([hash])}
-              onApprove={(hash) =>
-                approveMutation.mutate([hash])
-              }
-              onPromote={(hash) => promoteMutation.mutate([hash])}
               onViewDetail={setDetailDocument}
-              onViewRaw={openRawSource}
-              showDelete
-            />
-            <Pagination
-              page={page}
-              pageSize={pageSize}
-              total={sortedDocuments.length}
-              onPageChange={setPage}
-              onPageSizeChange={(size) => {
-                setPageSize(size);
-                setPage(1);
-              }}
-              label="documents"
+              onPrimaryAction={(hash) => summarizeMutation.mutate([hash])}
+              primaryActionLabel="Summarize"
+              primaryActionIcon="sparkles"
+              canPrimaryAction={(document) => document.workflow_state.source_state === 'ready'}
             />
           </TabsContent>
 
           <TabsContent value="review" className="m-0 flex min-h-0 flex-1 flex-col">
-            <StageToolbar
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              filterLabel="Review state"
-              filterValue={reviewStateFilter}
-              onFilterChange={setReviewStateFilter}
-              filters={REVIEW_FILTERS}
-              scoreFilter={scoreFilter}
-              onScoreFilterChange={setScoreFilter}
-              minScore={minScore}
-              onMinScoreChange={setMinScore}
-              maxScore={maxScore}
-              onMaxScoreChange={setMaxScore}
-              rightSlot={
-                <div className="flex flex-wrap items-center gap-2">
-                  <Input
-                    placeholder="Reviewer"
-                    value={approvedBy}
-                    onChange={(event) => setApprovedBy(event.target.value)}
-                    className="w-36 bg-background dark:bg-input/30"
-                  />
-                  <Input
-                    placeholder="Score"
-                    value={summaryScore}
-                    onChange={(event) => setSummaryScore(event.target.value)}
-                    className="w-24 bg-background dark:bg-input/30"
-                  />
-                  <Input
-                    placeholder="Review notes"
-                    value={reviewNotes}
-                    onChange={(event) => setReviewNotes(event.target.value)}
-                    className="w-48 bg-background dark:bg-input/30"
-                  />
-                  <Button
-                    onClick={() => approveMutation.mutate(selectedHashes)}
-                    disabled={!selectedHashes.length || approveMutation.isPending}
-                    className="bg-[oklch(0.43_0.11_155)] text-white hover:bg-[oklch(0.38_0.11_155)]"
-                  >
-                    <ShieldCheck className="mr-2 h-4 w-4" />
-                    Approve
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={() => holdMutation.mutate(selectedHashes)}
-                    disabled={!selectedHashes.length || holdMutation.isPending}
-                  >
-                    Hold
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    onClick={() => rejectMutation.mutate(selectedHashes)}
-                    disabled={!selectedHashes.length || rejectMutation.isPending}
-                  >
-                    Reject
-                  </Button>
-                </div>
-              }
-            />
-            <DocumentStageTable
+            <div className="hidden md:block">
+              <StageToolbar
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                filterLabel="Review state"
+                filterValue={reviewStateFilter}
+                onFilterChange={setReviewStateFilter}
+                filters={REVIEW_FILTERS}
+                scoreFilter={scoreFilter}
+                onScoreFilterChange={setScoreFilter}
+                minScore={minScore}
+                onMinScoreChange={setMinScore}
+                maxScore={maxScore}
+                onMaxScoreChange={setMaxScore}
+                rightSlot={
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      placeholder="Reviewer"
+                      value={approvedBy}
+                      onChange={(event) => setApprovedBy(event.target.value)}
+                      className="w-36 bg-background dark:bg-input/30"
+                    />
+                    <Input
+                      placeholder="Score"
+                      value={summaryScore}
+                      onChange={(event) => setSummaryScore(event.target.value)}
+                      className="w-24 bg-background dark:bg-input/30"
+                    />
+                    <Input
+                      placeholder="Review notes"
+                      value={reviewNotes}
+                      onChange={(event) => setReviewNotes(event.target.value)}
+                      className="w-48 bg-background dark:bg-input/30"
+                    />
+                    <Button
+                      onClick={() => approveMutation.mutate(selectedHashes)}
+                      disabled={!selectedHashes.length || approveMutation.isPending}
+                      className="bg-[oklch(0.43_0.11_155)] text-white hover:bg-[oklch(0.38_0.11_155)]"
+                    >
+                      <ShieldCheck className="mr-2 h-4 w-4" />
+                      Approve
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => holdMutation.mutate(selectedHashes)}
+                      disabled={!selectedHashes.length || holdMutation.isPending}
+                    >
+                      Hold
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={() => rejectMutation.mutate(selectedHashes)}
+                      disabled={!selectedHashes.length || rejectMutation.isPending}
+                    >
+                      Reject
+                    </Button>
+                  </div>
+                }
+              />
+            </div>
+            <MobileDocumentReviewList
               documents={displayDocuments}
               isLoading={isLoading}
               selection={visibleSelection}
               onToggleSelection={toggleSelection}
-              onToggleAll={toggleAll}
-              sortKey={sortKey}
-              sortDir={sortDir}
-              onSort={handleSort}
-              hasActiveFilters={activeFilters.length > 0}
-              onClearFilters={clearAllFilters}
               onApprove={(hash) => approveMutation.mutate([hash])}
               onHold={(hash) => holdMutation.mutate([hash])}
               onReject={(hash) => rejectMutation.mutate([hash])}
               onViewDetail={setDetailDocument}
-              inlineScorecard
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              reviewStateFilter={reviewStateFilter}
+              onReviewStateFilterChange={setReviewStateFilter}
+              hasActiveFilters={activeFilters.length > 0}
+              onClearFilters={clearAllFilters}
             />
-            <Pagination
-              page={page}
-              pageSize={pageSize}
-              total={sortedDocuments.length}
-              onPageChange={setPage}
-              onPageSizeChange={(size) => {
-                setPageSize(size);
-                setPage(1);
-              }}
-              label="documents"
-            />
+            <div className="hidden min-h-0 flex-1 flex-col md:flex">
+              <DocumentStageTable
+                documents={displayDocuments}
+                isLoading={isLoading}
+                selection={visibleSelection}
+                onToggleSelection={toggleSelection}
+                onToggleAll={toggleAll}
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                hasActiveFilters={activeFilters.length > 0}
+                onClearFilters={clearAllFilters}
+                onApprove={(hash) => approveMutation.mutate([hash])}
+                onHold={(hash) => holdMutation.mutate([hash])}
+                onReject={(hash) => rejectMutation.mutate([hash])}
+                onViewDetail={setDetailDocument}
+                inlineScorecard
+              />
+            </div>
+            <div className="hidden md:block">
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                total={sortedDocuments.length}
+                onPageChange={setPage}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }}
+                label="documents"
+              />
+            </div>
           </TabsContent>
 
           <TabsContent value="promotion" className="m-0 flex min-h-0 flex-1 flex-col">
-            <div className="border-b bg-amber-100/40 px-6 py-4 dark:bg-amber-500/10">
+            <div className="hidden border-b bg-amber-100/40 px-6 py-4 dark:bg-amber-500/10 md:block">
               <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex flex-1 flex-wrap items-center gap-2">
                   <Input
@@ -784,30 +830,46 @@ export function DocumentsTab({
                 </Button>
               </div>
             </div>
-            <DocumentStageTable
+            <div className="hidden min-h-0 flex-1 flex-col md:flex">
+              <DocumentStageTable
+                documents={displayDocuments}
+                isLoading={isLoading}
+                selection={visibleSelection}
+                onToggleSelection={toggleSelection}
+                onToggleAll={toggleAll}
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={handleSort}
+                hasActiveFilters={activeFilters.length > 0}
+                onClearFilters={clearAllFilters}
+                onPromote={(hash) => promoteMutation.mutate([hash])}
+                onViewDetail={setDetailDocument}
+              />
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                total={sortedDocuments.length}
+                onPageChange={setPage}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }}
+                label="documents"
+              />
+            </div>
+            <MobileDocumentQueueList
+              stage="promotion"
               documents={displayDocuments}
               isLoading={isLoading}
-              selection={visibleSelection}
-              onToggleSelection={toggleSelection}
-              onToggleAll={toggleAll}
-              sortKey={sortKey}
-              sortDir={sortDir}
-              onSort={handleSort}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
               hasActiveFilters={activeFilters.length > 0}
               onClearFilters={clearAllFilters}
-              onPromote={(hash) => promoteMutation.mutate([hash])}
               onViewDetail={setDetailDocument}
-            />
-            <Pagination
-              page={page}
-              pageSize={pageSize}
-              total={sortedDocuments.length}
-              onPageChange={setPage}
-              onPageSizeChange={(size) => {
-                setPageSize(size);
-                setPage(1);
-              }}
-              label="documents"
+              onPrimaryAction={(hash) => promoteMutation.mutate([hash])}
+              primaryActionLabel="Promote"
+              primaryActionIcon="check"
+              canPrimaryAction={(document) => document.workflow_state.review_state === 'approved'}
             />
           </TabsContent>
         </Tabs>
@@ -819,7 +881,7 @@ export function DocumentsTab({
         </div>
       ) : null}
 
-      <BatchBar count={selectedHashes.length} onClear={() => setSelection({})} itemLabel="documents selected">
+      <BatchBar count={selectedHashes.length} onClear={() => setSelection({})} itemLabel="documents selected" className="bottom-20 md:bottom-4">
         {stageView === 'inventory' && (
           <Button
             size="sm"
@@ -879,6 +941,11 @@ export function DocumentsTab({
           onNavigateToWiki?.(path);
         }}
         onOpenRawSource={openRawSource}
+      />
+      <RawSourcePreviewDialog
+        document={rawPreviewDocument}
+        kbDir={kbDir}
+        onOpenChange={(open) => !open && setRawPreviewDocument(null)}
       />
     </Card>
   );
@@ -1078,6 +1145,304 @@ function InventoryToolbar({
   );
 }
 
+function MobileDocumentReviewList({
+  documents,
+  isLoading,
+  selection,
+  onToggleSelection,
+  onApprove,
+  onHold,
+  onReject,
+  onViewDetail,
+  searchQuery,
+  onSearchChange,
+  reviewStateFilter,
+  onReviewStateFilterChange,
+  hasActiveFilters,
+  onClearFilters,
+}: {
+  documents: DocumentItem[];
+  isLoading: boolean;
+  selection: SelectionState;
+  onToggleSelection: (hash: string) => void;
+  onApprove: (hash: string) => void;
+  onHold: (hash: string) => void;
+  onReject: (hash: string) => void;
+  onViewDetail: (document: DocumentItem) => void;
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  reviewStateFilter: string;
+  onReviewStateFilterChange: (value: string) => void;
+  hasActiveFilters: boolean;
+  onClearFilters: () => void;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col md:hidden">
+      <div className="shrink-0 border-b bg-muted/20 px-1.5 py-1.5 dark:bg-muted/10">
+        <Input
+          placeholder="Search review queue"
+          value={searchQuery}
+          onChange={(event) => onSearchChange(event.target.value)}
+          className="h-8 bg-background dark:bg-input/30 text-sm"
+        />
+        <div className="mt-1.5 grid grid-cols-3 gap-1 rounded-lg bg-muted/90 p-0.5 dark:bg-muted/40">
+          {REVIEW_FILTERS.map((filter) => {
+            const active = filter.value === reviewStateFilter;
+            return (
+              <button
+                key={filter.value}
+                type="button"
+                onClick={() => onReviewStateFilterChange(filter.value)}
+                className={`h-7 rounded-md px-1.5 text-[10px] font-bold transition-colors ${
+                  active
+                    ? 'bg-background text-primary shadow-sm'
+                    : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'
+                }`}
+                aria-pressed={active}
+              >
+                {filter.label.replace('Needs review', 'Review')}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-1.5 py-1.5">
+        {isLoading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <div key={index} className="h-44 animate-pulse rounded-xl border bg-muted/30" />
+            ))}
+          </div>
+        ) : documents.length === 0 ? (
+          <div className="flex min-h-[36vh] flex-col items-center justify-center gap-3 rounded-xl border border-dashed bg-background/70 px-5 text-center">
+            <AlertCircle className="h-7 w-7 text-muted-foreground" />
+            <div>
+              <p className="font-semibold">No documents to review</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {hasActiveFilters ? 'Clear filters or widen the search.' : 'Reviewed summaries will appear here when ready.'}
+              </p>
+            </div>
+            {hasActiveFilters ? (
+              <Button type="button" size="sm" variant="outline" onClick={onClearFilters}>
+                Clear filters
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <div className="space-y-1.5 pb-2">
+            {documents.map((document) => (
+              <MobileReviewCard
+                key={document.hash}
+                document={document}
+                selected={!!selection[document.hash]}
+                onToggleSelection={() => onToggleSelection(document.hash)}
+                onApprove={() => onApprove(document.hash)}
+                onHold={() => onHold(document.hash)}
+                onReject={() => onReject(document.hash)}
+                onViewDetail={() => onViewDetail(document)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MobileDocumentQueueList({
+  stage,
+  documents,
+  isLoading,
+  searchQuery,
+  onSearchChange,
+  hasActiveFilters,
+  onClearFilters,
+  onViewDetail,
+  onPrimaryAction,
+  primaryActionLabel,
+  primaryActionIcon,
+  canPrimaryAction,
+}: {
+  stage: 'inventory' | 'promotion';
+  documents: DocumentItem[];
+  isLoading: boolean;
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  hasActiveFilters: boolean;
+  onClearFilters: () => void;
+  onViewDetail: (document: DocumentItem) => void;
+  onPrimaryAction: (hash: string) => void;
+  primaryActionLabel: string;
+  primaryActionIcon: 'sparkles' | 'check';
+  canPrimaryAction: (document: DocumentItem) => boolean;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col md:hidden">
+      <div className="shrink-0 border-b bg-muted/20 px-3 py-3 dark:bg-muted/10">
+        <Input
+          placeholder={stage === 'inventory' ? 'Search inventory' : 'Search approved documents'}
+          value={searchQuery}
+          onChange={(event) => onSearchChange(event.target.value)}
+          className="h-10 bg-background dark:bg-input/30"
+        />
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-3">
+        {isLoading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <div key={index} className="h-36 animate-pulse rounded-xl border bg-muted/30" />
+            ))}
+          </div>
+        ) : documents.length === 0 ? (
+          <div className="flex min-h-[45vh] flex-col items-center justify-center gap-3 rounded-xl border border-dashed bg-background/70 px-5 text-center">
+            <AlertCircle className="h-7 w-7 text-muted-foreground" />
+            <div>
+              <p className="font-semibold">No matching documents</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {hasActiveFilters ? 'Clear filters or widen the search.' : 'Documents will appear here when available.'}
+              </p>
+            </div>
+            {hasActiveFilters ? (
+              <Button type="button" size="sm" variant="outline" onClick={onClearFilters}>
+                Clear filters
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <div className="space-y-3 pb-6">
+            {documents.map((document) => {
+              const primaryEnabled = canPrimaryAction(document);
+              return (
+                <article key={document.hash} className="rounded-xl border bg-background/90 p-3 shadow-sm dark:bg-card/60">
+                  <button type="button" onClick={() => onViewDetail(document)} className="w-full text-left">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-foreground">{document.name}</h3>
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <StatusPill value={document.workflow_state.source_state} label="source" />
+                          <StatusPill value={document.workflow_state.review_state} label="review" />
+                          {document.review.summary_score !== null ? (
+                            <span className="rounded-full border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                              Score {document.review.summary_score}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                      <MoreHorizontal className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] text-muted-foreground">
+                      <div className="truncate rounded-lg bg-muted/30 px-2 py-1">{document.type || document.source_kind || 'source'}</div>
+                      <div className="truncate rounded-lg bg-muted/30 px-2 py-1 text-right">{document.pages ? `${document.pages} pages` : `${document.related_count} related`}</div>
+                    </div>
+                  </button>
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => onViewDetail(document)}>
+                      <Eye className="h-3.5 w-3.5" />
+                      View
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => onPrimaryAction(document.hash)}
+                      disabled={!primaryEnabled}
+                      className={primaryActionIcon === 'check' ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-amber-600 text-white hover:bg-amber-700'}
+                    >
+                      {primaryActionIcon === 'check' ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      {primaryActionLabel}
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MobileReviewCard({
+  document,
+  selected,
+  onToggleSelection,
+  onApprove,
+  onHold,
+  onReject,
+  onViewDetail,
+}: {
+  document: DocumentItem;
+  selected: boolean;
+  onToggleSelection: () => void;
+  onApprove: () => void;
+  onHold: () => void;
+  onReject: () => void;
+  onViewDetail: () => void;
+}) {
+  const score = document.review.summary_score;
+  const assessment = document.review.summary_scorecard?.overall_assessment || document.review.review_notes || '';
+
+  return (
+    <article className="rounded-xl border bg-background/90 p-3 shadow-sm dark:bg-card/60">
+      <div className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggleSelection}
+          aria-label={`Select ${document.name}`}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+        />
+        <button type="button" onClick={onViewDetail} className="min-w-0 flex-1 text-left">
+          <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-foreground">{document.name}</h3>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <StatusPill value={document.workflow_state.review_state} />
+            <StatusPill value={document.workflow_state.summary_state} label="summary" />
+            <span className="rounded-full border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              {score === null ? 'No score' : `Score ${score}`}
+            </span>
+          </div>
+        </button>
+        <Button type="button" variant="ghost" size="icon-sm" onClick={onViewDetail} aria-label="Open document detail">
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <button type="button" onClick={onViewDetail} className="mt-2.5 w-full text-left">
+        {assessment ? (
+          <p className="line-clamp-3 text-xs leading-snug text-muted-foreground">{assessment}</p>
+        ) : (
+          <p className="text-xs italic text-muted-foreground">Open detail to inspect the staged summary and related pages.</p>
+        )}
+        <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] text-muted-foreground">
+          <div className="truncate rounded-lg bg-muted/30 px-2 py-1">{document.type || document.source_kind || 'source'}</div>
+          <div className="truncate rounded-lg bg-muted/30 px-2 py-1 text-right">{document.related_count} related</div>
+        </div>
+      </button>
+
+      <div className="mt-2.5 grid grid-cols-[1fr_1fr_auto] gap-1.5">
+        <Button type="button" size="sm" onClick={onApprove} className="bg-emerald-600 text-white hover:bg-emerald-700">
+          <ShieldCheck className="h-3.5 w-3.5" />
+          Approve
+        </Button>
+        <Button type="button" size="sm" variant="secondary" onClick={onHold}>
+          Hold
+        </Button>
+        <Button type="button" size="icon-sm" variant="ghost" onClick={onReject} aria-label="Reject document" title="Reject">
+          <Trash2 className="h-4 w-4 text-red-600 dark:text-red-300" />
+        </Button>
+      </div>
+    </article>
+  );
+}
+
+function StatusPill({ value, label }: { value: string; label?: string }) {
+  return (
+    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${toneClass(value)}`}>
+      {label ? `${label}: ${value}` : value}
+    </span>
+  );
+}
+
 function DocumentStageTable({
   documents,
   isLoading,
@@ -1189,7 +1554,7 @@ function DocumentStageTable({
                     </TableCell>
                     <TableCell className="max-w-[280px] whitespace-normal">
                       <div className="font-medium">{document.name}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">{document.raw_path || document.stem}</div>
+                      <div className="mt-1 break-words text-xs text-muted-foreground">{document.raw_path || document.stem}</div>
                     </TableCell>
                     <TableCell className="w-[120px] whitespace-normal text-xs">
                       {document.review.summary_score !== null ? (
@@ -1436,17 +1801,17 @@ function DocumentDetailDialog({
 
   return (
     <Dialog open={!!document} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] !w-[min(96vw,64rem)] !max-w-none overflow-y-auto sm:!max-w-none">
-        <DialogHeader>
-          <DialogTitle>{document?.name || 'Document detail'}</DialogTitle>
+      <DialogContent className="!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 h-dvh !w-screen !max-w-none overflow-y-auto overflow-x-hidden rounded-none border-0 p-4 sm:!left-1/2 sm:!top-1/2 sm:h-auto sm:max-h-[85vh] sm:!w-[min(96vw,64rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border sm:p-6">
+        <DialogHeader className="pr-8 text-left">
+          <DialogTitle className="break-all leading-snug">{document?.name || 'Document detail'}</DialogTitle>
           <DialogDescription>
             Workflow state, review metadata, and source references for the selected document.
           </DialogDescription>
         </DialogHeader>
 
         {document ? (
-          <div className="space-y-4">
-            <div className="grid gap-4 lg:grid-cols-2">
+          <div className="min-w-0 space-y-3 overflow-x-hidden sm:space-y-4">
+            <div className="grid min-w-0 gap-3 md:grid-cols-2 sm:gap-4">
               <DetailBlock
                 title="Identity"
                 lines={[
@@ -1491,42 +1856,42 @@ function DocumentDetailDialog({
             </div>
 
             {document.raw_exists && document.raw_path ? (
-              <div className="rounded-xl border bg-muted/30 p-4">
+              <div className="min-w-0 overflow-hidden rounded-xl border bg-muted/30 p-4">
                 <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                   Raw Source
                 </div>
                 <button
                   type="button"
-                  className="group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted/70"
+                  className="group flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted/70"
                   onClick={() => onOpenRawSource?.(document)}
                   disabled={!onOpenRawSource}
                   title={document.raw_path}
                 >
                   <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-50 group-hover:opacity-100" />
-                  <span className="min-w-0">
+                  <span className="min-w-0 flex-1 overflow-hidden">
                     <div className="font-medium">Open raw source file</div>
-                    <div className="truncate text-xs text-muted-foreground">{document.raw_path}</div>
+                    <div className="break-all text-xs text-muted-foreground">{document.raw_path}</div>
                   </span>
                 </button>
               </div>
             ) : null}
 
             {document.review_summary_exists && document.review_summary_path ? (
-              <div className="rounded-xl border bg-muted/30 p-4">
+              <div className="min-w-0 overflow-hidden rounded-xl border bg-muted/30 p-4">
                 <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                   Review Summary
                 </div>
                 <button
                   type="button"
-                  className="group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted/70"
+                  className="group flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-muted/70"
                   onClick={() => onNavigateToWiki?.(document.review_summary_path!)}
                   disabled={!onNavigateToWiki}
                   title={document.review_summary_path}
                 >
                   <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 opacity-50 group-hover:opacity-100" />
-                  <span className="min-w-0">
+                  <span className="min-w-0 flex-1 overflow-hidden">
                     <div className="font-medium">Open staged review summary</div>
-                    <div className="truncate text-xs text-muted-foreground">{document.review_summary_path}</div>
+                    <div className="break-all text-xs text-muted-foreground">{document.review_summary_path}</div>
                   </span>
                 </button>
               </div>
@@ -1552,6 +1917,127 @@ function DocumentDetailDialog({
   );
 }
 
+function RawSourcePreviewDialog({
+  document,
+  kbDir,
+  onOpenChange,
+}: {
+  document: DocumentItem | null;
+  kbDir: string;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const fileUrl = document?.raw_path ? rawFileUrl(kbDir, document.raw_path) : '';
+  const previewKind = document?.raw_path ? rawPreviewKind(document.raw_path) : 'unsupported';
+
+  return (
+    <Dialog open={!!document} onOpenChange={onOpenChange}>
+      <DialogContent className="!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 flex h-dvh !w-screen !max-w-none flex-col overflow-hidden rounded-none border-0 p-0 sm:!left-1/2 sm:!top-1/2 sm:h-[min(88vh,56rem)] sm:!w-[min(96vw,72rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border">
+        <DialogHeader className="shrink-0 border-b px-4 py-3 pr-12 text-left sm:px-5">
+          <DialogTitle className="break-all text-base leading-snug">
+            {document?.name || 'Raw source preview'}
+          </DialogTitle>
+          <DialogDescription className="break-all text-xs">
+            {document?.raw_path || 'Source file'}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="min-h-0 flex-1 overflow-hidden bg-background">
+          {document && fileUrl ? (
+            <RawSourcePreviewBody kind={previewKind} url={fileUrl} path={document.raw_path} />
+          ) : null}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RawSourcePreviewBody({
+  kind,
+  url,
+  path,
+}: {
+  kind: RawPreviewKind;
+  url: string;
+  path: string;
+}) {
+  const textPreviewQuery = useQuery({
+    queryKey: ['raw-preview-text', url],
+    queryFn: async () => {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.text();
+    },
+    enabled: kind === 'text',
+    staleTime: 60_000,
+  });
+
+  if (kind === 'pdf') {
+    return (
+      <iframe
+        src={url}
+        title={path}
+        className="h-full w-full border-0 bg-muted"
+      />
+    );
+  }
+
+  if (kind === 'image') {
+    return (
+      <div className="flex h-full w-full items-center justify-center overflow-auto bg-muted/30 p-3">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={url} alt={path} className="max-h-full max-w-full object-contain" />
+      </div>
+    );
+  }
+
+  if (kind === 'text') {
+    if (textPreviewQuery.isPending) {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          Loading preview
+        </div>
+      );
+    }
+
+    if (textPreviewQuery.isError) {
+      return (
+        <UnsupportedRawPreview
+          title="Preview failed"
+          description={`Could not load this source file: ${errorMessage(textPreviewQuery.error) ?? 'unknown error'}`}
+        />
+      );
+    }
+
+    return (
+      <pre className="h-full overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-xs leading-relaxed sm:p-5 sm:text-sm">
+        {textPreviewQuery.data || ' '}
+      </pre>
+    );
+  }
+
+  return (
+    <UnsupportedRawPreview
+      title="Preview unavailable"
+      description="This file type cannot be previewed in the browser yet."
+    />
+  );
+}
+
+function UnsupportedRawPreview({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="flex h-full items-center justify-center p-6 text-center">
+      <div className="max-w-sm">
+        <AlertCircle className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
+        <div className="text-sm font-medium">{title}</div>
+        <div className="mt-1 text-sm text-muted-foreground">{description}</div>
+      </div>
+    </div>
+  );
+}
+
 function RelatedPagesPanel({
   groups,
   onNavigate,
@@ -1569,7 +2055,7 @@ function RelatedPagesPanel({
     );
   }
   return (
-    <div className="rounded-xl border bg-muted/30 p-4">
+    <div className="min-w-0 overflow-hidden rounded-xl border bg-muted/30 p-4">
       <div className="mb-3 flex items-center justify-between">
         <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
           Related Wiki Pages
@@ -1589,15 +2075,15 @@ function RelatedPagesPanel({
                   <li key={entry.path}>
                     <button
                       type="button"
-                      className="group w-full rounded-md px-2 py-1 text-left text-xs hover:bg-muted/70 transition-colors flex items-start gap-1.5"
+                      className="group flex w-full min-w-0 items-start gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors hover:bg-muted/70"
                       onClick={() => onNavigate?.(entry.path)}
                       disabled={!onNavigate}
                       title={entry.path}
                     >
                       <ExternalLink className="h-3 w-3 mt-0.5 shrink-0 opacity-50 group-hover:opacity-100" />
                       <span className="flex-1 min-w-0">
-                        <div className="truncate font-medium">{entry.title || entry.page}</div>
-                        <div className="truncate text-[10px] text-muted-foreground">{entry.path}</div>
+                        <div className="break-all font-medium">{entry.title || entry.page}</div>
+                        <div className="break-all text-[10px] text-muted-foreground">{entry.path}</div>
                       </span>
                       {entry.shared && (
                         <span className="text-[9px] uppercase tracking-wider text-amber-600 dark:text-amber-400 shrink-0">
@@ -1618,13 +2104,13 @@ function RelatedPagesPanel({
 
 function DetailBlock({ title, lines }: { title: string; lines: string[] }) {
   return (
-    <div className="rounded-xl border bg-muted/30 p-4">
+    <div className="min-w-0 overflow-hidden rounded-xl border bg-muted/30 p-4">
       <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
         {title}
       </div>
       <div className="space-y-2 text-sm">
         {lines.map((line) => (
-          <div key={line} className="break-words">
+          <div key={line} className="min-w-0 break-all">
             {line}
           </div>
         ))}
@@ -1636,7 +2122,7 @@ function DetailBlock({ title, lines }: { title: string; lines: string[] }) {
 function SummaryScorecardPanel({ scorecard }: { scorecard: NonNullable<DocumentItem['review']['summary_scorecard']> }) {
   const dimensions = Object.entries(scorecard.dimensions);
   return (
-    <div className="rounded-xl border bg-muted/30 p-4">
+    <div className="min-w-0 overflow-hidden rounded-xl border bg-muted/30 p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
@@ -1662,7 +2148,7 @@ function SummaryScorecardPanel({ scorecard }: { scorecard: NonNullable<DocumentI
               </div>
             </div>
             {dimension.reason ? (
-              <div className="mt-1 text-xs text-muted-foreground">{dimension.reason}</div>
+              <div className="mt-1 break-words text-xs text-muted-foreground">{dimension.reason}</div>
             ) : null}
           </div>
         ))}
@@ -1699,7 +2185,7 @@ function CompactSummaryScorecard({ scorecard }: { scorecard: NonNullable<Documen
               </div>
             </div>
             {dimension.reason ? (
-              <div className="mt-1 text-[11px] text-muted-foreground">{dimension.reason}</div>
+              <div className="mt-1 break-words text-[11px] text-muted-foreground">{dimension.reason}</div>
             ) : null}
           </div>
         ))}
@@ -1779,6 +2265,41 @@ function canRetryImport(document: DocumentItem): boolean {
     !!document.raw_path &&
     (document.workflow_state.source_state === 'failed' || document.workflow_state.ocr_state === 'failed')
   );
+}
+
+function rawPreviewKind(path: string): RawPreviewKind {
+  const cleanPath = path.split(/[?#]/, 1)[0]?.toLowerCase() ?? '';
+  const extension = cleanPath.includes('.') ? cleanPath.slice(cleanPath.lastIndexOf('.') + 1) : '';
+  if (extension === 'pdf') return 'pdf';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(extension)) return 'image';
+  if ([
+    'txt',
+    'md',
+    'markdown',
+    'csv',
+    'tsv',
+    'json',
+    'jsonl',
+    'yaml',
+    'yml',
+    'xml',
+    'html',
+    'htm',
+    'log',
+    'py',
+    'js',
+    'jsx',
+    'ts',
+    'tsx',
+    'css',
+    'scss',
+    'toml',
+    'ini',
+    'cfg',
+  ].includes(extension)) {
+    return 'text';
+  }
+  return 'unsupported';
 }
 
 function errorMessage(error: unknown): string | undefined {

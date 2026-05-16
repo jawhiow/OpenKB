@@ -23,7 +23,7 @@ from openkb.config import (
     save_config,
 )
 from openkb.llm_runtime import model_prefers_responses_api
-from openkb.kb_git import commit_kb_changes, ensure_kb_git
+from openkb.kb_git import commit_kb_changes, commit_kb_paths, ensure_kb_git
 from openkb.model_pool import model_pool_config
 from openkb.schema import AGENTS_MD, LEGACY_WIKI_DIRS
 from openkb.source_relations import (
@@ -1180,7 +1180,7 @@ def save_model_pool_profile(kb_dir: Path, payload: dict[str, Any], profile_id: s
     active_id = _configured_active_profile_id(profiles, active_id)
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)
-    commit_kb_changes(kb_dir, f"Update model pool profile {target['id']}")
+    commit_kb_paths(kb_dir, f"Update model pool profile {target['id']}", (".openkb/config.yaml",))
     return {"config": get_config_data(kb_dir), "model_pool": get_model_pool_data(kb_dir)}
 
 
@@ -1206,7 +1206,7 @@ def delete_model_pool_profile(kb_dir: Path, profile_id: str) -> dict[str, Any]:
             if str(route_key).startswith(f"{profile_id}:"):
                 status["routes"].pop(route_key, None)
     _save_model_pool_status(kb_dir, status)
-    commit_kb_changes(kb_dir, f"Delete model pool profile {profile_id}")
+    commit_kb_paths(kb_dir, f"Delete model pool profile {profile_id}", (".openkb/config.yaml",))
     return {"config": get_config_data(kb_dir), "model_pool": get_model_pool_data(kb_dir)}
 
 
@@ -2125,7 +2125,7 @@ def update_config_data(kb_dir: Path, updates: dict[str, Any]) -> dict[str, Any]:
     active_id = _enabled_active_profile_id(profiles, active_id)
     _persist_profiles(config, profiles, active_id)
     save_config(config_path, config)
-    commit_kb_changes(kb_dir, "Update knowledge base config")
+    commit_kb_paths(kb_dir, "Update knowledge base config", (".openkb/config.yaml",))
     return get_config_data(kb_dir)
 
 

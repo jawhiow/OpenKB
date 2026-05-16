@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,9 @@ _UNCACHED_PATHS = (
     ".openkb/model-pool/status.json",
 )
 
+_KB_GIT_LOCKS: dict[Path, threading.RLock] = {}
+_KB_GIT_LOCKS_LOCK = threading.Lock()
+
 
 @dataclass(frozen=True)
 class KbGitResult:
@@ -48,6 +52,16 @@ def _run_git(kb_dir: Path, *args: str, check: bool = True) -> subprocess.Complet
         errors="replace",
         capture_output=True,
     )
+
+
+def _kb_git_lock(kb_dir: Path) -> threading.RLock:
+    key = Path(kb_dir).resolve()
+    with _KB_GIT_LOCKS_LOCK:
+        lock = _KB_GIT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _KB_GIT_LOCKS[key] = lock
+        return lock
 
 
 def _git_available(kb_dir: Path) -> bool:
@@ -96,17 +110,26 @@ def _untrack_protected_paths(kb_dir: Path) -> None:
             _run_git(kb_dir, "rm", "-r", "--cached", "--quiet", "--", pathspec, check=False)
 
 
-def _stage_and_commit(kb_dir: Path, message: str) -> KbGitResult:
+def _stage_and_commit(kb_dir: Path, message: str, pathspecs: tuple[str, ...] | None = None) -> KbGitResult:
     _ensure_gitignore(kb_dir)
     _untrack_protected_paths(kb_dir)
-    _run_git(kb_dir, "add", "-A", "--", ".")
-    has_changes = _run_git(kb_dir, "diff", "--cached", "--quiet", check=False).returncode != 0
+    if pathspecs:
+        commit_pathspecs = (".gitignore", *pathspecs)
+        _run_git(kb_dir, "add", "--", *commit_pathspecs)
+        has_changes = _run_git(kb_dir, "diff", "--cached", "--quiet", "--", *commit_pathspecs, check=False).returncode != 0
+    else:
+        commit_pathspecs = ()
+        _run_git(kb_dir, "add", "-A", "--", ".")
+        has_changes = _run_git(kb_dir, "diff", "--cached", "--quiet", check=False).returncode != 0
     if not has_changes:
         return KbGitResult(git_available=True, committed=False, skipped_reason="no_changes")
 
     _ensure_commit_identity(kb_dir)
     clean_message = " ".join((message or "Update knowledge base").split())
-    _run_git(kb_dir, "commit", "-m", clean_message)
+    if commit_pathspecs:
+        _run_git(kb_dir, "commit", "-m", clean_message, "--", *commit_pathspecs)
+    else:
+        _run_git(kb_dir, "commit", "-m", clean_message)
     commit_hash = _run_git(kb_dir, "rev-parse", "--short", "HEAD").stdout.strip()
     return KbGitResult(
         git_available=True,
@@ -119,24 +142,37 @@ def _stage_and_commit(kb_dir: Path, message: str) -> KbGitResult:
 def ensure_kb_git(kb_dir: Path, *, initial_commit_message: str | None = None) -> KbGitResult:
     """Ensure *kb_dir* is its own Git repository with OpenKB runtime ignores."""
     kb_dir = Path(kb_dir).resolve()
-    kb_dir.mkdir(parents=True, exist_ok=True)
-    if not _git_available(kb_dir):
-        return KbGitResult(git_available=False, skipped_reason="git_unavailable")
+    with _kb_git_lock(kb_dir):
+        kb_dir.mkdir(parents=True, exist_ok=True)
+        if not _git_available(kb_dir):
+            return KbGitResult(git_available=False, skipped_reason="git_unavailable")
 
-    if not _has_own_git_dir(kb_dir):
-        _run_git(kb_dir, "init")
-    _ensure_gitignore(kb_dir)
-    _untrack_protected_paths(kb_dir)
+        if not _has_own_git_dir(kb_dir):
+            _run_git(kb_dir, "init")
+        _ensure_gitignore(kb_dir)
+        _untrack_protected_paths(kb_dir)
 
-    if initial_commit_message:
-        return _stage_and_commit(kb_dir, initial_commit_message)
-    return KbGitResult(git_available=True, committed=False)
+        if initial_commit_message:
+            return _stage_and_commit(kb_dir, initial_commit_message)
+        return KbGitResult(git_available=True, committed=False)
 
 
 def commit_kb_changes(kb_dir: Path, message: str) -> KbGitResult:
     """Commit current KB changes when there is anything stageable to record."""
     kb_dir = Path(kb_dir).resolve()
-    if not _git_available(kb_dir):
-        return KbGitResult(git_available=False, skipped_reason="git_unavailable")
-    ensure_kb_git(kb_dir)
-    return _stage_and_commit(kb_dir, message)
+    with _kb_git_lock(kb_dir):
+        if not _git_available(kb_dir):
+            return KbGitResult(git_available=False, skipped_reason="git_unavailable")
+        ensure_kb_git(kb_dir)
+        return _stage_and_commit(kb_dir, message)
+
+
+def commit_kb_paths(kb_dir: Path, message: str, paths: tuple[str, ...] | list[str]) -> KbGitResult:
+    """Commit only selected KB-relative paths, leaving concurrent generated files alone."""
+    kb_dir = Path(kb_dir).resolve()
+    with _kb_git_lock(kb_dir):
+        if not _git_available(kb_dir):
+            return KbGitResult(git_available=False, skipped_reason="git_unavailable")
+        ensure_kb_git(kb_dir)
+        pathspecs = tuple(str(path).replace("\\", "/").lstrip("/") for path in paths if str(path).strip())
+        return _stage_and_commit(kb_dir, message, pathspecs=pathspecs)

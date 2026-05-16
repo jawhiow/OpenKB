@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import webbrowser
+import zipfile
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -371,6 +372,45 @@ def _probe_model_pool_profile(target_kb: Path, profile_id: str, *, probe_source:
     )
 
 
+def _collect_supported_input_files(source: Path, supported_extensions: set[str], job) -> list[Path]:
+    if not source.exists():
+        raise FileNotFoundError(f"Path does not exist: {source}")
+    if source.is_dir():
+        job.add_log(f"Scanning folder: {source}")
+        unsupported = [
+            p
+            for p in sorted(source.rglob("*"))
+            if p.is_file() and p.suffix.lower() not in supported_extensions
+        ]
+        if unsupported:
+            job.add_log(f"Skipped {len(unsupported)} unsupported file(s)")
+        files = [
+            p
+            for p in sorted(source.rglob("*"))
+            if p.is_file() and p.suffix.lower() in supported_extensions
+        ]
+        if not files:
+            raise ValueError(f"No supported files found in {source}.")
+        return files
+
+    suffix = source.suffix.lower()
+    if suffix not in supported_extensions:
+        supported = ", ".join(sorted(supported_extensions))
+        raise ValueError(f"Unsupported file type: {suffix or '(none)'}. Supported: {supported}")
+    return [source]
+
+
+def _safe_extract_zip(source: Path, destination: Path) -> None:
+    with zipfile.ZipFile(source) as archive:
+        for member in archive.infolist():
+            member_path = destination / member.filename
+            try:
+                member_path.resolve().relative_to(destination.resolve())
+            except ValueError as exc:
+                raise ValueError(f"Unsafe zip entry path: {member.filename}") from exc
+        archive.extractall(destination)
+
+
 class ModelPoolProbeScheduler:
     def __init__(self, *, poll_seconds: float = 5.0) -> None:
         self.poll_seconds = max(float(poll_seconds), 1.0)
@@ -605,26 +645,7 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
             if preset_files is not None:
                 files = list(preset_files)
             else:
-                if not source.exists():
-                    raise FileNotFoundError(source)
-                if source.is_dir():
-                    job.add_log(f"Scanning folder: {source}")
-                    unsupported = [
-                        p
-                        for p in sorted(source.rglob("*"))
-                        if p.is_file() and p.suffix.lower() not in SUPPORTED_EXTENSIONS
-                    ]
-                    if unsupported:
-                        job.add_log(f"Skipped {len(unsupported)} unsupported file(s)")
-                    files = [
-                        p
-                        for p in sorted(source.rglob("*"))
-                        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
-                    ]
-                else:
-                    files = [source]
-            if not files:
-                raise ValueError("No supported files found.")
+                files = _collect_supported_input_files(source, SUPPORTED_EXTENSIONS, job)
             job.set_progress(0, len(files))
             job.add_log(f"Found {len(files)} supported file(s)")
             routes = _healthy_model_pool_routes(target_kb) if len(files) > 1 else []
@@ -773,26 +794,7 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
             if preset_files is not None:
                 files = list(preset_files)
             else:
-                if not source.exists():
-                    raise FileNotFoundError(source)
-                if source.is_dir():
-                    job.add_log(f"Scanning folder: {source}")
-                    unsupported = [
-                        p
-                        for p in sorted(source.rglob("*"))
-                        if p.is_file() and p.suffix.lower() not in SUPPORTED_EXTENSIONS
-                    ]
-                    if unsupported:
-                        job.add_log(f"Skipped {len(unsupported)} unsupported file(s)")
-                    files = [
-                        p
-                        for p in sorted(source.rglob("*"))
-                        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
-                    ]
-                else:
-                    files = [source]
-            if not files:
-                raise ValueError("No supported files found.")
+                files = _collect_supported_input_files(source, SUPPORTED_EXTENSIONS, job)
 
             imported = 0
             skipped = 0

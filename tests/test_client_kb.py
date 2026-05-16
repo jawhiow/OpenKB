@@ -951,6 +951,45 @@ def test_model_pool_enabled_can_be_toggled_via_config_update(tmp_path: Path):
     assert enabled_pool["enabled"] is True
 
 
+def test_model_pool_profile_disable_does_not_commit_staged_summary_outputs(tmp_path: Path):
+    kb_dir = tmp_path / "kb"
+    init_kb(kb_dir, model="gpt-5.4-mini", language="zh")
+    config_path = kb_dir / ".openkb" / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["model_pool"] = {"enabled": True, "strategy": "weighted_round_robin"}
+    config["llm_profiles"] = [
+        {
+            "id": "primary",
+            "name": "Primary",
+            "model": "primary-model",
+            "wire_api": "chat_completions",
+            "base_url": "https://primary.example.com/v1",
+            "enabled": True,
+        },
+        {
+            "id": "backup",
+            "name": "Backup",
+            "model": "backup-model",
+            "wire_api": "chat_completions",
+            "base_url": "https://backup.example.com/v1",
+            "enabled": True,
+        },
+    ]
+    config["active_llm_profile"] = "primary"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    _git(kb_dir, "add", ".openkb/config.yaml")
+    _git(kb_dir, "commit", "-m", "Configure model pool")
+
+    review_summary = kb_dir / ".openkb" / "review_summaries" / "paper.md"
+    review_summary.parent.mkdir(parents=True, exist_ok=True)
+    review_summary.write_text("# In-progress summary\n", encoding="utf-8")
+
+    update_config_data(kb_dir, {"profile_id": "primary", "enabled": False})
+
+    tracked_files = set(_git(kb_dir, "ls-files").splitlines())
+    assert ".openkb/review_summaries/paper.md" not in tracked_files
+
+
 def test_model_pool_profile_status_derives_runtime_route_failures(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
     config = yaml.safe_load((kb_dir / ".openkb" / "config.yaml").read_text(encoding="utf-8"))

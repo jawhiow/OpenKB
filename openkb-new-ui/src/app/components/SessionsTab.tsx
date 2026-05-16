@@ -11,16 +11,16 @@ import {
   deleteChatSession,
   getChatSession,
   getChats,
-  saveChatExploration,
   streamQuery,
   StreamQueryDonePayload,
 } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Bot, Copy, ExternalLink, Loader2, MessageSquare, Save, Send, Trash2, User } from 'lucide-react';
+import { Bot, Copy, ExternalLink, Loader2, Menu, MessageSquare, Plus, Send, Trash2, User } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toaster';
 import { confirm as confirmDialog } from '@/components/ui/confirm-dialog';
@@ -155,6 +155,7 @@ export function SessionsTab({
   const [activeReferences, setActiveReferences] = useState<ChatReference[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -199,25 +200,12 @@ export function SessionsTab({
       setStreamingStatus('');
       setErrorMessage('');
       setDraft('');
+      setMobileHistoryOpen(false);
       await queryClient.invalidateQueries({ queryKey: ['chats', kbDir] });
       queryClient.setQueryData(['chatSession', kbDir, session.id], session);
     },
     onError: (error) => {
       toast.error('Failed to create session', error instanceof Error ? error.message : undefined);
-    },
-  });
-
-  const saveSessionMutation = useMutation({
-    mutationFn: (session: ChatSessionDetail) => saveChatExploration(kbDir, session.id, sessionTitle(session)),
-    onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['wikiTree', kbDir] });
-      toast.success('Session saved to explorations', result.path || undefined);
-      if (result.path && onNavigateToWiki) {
-        onNavigateToWiki(result.path);
-      }
-    },
-    onError: (error) => {
-      toast.error('Failed to save session', error instanceof Error ? error.message : undefined);
     },
   });
 
@@ -257,6 +245,24 @@ export function SessionsTab({
   const handleNewSession = () => {
     abortRef.current?.abort();
     createMutation.mutate();
+  };
+
+  const handleSelectSession = (sessionId: string) => {
+    setActiveSessionId(sessionId);
+    setActiveReferences([]);
+    setErrorMessage('');
+    setMobileHistoryOpen(false);
+  };
+
+  const handleDeleteCurrentSession = async () => {
+    if (!activeSession) return;
+    const ok = await confirmDialog({
+      title: 'Delete session?',
+      description: `"${sessionTitle(activeSession)}" will be removed permanently.`,
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
+    if (ok) deleteMutation.mutate(activeSession.id);
   };
 
   const handleSend = async (event: React.FormEvent) => {
@@ -339,9 +345,119 @@ export function SessionsTab({
     }
   };
 
+  const renderSessionList = () => (
+    <>
+      <div className="border-b p-3">
+        <Input
+          placeholder="Search sessions"
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+        />
+      </div>
+      <ScrollArea className="h-full min-h-0 flex-1 overflow-hidden">
+        <div className="space-y-1 p-2">
+          <Button
+            variant="outline"
+            className="w-full justify-start"
+            onClick={handleNewSession}
+            disabled={createMutation.isPending || isStreaming}
+          >
+            {createMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+            New Session
+          </Button>
+          {sessionsQuery.isLoading ? (
+            <div className="space-y-2 px-1 pt-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="rounded-md border border-border/60 px-3 py-2">
+                  <Skeleton className="h-3.5 w-3/4" />
+                  <Skeleton className="mt-2 h-3 w-1/2" />
+                </div>
+              ))}
+            </div>
+          ) : filteredSessions.length ? (
+            filteredSessions.map((session) => (
+              <Button
+                key={session.id}
+                variant={resolvedSessionId === session.id ? 'secondary' : 'ghost'}
+                className="h-auto w-full min-w-0 justify-start px-3 py-2 text-left"
+                onClick={() => handleSelectSession(session.id)}
+              >
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <div className="truncate font-medium">{sessionTitle(session)}</div>
+                  <div className="mt-1 truncate text-xs text-muted-foreground">
+                    {session.turn_count} turns · {session.updated_at || 'n/a'}
+                  </div>
+                </div>
+              </Button>
+            ))
+          ) : (
+            <div className="p-4 text-sm text-muted-foreground">No sessions found.</div>
+          )}
+        </div>
+      </ScrollArea>
+    </>
+  );
+
+  const renderMessages = (mobile = false) => {
+    if (sessionDetailQuery.isLoading) {
+      return (
+        <div className="space-y-4">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className={i % 2 === 0 ? 'flex justify-end' : 'flex'}>
+              <div className={cn('space-y-2 rounded-xl bg-muted/50 p-3', mobile ? 'max-w-[84%]' : 'max-w-[70%]')}>
+                <Skeleton className="h-3 w-24" />
+                <Skeleton className="h-3 w-40" />
+                <Skeleton className="h-3 w-32" />
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (!messages.length) {
+      return (
+        <div className="flex min-h-[45vh] flex-col items-center justify-center text-center text-muted-foreground md:min-h-[300px]">
+          <Bot className="mb-4 h-10 w-10 opacity-20 md:h-12 md:w-12" />
+          <p className="font-medium">{mobile ? 'Ask the knowledge base' : 'Select a session or ask a question'}</p>
+          <p className="mt-1 max-w-xs text-sm md:max-w-md">
+            {mobile ? 'History is available from the button in the top left.' : 'Answers will continue in session history and can be reopened from the left sidebar.'}
+          </p>
+        </div>
+      );
+    }
+
+    return messages.map((message) => (
+      <div
+        key={message.id}
+        className={`flex ${mobile ? 'gap-2' : 'gap-3'} ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+      >
+        {message.role === 'assistant' ? (
+          <div className={cn('shrink-0 rounded-full bg-primary/10', mobile ? 'mt-1 flex h-7 w-7 items-center justify-center' : 'flex h-8 w-8 items-center justify-center')}>
+            <Bot className={mobile ? 'h-3.5 w-3.5 text-primary' : 'h-4 w-4 text-primary'} />
+          </div>
+        ) : null}
+        <div
+          className={cn(
+            mobile ? 'max-w-[88%] rounded-2xl px-3 py-2.5 text-sm' : 'max-w-[85%] rounded-xl px-4 py-3 text-sm',
+            message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted/60 text-foreground',
+          )}
+        >
+          <ChatMarkdown content={message.content} inverted={message.role === 'user'} />
+          {message.pending ? <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-current align-middle" /> : null}
+        </div>
+        {message.role === 'user' ? (
+          <div className={cn('shrink-0 rounded-full bg-muted', mobile ? 'mt-1 flex h-7 w-7 items-center justify-center' : 'flex h-8 w-8 items-center justify-center')}>
+            <User className={mobile ? 'h-3.5 w-3.5 text-muted-foreground' : 'h-4 w-4 text-muted-foreground'} />
+          </div>
+        ) : null}
+      </div>
+    ));
+  };
+
   return (
-    <Card className="h-full flex flex-col rounded-none border-t-0 border-b-0 border-x-0 sm:border-x sm:rounded-lg overflow-hidden min-h-0">
-      <div className="grid min-h-0 flex-1 grid-cols-[280px_minmax(0,1fr)_300px]">
+    <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-none border-x-0 border-b-0 border-t-0 sm:rounded-lg sm:border-x">
+      <div className="hidden min-h-0 flex-1 md:grid md:grid-cols-[280px_minmax(0,1fr)_300px] md:overflow-hidden">
         <aside className="border-r bg-muted/10">
           <CardHeader className="border-b py-4">
             <CardTitle className="flex items-center gap-2 text-sm">
@@ -349,58 +465,7 @@ export function SessionsTab({
               Sessions
             </CardTitle>
           </CardHeader>
-          <div className="border-b p-3">
-            <Input
-              placeholder="Search sessions"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-            />
-          </div>
-          <ScrollArea className="h-[calc(100%-105px)]">
-            <div className="space-y-1 p-2">
-              <Button
-                variant="outline"
-                className="w-full justify-start"
-                onClick={handleNewSession}
-                disabled={createMutation.isPending || isStreaming}
-              >
-                {createMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                New Session
-              </Button>
-              {sessionsQuery.isLoading ? (
-                <div className="space-y-2 px-1 pt-2">
-                  {Array.from({ length: 5 }).map((_, i) => (
-                    <div key={i} className="rounded-md border border-border/60 px-3 py-2">
-                      <Skeleton className="h-3.5 w-3/4" />
-                      <Skeleton className="mt-2 h-3 w-1/2" />
-                    </div>
-                  ))}
-                </div>
-              ) : filteredSessions.length ? (
-                filteredSessions.map((session) => (
-                  <Button
-                    key={session.id}
-                    variant={resolvedSessionId === session.id ? 'secondary' : 'ghost'}
-                    className="h-auto w-full justify-start px-3 py-2 text-left"
-                    onClick={() => {
-                      setActiveSessionId(session.id);
-                      setActiveReferences([]);
-                      setErrorMessage('');
-                    }}
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate font-medium">{sessionTitle(session)}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {session.turn_count} turns · {session.updated_at || 'n/a'}
-                      </div>
-                    </div>
-                  </Button>
-                ))
-              ) : (
-                <div className="p-4 text-sm text-muted-foreground">No sessions found.</div>
-              )}
-            </div>
-          </ScrollArea>
+          {renderSessionList()}
         </aside>
 
         <section className="flex min-h-0 flex-col">
@@ -411,35 +476,13 @@ export function SessionsTab({
                 {activeSession ? `${activeSession.turn_count} turns` : 'Ask the knowledge base or reopen a session'}
               </p>
             </div>
-            <div className="flex gap-2">
-              {activeSession ? (
-                <Button
-                  variant="outline"
-                  onClick={() => saveSessionMutation.mutate(activeSession)}
-                  disabled={saveSessionMutation.isPending || activeSession.turn_count <= 0 || isStreaming}
-                >
-                  {saveSessionMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-                  Save
-                </Button>
-              ) : null}
+            <div className="flex flex-wrap gap-2">
               <Button variant="outline" onClick={handleCopy} disabled={!messages.length}>
                 <Copy className="mr-2 h-4 w-4" />
                 Copy
               </Button>
               {activeSession ? (
-                <Button
-                  variant="destructive"
-                  onClick={async () => {
-                    const ok = await confirmDialog({
-                      title: 'Delete session?',
-                      description: `"${sessionTitle(activeSession)}" will be removed permanently.`,
-                      confirmLabel: 'Delete',
-                      variant: 'danger',
-                    });
-                    if (ok) deleteMutation.mutate(activeSession.id);
-                  }}
-                  disabled={deleteMutation.isPending}
-                >
+                <Button variant="destructive" onClick={handleDeleteCurrentSession} disabled={deleteMutation.isPending}>
                   <Trash2 className="mr-2 h-4 w-4" />
                   Delete
                 </Button>
@@ -458,57 +501,7 @@ export function SessionsTab({
 
           <div className="min-h-0 flex-1">
             <ScrollArea ref={threadScrollRef} className="h-full">
-              <div className="space-y-5 p-5">
-                {sessionDetailQuery.isLoading ? (
-                  <div className="space-y-4">
-                    {[0, 1, 2].map((i) => (
-                      <div key={i} className={i % 2 === 0 ? 'flex justify-end' : 'flex'}>
-                        <div className="max-w-[70%] space-y-2 rounded-xl bg-muted/50 p-3">
-                          <Skeleton className="h-3 w-32" />
-                          <Skeleton className="h-3 w-48" />
-                          <Skeleton className="h-3 w-40" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : messages.length ? (
-                  messages.map((message) => (
-                    <div
-                      key={message.id}
-                      className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                    >
-                      {message.role === 'assistant' ? (
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                          <Bot className="h-4 w-4 text-primary" />
-                        </div>
-                      ) : null}
-                      <div
-                        className={`max-w-[85%] rounded-xl px-4 py-3 text-sm ${
-                          message.role === 'user'
-                            ? 'bg-primary text-primary-foreground'
-                            : 'bg-muted/60 text-foreground'
-                        }`}
-                      >
-                        <ChatMarkdown content={message.content} inverted={message.role === 'user'} />
-                        {message.pending ? <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-current align-middle" /> : null}
-                      </div>
-                      {message.role === 'user' ? (
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                          <User className="h-4 w-4 text-muted-foreground" />
-                        </div>
-                      ) : null}
-                    </div>
-                  ))
-                ) : (
-                  <div className="flex min-h-[300px] flex-col items-center justify-center text-center text-muted-foreground">
-                    <Bot className="mb-4 h-12 w-12 opacity-20" />
-                    <p className="font-medium">Select a session or ask a question</p>
-                    <p className="mt-1 max-w-md text-sm">
-                      Answers will continue in session history and can be reopened from the left sidebar.
-                    </p>
-                  </div>
-                )}
-              </div>
+              <div className="space-y-5 p-5">{renderMessages(false)}</div>
             </ScrollArea>
           </div>
 
@@ -581,10 +574,7 @@ export function SessionsTab({
                       );
                     }
                     return (
-                      <div
-                        key={`${reference.type}-${reference.path}-${index}`}
-                        className="rounded-lg bg-muted/40 px-3 py-2 font-mono text-xs"
-                      >
+                      <div key={`${reference.type}-${reference.path}-${index}`} className="rounded-lg bg-muted/40 px-3 py-2 font-mono text-xs">
                         {label}
                       </div>
                     );
@@ -596,6 +586,148 @@ export function SessionsTab({
             </div>
           </CardContent>
         </aside>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col md:hidden">
+        <div className="flex items-center justify-between border-b px-3 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setMobileHistoryOpen(true)}
+              aria-label="Open session history"
+            >
+              <Menu className="h-4 w-4" />
+            </Button>
+            <div className="min-w-0">
+              <h3 className="truncate text-sm font-semibold">{activeSession ? sessionTitle(activeSession) : 'Knowledge Chat'}</h3>
+              <p className="text-xs text-muted-foreground">
+                {activeSession ? `${activeSession.turn_count} turns` : 'Start a new conversation'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button type="button" variant="ghost" size="icon-sm" onClick={handleCopy} disabled={!messages.length} aria-label="Copy conversation">
+              <Copy className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={handleNewSession}
+              disabled={createMutation.isPending || isStreaming}
+              aria-label="New session"
+            >
+              {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            </Button>
+          </div>
+        </div>
+
+        {errorMessage ? (
+          <div className="px-3 pt-3">
+            <Alert variant="destructive">
+              <AlertTitle>Session request failed</AlertTitle>
+              <AlertDescription>{errorMessage}</AlertDescription>
+            </Alert>
+          </div>
+        ) : null}
+
+        {(activeSession || activeReferences.length) ? (
+          <div className="border-b bg-muted/10 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+              {activeSession ? <span>ID: {activeSession.id}</span> : null}
+              {activeSession?.model ? <span>Model: {activeSession.model}</span> : null}
+              {activeReferences.length ? <span>{activeReferences.length} refs</span> : null}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="min-h-0 flex-1">
+          <ScrollArea ref={threadScrollRef} className="h-full">
+            <div className="space-y-4 p-3">
+              {renderMessages(true)}
+              {activeReferences.length ? (
+                <div className="rounded-xl border bg-muted/10 p-3">
+                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">References</div>
+                  <div className="space-y-1.5">
+                    {activeReferences.map((reference, index) => {
+                      const label = referenceLabel(reference);
+                      const isWikiNav = reference.type === 'wiki_file' && !!reference.path && !!onNavigateToWiki;
+                      if (isWikiNav) {
+                        return (
+                          <button
+                            key={`${reference.type}-${reference.path}-${index}`}
+                            type="button"
+                            onClick={() => onNavigateToWiki!(reference.path!)}
+                            className="flex w-full min-w-0 items-center gap-2 rounded-lg bg-background px-3 py-2 text-left text-xs hover:bg-primary/10 hover:text-primary"
+                          >
+                            <span className="min-w-0 flex-1 break-all font-mono">{label}</span>
+                            <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                          </button>
+                        );
+                      }
+                      return (
+                        <div key={`${reference.type}-${reference.path}-${index}`} className="rounded-lg bg-background px-3 py-2 font-mono text-xs">
+                          {label}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </ScrollArea>
+        </div>
+
+        <form onSubmit={handleSend} className="border-t px-3 py-3">
+          <textarea
+            rows={3}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleDraftKeyDown}
+            placeholder="Ask this knowledge base"
+            className="min-h-[72px] w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={!kbDir || isStreaming}
+          />
+          <div className="mt-3 flex flex-col gap-3">
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={saveQuery}
+                onChange={(event) => setSaveQuery(event.target.checked)}
+                disabled={isStreaming}
+              />
+              Save exploration
+            </label>
+            <div className="flex items-center justify-between gap-2">
+              {activeSession ? (
+                <Button type="button" variant="outline" onClick={handleDeleteCurrentSession} disabled={deleteMutation.isPending}>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </Button>
+              ) : (
+                <span />
+              )}
+              <Button type="submit" disabled={!kbDir || !draft.trim() || isStreaming}>
+                {isStreaming ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
+                Send
+              </Button>
+            </div>
+          </div>
+        </form>
+
+        <Dialog open={mobileHistoryOpen} onOpenChange={setMobileHistoryOpen}>
+          <DialogContent className="left-0 top-0 flex h-dvh max-h-dvh w-[88vw] max-w-none translate-x-0 translate-y-0 grid-rows-none flex-col overflow-hidden rounded-none border-r p-0 sm:max-w-none">
+            <DialogHeader className="border-b px-4 py-3 text-left">
+              <DialogTitle className="flex items-center gap-2 text-sm">
+                <MessageSquare className="h-4 w-4" />
+                Sessions
+              </DialogTitle>
+            </DialogHeader>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{renderSessionList()}</div>
+          </DialogContent>
+        </Dialog>
       </div>
     </Card>
   );

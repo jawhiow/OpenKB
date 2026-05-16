@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getKbs } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -23,6 +23,8 @@ import {
   SlidersHorizontal,
   Activity,
   Search,
+  ChevronDown,
+  ChevronUp,
   Pin,
   PinOff,
 } from 'lucide-react';
@@ -65,6 +67,7 @@ export default function Home() {
   const [kbSearch, setKbSearch] = useState('');
   const [globalActiveJobId, setGlobalActiveJobId] = useState<string | null>(null);
   const [wikiInitialPath, setWikiInitialPath] = useState<string | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const queryClient = useQueryClient();
 
@@ -104,7 +107,7 @@ export default function Home() {
   const { setTheme } = useTheme();
 
   // Command palette: rebuilt every time the palette opens to capture fresh KBs / state.
-  const tabDefinitions: Array<{ value: string; label: string; icon: React.ReactNode }> = [
+  const tabDefinitions: Array<{ value: string; label: string; icon: React.ReactElement<{ className?: string }> }> = [
     { value: 'overview', label: 'Overview', icon: <Gauge className="h-3.5 w-3.5" /> },
     { value: 'documents', label: 'Workflow', icon: <Workflow className="h-3.5 w-3.5" /> },
     { value: 'ocr', label: 'OCR', icon: <ScanLine className="h-3.5 w-3.5" /> },
@@ -116,6 +119,17 @@ export default function Home() {
     { value: 'scoring', label: 'Scoring', icon: <SlidersHorizontal className="h-3.5 w-3.5" /> },
     { value: 'usage', label: 'LLM Usage', icon: <Activity className="h-3.5 w-3.5" /> },
   ];
+
+  const mobileNavItems = tabDefinitions.filter((tab) =>
+    ['documents', 'jobs', 'sessions', 'wiki'].includes(tab.value),
+  );
+
+  useEffect(() => {
+    const isMobile = window.matchMedia('(max-width: 767px)').matches;
+    if (isMobile && activeTab === 'overview') {
+      setActiveTab('documents');
+    }
+  }, [activeTab, setActiveTab]);
 
   const buildCommands = (): CommandItem[] => {
     const commands: CommandItem[] = [];
@@ -196,24 +210,24 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="flex h-dvh flex-col bg-background">
       {/* Top Header */}
-      <header className="flex h-14 items-center justify-between px-4 sm:px-6 border-b bg-background/50 backdrop-blur-xl sticky top-0 z-50 shrink-0">
-        <div className="flex items-center gap-4">
+      <header className="sticky top-0 z-50 hidden h-12 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-3 backdrop-blur-xl sm:flex sm:h-14 sm:px-6 sm:gap-3">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-4">
           <Button
             variant="ghost"
             size="icon"
             onClick={() => setSidebarCollapsed((v) => !v)}
             aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="h-9 w-9 rounded-xl hover:bg-accent/50"
+            className="hidden h-9 w-9 rounded-xl hover:bg-accent/50 md:inline-flex"
           >
             {sidebarCollapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
           </Button>
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-lg shadow-primary/20">
-              <Sparkles className="h-5 w-5" />
+          <div className="flex items-center gap-1.5 sm:gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/80 text-primary-foreground shadow-sm shadow-primary/20 sm:h-9 sm:w-9">
+              <Sparkles className="h-4 w-4 sm:h-5 sm:w-5" />
             </div>
-            <div className="flex flex-col leading-tight">
+            <div className="hidden flex-col leading-tight sm:flex">
               <h1 className="text-lg font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/70">OpenKB</h1>
               <span className="text-[10px] uppercase tracking-[0.1em] font-bold text-primary/80">
                 Staged Workbench
@@ -221,7 +235,7 @@ export default function Home() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           {globalActiveJobId && (
             <GlobalJobTracker
               jobId={globalActiveJobId}
@@ -263,7 +277,7 @@ export default function Home() {
         {/* Left Sidebar: KB Selection */}
         <aside
           className={cn(
-            'group/sidebar relative border-r bg-sidebar/30 backdrop-blur-xl flex flex-col shrink-0 transition-all duration-300 ease-in-out',
+            'group/sidebar relative hidden border-r bg-sidebar/30 backdrop-blur-xl flex-col shrink-0 transition-all duration-300 ease-in-out md:flex',
             sidebarCollapsed ? 'w-[72px]' : 'w-72',
           )}
         >
@@ -379,7 +393,7 @@ export default function Home() {
         {/* Middle Area: Main Content Tabs */}
         <main className="flex-1 flex flex-col overflow-hidden min-w-0 bg-background/50 backdrop-blur-sm">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
-            <div className="px-6 pt-6 pb-2 shrink-0 overflow-x-auto no-scrollbar">
+            <div className="hidden px-6 pt-6 pb-2 shrink-0 overflow-x-auto no-scrollbar md:block">
               <TabsList className="h-11 p-1 bg-accent/30 backdrop-blur-xl border border-border/50 rounded-2xl">
                 <TabTrigger value="overview" icon={<Gauge />} label="Overview" />
                 <TabTrigger value="documents" icon={<Workflow />} label="Workflow" />
@@ -394,8 +408,8 @@ export default function Home() {
               </TabsList>
             </div>
 
-            <div className="flex-1 overflow-hidden px-6 pb-6">
-              <div className="h-full rounded-[2rem] border bg-card/50 backdrop-blur-xl shadow-2xl shadow-foreground/5 overflow-hidden relative">
+            <div className={cn('flex-1 overflow-hidden px-1 pt-1 md:px-6 md:pb-6 md:pt-0', mobileNavOpen ? 'pb-16' : 'pb-3')}>
+              <div className="relative h-full overflow-hidden rounded-none border-0 bg-card/50 shadow-none md:rounded-[2rem] md:border md:shadow-2xl md:shadow-foreground/5">
                 <TabsContent value="overview" className="h-full m-0 outline-none data-[state=active]:flex">
                   <OverviewTab kbDir={resolvedSelectedKb} onOpenTab={setActiveTab} />
                 </TabsContent>
@@ -491,18 +505,63 @@ export default function Home() {
 
       </div>
 
+      <div className="pointer-events-none fixed inset-x-0 bottom-2 z-40 flex justify-center md:hidden">
+        <div className="pointer-events-auto flex flex-col items-center gap-2">
+          {mobileNavOpen ? (
+            <nav className="rounded-2xl border bg-background/95 p-1 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur-xl" aria-label="Primary mobile navigation">
+              <div className="grid grid-cols-4 gap-1">
+                {mobileNavItems.map((tab) => {
+                  const active = activeTab === tab.value;
+                  const mobileLabel = tab.label === 'Workflow' ? 'Review' : tab.label;
+                  return (
+                    <button
+                      key={tab.value}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(tab.value);
+                        setMobileNavOpen(false);
+                      }}
+                      className={cn(
+                        'flex h-9 w-11 items-center justify-center rounded-lg transition-all active:scale-95',
+                        active ? 'bg-primary/10 text-primary shadow-sm' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                      )}
+                      aria-current={active ? 'page' : undefined}
+                      aria-label={mobileLabel}
+                    >
+                      {React.cloneElement(tab.icon, { className: 'h-4.5 w-4.5' })}
+                      <span className="sr-only">{mobileLabel}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </nav>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={() => setMobileNavOpen((open) => !open)}
+            className="h-8 w-8 rounded-full border bg-background/95 shadow-sm backdrop-blur-xl"
+            aria-label={mobileNavOpen ? 'Hide navigation' : 'Show navigation'}
+            aria-expanded={mobileNavOpen}
+          >
+            {mobileNavOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
+
       <CommandPalette getCommands={buildCommands} />
     </div>
   );
 }
 
-function TabTrigger({ value, icon, label }: { value: string; icon: React.ReactNode; label: string }) {
+function TabTrigger({ value, icon, label }: { value: string; icon: React.ReactElement<{ className?: string }>; label: string }) {
   return (
     <TabsTrigger
       value={value}
       className="gap-2 px-4 py-1.5 rounded-xl transition-all data-[state=active]:bg-background data-[state=active]:text-primary data-[state=active]:shadow-lg shadow-primary/10 text-xs font-bold uppercase tracking-wider"
     >
-      {React.cloneElement(icon as React.ReactElement<any>, { className: "h-3.5 w-3.5" })}
+      {React.cloneElement(icon, { className: "h-3.5 w-3.5" })}
       {label}
     </TabsTrigger>
   );

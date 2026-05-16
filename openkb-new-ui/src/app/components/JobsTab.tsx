@@ -111,8 +111,8 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
   );
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[minmax(320px,0.9fr)_minmax(420px,1.1fr)] gap-6">
-      <Card className="flex min-h-0 flex-col overflow-hidden">
+    <div className="grid h-full min-h-0 grid-cols-1 gap-3 overflow-y-auto p-3 md:grid-cols-[minmax(320px,0.9fr)_minmax(420px,1.1fr)] md:gap-6 md:overflow-hidden md:p-0">
+      <Card className="flex min-h-[48vh] min-w-0 flex-col overflow-hidden md:min-h-0">
         <CardHeader className="shrink-0">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -194,7 +194,7 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
         </CardContent>
       </Card>
 
-      <Card className="flex min-h-0 flex-col overflow-hidden">
+      <Card className="flex min-h-[48vh] min-w-0 flex-col overflow-hidden md:min-h-0">
         <CardHeader className="shrink-0">
           {selectedJob ? (
             <div className="flex items-start justify-between gap-4">
@@ -236,11 +236,11 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
             </>
           )}
         </CardHeader>
-        <CardContent className="min-h-0 flex-1 overflow-y-auto">
+        <CardContent className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           {selectedJob ? (
-            <div className="space-y-5">
+            <div className="min-w-0 space-y-5">
               <section className="rounded-lg border bg-muted/30 p-4">
-                <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                   <DetailItem label="Status" value={selectedJob.status} />
                   <DetailItem label="Progress" value={formatProgress(selectedJob)} />
                   <DetailItem label="Created" value={formatDate(selectedJob.created_at)} />
@@ -270,12 +270,12 @@ export function JobsTab({ kbDir }: { kbDir: string | null }) {
                   <span className="text-xs text-muted-foreground">{selectedJob.logs?.length ?? 0} entries</span>
                 </div>
                 {selectedJob.logs?.length ? (
-                  <div className="space-y-2 rounded-lg border bg-zinc-950 p-3 font-mono text-xs text-zinc-100">
+                  <div className="max-w-full space-y-2 overflow-hidden rounded-lg border bg-zinc-950 p-3 font-mono text-xs text-zinc-100">
                     {selectedJob.logs.map((log, index) => (
-                      <div key={`${log.time}-${index}`} className="grid grid-cols-[150px_72px_1fr] gap-3">
-                        <span className="text-zinc-500">{formatLogTime(log.time)}</span>
-                        <span className={logLevelClass(log.level)}>{log.level || 'info'}</span>
-                        <span className="whitespace-pre-wrap break-words">{log.message}</span>
+                      <div key={`${log.time}-${index}`} className="grid min-w-0 gap-1 sm:grid-cols-[150px_72px_1fr] sm:gap-3">
+                        <span className="min-w-0 break-all text-zinc-500">{formatLogTime(log.time)}</span>
+                        <span className={`min-w-0 break-all ${logLevelClass(log.level)}`}>{log.level || 'info'}</span>
+                        <span className="min-w-0 whitespace-pre-wrap break-all">{log.message}</span>
                       </div>
                     ))}
                   </div>

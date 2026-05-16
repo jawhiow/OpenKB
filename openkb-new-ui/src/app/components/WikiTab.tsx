@@ -107,6 +107,16 @@ function buildMarkdownComponents(toc: TocItem[]): Components {
         {children}
       </h3>
     ),
+    code: ({ children, className, ...props }) => (
+      <code className={cn('break-words whitespace-pre-wrap', className)} {...props}>
+        {children}
+      </code>
+    ),
+    pre: ({ children, ...props }) => (
+      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words" {...props}>
+        {children}
+      </pre>
+    ),
   };
 }
 
@@ -352,7 +362,10 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
     <Card className="h-full flex flex-col rounded-none border-t-0 border-b-0 border-x-0 sm:border-x sm:rounded-lg overflow-hidden py-0 gap-0">
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Left: file browser */}
-        <div className="w-1/4 min-w-[260px] border-r bg-muted/10 flex flex-col shrink-0 min-h-0">
+        <div className={cn(
+          'w-full border-r bg-muted/10 flex-col shrink-0 min-h-0 md:flex md:w-1/4 md:min-w-[260px]',
+          selectedFilePath ? 'hidden' : 'flex',
+        )}>
           <CardHeader className="py-3 border-b shrink-0">
             <CardTitle className="text-sm flex items-center justify-between gap-2">
               <span className="flex items-center gap-2">
@@ -459,18 +472,30 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
               <Skeleton className="mt-2 h-4 w-8/12" />
             </div>
           ) : !selectedFilePath ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
+            <div className="hidden flex-1 flex-col items-center justify-center text-muted-foreground md:flex">
               <FileText className="w-12 h-12 mb-4 opacity-20" />
               <p>Select a document from the index to view its content.</p>
             </div>
           ) : (
             <div className="flex flex-1 min-h-0 flex-col">
               <div className="flex items-center justify-between border-b bg-muted/10 px-4 py-2.5">
-                <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="md:hidden"
+                    onClick={() => setSelectedFilePath(null)}
+                    aria-label="Back to wiki index"
+                  >
+                    <FolderTree className="h-4 w-4" />
+                  </Button>
+                  <div className="min-w-0">
                   <div className="truncate text-sm font-semibold">{selectedFilePath}</div>
                   {isReviewSummary ? (
                     <div className="text-xs text-muted-foreground">Review summary is preview-only.</div>
                   ) : null}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   {isEditing ? (
@@ -501,16 +526,16 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
               </div>
               <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto scroll-smooth">
                 {isEditing ? (
-                  <div className="p-6">
+                  <div className="p-3 md:p-6">
                     <textarea
                       value={draftContent}
                       onChange={(event) => setDraftContent(event.target.value)}
-                      className="min-h-[70vh] w-full rounded-xl border border-border bg-background px-4 py-3 font-mono text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      className="min-h-[70vh] w-full rounded-xl border border-border bg-background px-3 py-3 font-mono text-sm outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring md:px-4"
                       spellCheck={false}
                     />
                   </div>
                 ) : (
-                  <div className="p-8 prose prose-slate dark:prose-invert max-w-3xl">
+                  <div className="prose prose-slate max-w-none p-4 dark:prose-invert md:max-w-3xl md:p-8">
                     {previewContent ? (
                       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                         {previewContent}

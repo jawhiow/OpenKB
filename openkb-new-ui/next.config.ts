@@ -10,6 +10,7 @@ const allowedDevOrigins = (process.env.OPENKB_ALLOWED_DEV_ORIGINS ?? "127.0.0.1,
 
 const nextConfig: NextConfig = {
   allowedDevOrigins,
+  devIndicators: false,
   async rewrites() {
     return [
       {
