@@ -305,6 +305,9 @@ def infer_document_ledger_defaults(document: Mapping[str, Any]) -> dict[str, Any
     raw_type = str(document.get("type") or "").strip().lower()
     source_path = str(document.get("source_path") or "").strip()
     summary_exists = bool(document.get("summary_exists", False))
+    review_summary_path = str(document.get("review_summary_path") or "").strip()
+    review_summary_exists = bool(document.get("review_summary_exists", False))
+    has_review_summary = summary_exists or review_summary_exists
     related_pages = document.get("related_pages") if isinstance(document.get("related_pages"), Mapping) else {}
     has_generated_pages = any(related_pages.get(group) for group in ("companies", "industries", "concepts"))
     source_kind = _infer_source_kind(raw_type, source_path)
@@ -316,6 +319,7 @@ def infer_document_ledger_defaults(document: Mapping[str, Any]) -> dict[str, Any
         "stem": str(document.get("stem") or "").strip(),
         "raw_path": str(document.get("raw_path") or "").strip(),
         "source_path": source_path,
+        "review_summary_path": review_summary_path if review_summary_exists else "",
         "ingested_at": _normalized_optional_text(document.get("ingested_at")),
         "source_kind": source_kind,
         "page_count": _normalized_optional_int(document.get("pages")),
@@ -324,7 +328,7 @@ def infer_document_ledger_defaults(document: Mapping[str, Any]) -> dict[str, Any
             "ingest_state": "imported",
             "ocr_state": "not_needed",
             "source_state": "ready" if source_ready else "queued",
-            "summary_state": "ready" if summary_exists else "not_started",
+            "summary_state": "ready" if has_review_summary else "not_started",
             "review_state": review_state,
             "promotion_state": "promoted" if has_generated_pages else "not_selected",
         },

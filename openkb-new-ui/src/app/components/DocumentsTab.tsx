@@ -1566,7 +1566,7 @@ function DocumentStageTable({
                         <div>
                           <div className="font-semibold text-sm">{document.review.summary_score}</div>
                           <div className="mt-1 text-muted-foreground">
-                            {document.review.summary_score_source === 'manual' ? 'manual' : 'auto'}
+                            {document.review.summary_score_source || 'auto'}
                           </div>
                         </div>
                       ) : (

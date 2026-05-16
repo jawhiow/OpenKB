@@ -2138,7 +2138,7 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
             "ok": True,
             "service": "openkb-client-api",
             "ui": "openkb-new-ui",
-            "ui_dev_url": os.getenv("OPENKB_UI_URL", "http://127.0.0.1:3000"),
+            "ui_dev_url": os.getenv("OPENKB_UI_URL", "http://127.0.0.1:8000"),
         }
 
     @app.get("/favicon.ico", include_in_schema=False)

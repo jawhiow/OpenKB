@@ -205,6 +205,33 @@ def test_list_effective_document_ledger_records_merges_inferred_hash_documents(t
     assert records["hash-b"]["workflow_state"]["review_state"] == "unreviewed"
 
 
+def test_list_effective_document_ledger_records_infers_ready_review_summary(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / "wiki").mkdir(parents=True)
+    (kb_dir / ".openkb" / "hashes.json").write_text(
+        json.dumps(
+            {
+                "hash-a": {
+                    "name": "paper.pdf",
+                    "type": "pdf",
+                    "ingested_at": "2026-05-16T14:29:41+08:00",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    review_summary = kb_dir / ".openkb" / "review_summaries" / "2026-05-16" / "paper.md"
+    review_summary.parent.mkdir(parents=True)
+    review_summary.write_text("# Paper review summary\n", encoding="utf-8")
+
+    records = list_effective_document_ledger_records(kb_dir)
+
+    assert records["hash-a"]["review_summary_path"] == "review_summaries/2026-05-16/paper.md"
+    assert records["hash-a"]["workflow_state"]["summary_state"] == "ready"
+    assert records["hash-a"]["workflow_state"]["review_state"] == "unreviewed"
+    assert records["hash-a"]["workflow_state"]["promotion_state"] == "not_selected"
+
+
 def test_backfill_document_ledger_persists_effective_records(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / "raw").mkdir(parents=True)

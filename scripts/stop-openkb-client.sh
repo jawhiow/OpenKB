@@ -7,8 +7,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOST="${OPENKB_CLIENT_HOST:-0.0.0.0}"
 PORT="${OPENKB_CLIENT_PORT:-8765}"
 UI_HOST="${OPENKB_UI_HOST:-127.0.0.1}"
-UI_PORT="${OPENKB_UI_PORT:-3000}"
+UI_PORT="${OPENKB_UI_PORT:-8000}"
 STATE_DIR="${OPENKB_CLIENT_STATE_DIR:-$REPO_ROOT/.openkb-client}"
+UI_DIR="${OPENKB_UI_DIR:-$REPO_ROOT/openkb-new-ui}"
 API_PID_FILE="$STATE_DIR/client-api-$PORT.pid"
 UI_PID_FILE="$STATE_DIR/client-ui-$UI_PORT.pid"
 
@@ -23,7 +24,8 @@ is_openkb_ui_pid() {
   local pid="$1"
   local command_line
   command_line="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-  [[ "$command_line" == *next* && "$command_line" == *dev* && "$command_line" == *openkb-new-ui* ]]
+  [[ "$command_line" == *next* && "$command_line" == *dev* ]] || return 1
+  [[ "$command_line" == *"$UI_DIR"* || "$command_line" == *openkb-new-ui* ]]
 }
 
 is_running() {
@@ -102,6 +104,16 @@ if command -v lsof >/dev/null 2>&1; then
   ui_port_pids="$(lsof -nP -tiTCP:"$UI_PORT" -sTCP:LISTEN 2>/dev/null || true)"
 elif command -v fuser >/dev/null 2>&1; then
   ui_port_pids="$(fuser "$UI_PORT"/tcp 2>/dev/null || true)"
+fi
+
+if [[ -z "$ui_port_pids" ]]; then
+  ui_candidates="$(pgrep -a -f "next dev" 2>/dev/null || true)"
+  ui_port_pids="$(while read -r candidate cmdline; do
+    [[ -z "${candidate:-}" ]] && continue
+    if [[ "$cmdline" == *"$UI_DIR"* ]]; then
+      echo "$candidate"
+    fi
+  done <<< "$ui_candidates")"
 fi
 
 for pid in $ui_port_pids; do

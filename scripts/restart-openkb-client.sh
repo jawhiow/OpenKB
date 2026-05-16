@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOST="${OPENKB_CLIENT_HOST:-0.0.0.0}"
 PORT="${OPENKB_CLIENT_PORT:-8765}"
 UI_HOST="${OPENKB_UI_HOST:-127.0.0.1}"
-UI_PORT="${OPENKB_UI_PORT:-3000}"
+UI_PORT="${OPENKB_UI_PORT:-8000}"
 UI_URL="http://$UI_HOST:$UI_PORT"
 STATE_DIR="${OPENKB_CLIENT_STATE_DIR:-$REPO_ROOT/.openkb-client}"
 PYTHON_BIN="${OPENKB_CLIENT_PYTHON:-$REPO_ROOT/.venv/bin/python}"
@@ -105,13 +105,14 @@ if command -v setsid >/dev/null 2>&1; then
     >"$UI_OUT_LOG" 2>"$UI_ERR_LOG"
   ui_pid=""
   for _ in $(seq 1 60); do
-    ui_pid="$(pgrep -f "next dev" | while read -r candidate; do
-      cmdline="$(ps -p "$candidate" -o args= 2>/dev/null || true)"
+    ui_candidates="$(pgrep -a -f "next dev" 2>/dev/null || true)"
+    ui_pid="$(while read -r candidate cmdline; do
+      [[ -z "${candidate:-}" ]] && continue
       if [[ "$cmdline" == *"$UI_DIR"* ]]; then
         echo "$candidate"
         break
       fi
-    done)"
+    done <<< "$ui_candidates")"
     [[ -n "$ui_pid" ]] && break
     sleep 0.1
   done

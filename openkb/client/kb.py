@@ -209,6 +209,14 @@ def get_document_data(
     for document in get_source_documents(kb_dir):
         file_hash = str(document["hash"])
         ledger_record = ledger_records[file_hash]
+        review_summary_path = (
+            str(ledger_record.get("review_summary_path") or "")
+            or document.get("review_summary_path")
+        )
+        review_summary_exists = bool(
+            str(ledger_record.get("review_summary_path") or "")
+            or document.get("review_summary_exists", False)
+        )
         documents.append(
             {
                 "hash": file_hash,
@@ -224,14 +232,8 @@ def get_document_data(
                 "source_path": ledger_record.get("source_path") or document.get("source_path"),
                 "source_summary": document.get("source_summary"),
                 "summary_exists": document.get("summary_exists", False),
-                "review_summary_path": (
-                    str(ledger_record.get("review_summary_path") or "")
-                    or document.get("review_summary_path")
-                ),
-                "review_summary_exists": bool(
-                    str(ledger_record.get("review_summary_path") or "")
-                    or document.get("review_summary_exists", False)
-                ),
+                "review_summary_path": review_summary_path,
+                "review_summary_exists": review_summary_exists,
                 "ingested_at": document.get("ingested_at"),
                 "ingested_date": document.get("ingested_date"),
                 "related_count": document["related_count"],
@@ -239,7 +241,12 @@ def get_document_data(
                 "source_kind": ledger_record["source_kind"],
                 "scan_detected": ledger_record["scan_detected"],
                 "workflow_state": ledger_record["workflow_state"],
-                "review": ledger_record["review"],
+                "review": _review_payload_with_fallback_score(
+                    kb_dir,
+                    ledger_record["review"],
+                    review_summary_path=review_summary_path,
+                    review_summary_exists=review_summary_exists,
+                ),
                 "execution": ledger_record["execution"],
             }
         )
@@ -247,6 +254,15 @@ def get_document_data(
     for file_hash, ledger_record in ledger_records.items():
         if file_hash in known_hashes:
             continue
+        review_summary_path = str(ledger_record.get("review_summary_path") or "") or None
+        review_summary_exists = bool(
+            review_summary_storage_relative_path(ledger_record.get("review_summary_path"))
+            and (
+                kb_dir
+                / ".openkb"
+                / review_summary_storage_relative_path(ledger_record.get("review_summary_path"))
+            ).exists()
+        )
         documents.append(
             {
                 "hash": file_hash,
@@ -262,15 +278,8 @@ def get_document_data(
                 "source_path": str(ledger_record.get("source_path") or "") or None,
                 "source_summary": f"summaries/{ledger_record['stem']}.md" if ledger_record["stem"] else None,
                 "summary_exists": False,
-                "review_summary_path": str(ledger_record.get("review_summary_path") or "") or None,
-                "review_summary_exists": bool(
-                    review_summary_storage_relative_path(ledger_record.get("review_summary_path"))
-                    and (
-                        kb_dir
-                        / ".openkb"
-                        / review_summary_storage_relative_path(ledger_record.get("review_summary_path"))
-                    ).exists()
-                ),
+                "review_summary_path": review_summary_path,
+                "review_summary_exists": review_summary_exists,
                 "ingested_at": ledger_record.get("ingested_at"),
                 "ingested_date": _ingested_date_from_iso(ledger_record.get("ingested_at")),
                 "related_count": 0,
@@ -283,7 +292,12 @@ def get_document_data(
                 "source_kind": ledger_record["source_kind"],
                 "scan_detected": ledger_record["scan_detected"],
                 "workflow_state": ledger_record["workflow_state"],
-                "review": ledger_record["review"],
+                "review": _review_payload_with_fallback_score(
+                    kb_dir,
+                    ledger_record["review"],
+                    review_summary_path=review_summary_path,
+                    review_summary_exists=review_summary_exists,
+                ),
                 "execution": ledger_record["execution"],
             }
         )
@@ -345,6 +359,37 @@ def _filter_document_payloads(
             if _document_matches_workflow_status(document, workflow_allowed)
         ]
     return sorted(filtered, key=_document_sort_key, reverse=True)
+
+
+def _review_payload_with_fallback_score(
+    kb_dir: Path,
+    review: dict[str, Any],
+    *,
+    review_summary_path: str | None,
+    review_summary_exists: bool,
+) -> dict[str, Any]:
+    payload = dict(review)
+    if payload.get("summary_score") is not None or not review_summary_exists or not review_summary_path:
+        return payload
+    storage_rel = review_summary_storage_relative_path(review_summary_path)
+    if not storage_rel:
+        return payload
+    root = (Path(kb_dir) / ".openkb").resolve()
+    summary_path = (root / storage_rel).resolve()
+    if not summary_path.is_relative_to(root):
+        return payload
+    try:
+        summary_text = summary_path.read_text(encoding="utf-8")
+    except OSError:
+        return payload
+
+    from openkb.workflows.summary_pipeline import _fallback_summary_scorecard
+
+    scorecard = _fallback_summary_scorecard(summary_text)
+    payload["summary_score"] = scorecard["total_score"]
+    payload["summary_score_source"] = "heuristic"
+    payload["summary_scorecard"] = scorecard
+    return payload
 
 
 def _document_matches_query(document: dict[str, Any], needle: str) -> bool:

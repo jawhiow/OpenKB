@@ -275,6 +275,31 @@ def test_get_document_data_filters_by_query_and_workflow_state(tmp_path: Path):
     assert data["documents"] == []
 
 
+def test_get_document_data_treats_staged_review_summary_as_ready(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    review_summary = kb_dir / ".openkb" / "review_summaries" / "2026-05-09" / "manual.md"
+    review_summary.parent.mkdir(parents=True)
+    review_summary.write_text(
+        "# Manual review summary\n\n"
+        "- Revenue grew 20%\n"
+        "- Margin improved to 35%\n"
+        "- [[concepts/pricing_power]] remains relevant\n",
+        encoding="utf-8",
+    )
+
+    data = get_document_data(kb_dir, query="manual", summary_state="ready")
+
+    assert [document["hash"] for document in data["documents"]] == ["hash-b"]
+    manual = data["documents"][0]
+    assert manual["review_summary_path"] == "review_summaries/2026-05-09/manual.md"
+    assert manual["review_summary_exists"] is True
+    assert manual["workflow_state"]["summary_state"] == "ready"
+    assert manual["workflow_state"]["review_state"] == "unreviewed"
+    assert manual["review"]["summary_score"] is not None
+    assert manual["review"]["summary_score_source"] == "heuristic"
+    assert manual["review"]["summary_scorecard"]["method"] == "heuristic_summary_value_v1"
+
+
 def test_get_document_data_filters_new_and_any_failed_workflow_status(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
     upsert_document_ledger_record(

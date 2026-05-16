@@ -335,7 +335,7 @@ def test_client_root_reports_api_and_new_ui_metadata():
         "ok": True,
         "service": "openkb-client-api",
         "ui": "openkb-new-ui",
-        "ui_dev_url": "http://127.0.0.1:3000",
+        "ui_dev_url": "http://127.0.0.1:8000",
     }
 
 
