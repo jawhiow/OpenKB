@@ -1,0 +1,3 @@
+[boot]
+systemd=true
+command=/usr/sbin/runuser -u jawhiow -- /usr/bin/bash -lc 'export PATH=/home/jawhiow/.local/node/bin:/home/jawhiow/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; /home/jawhiow/workspace/OpenKB/scripts/restart-openkb-client.sh'

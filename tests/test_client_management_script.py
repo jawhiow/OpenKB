@@ -82,21 +82,21 @@ def test_shell_restart_script_starts_new_ui_and_api():
 
     assert "openkb-new-ui" in text
     assert 'OPENKB_UI_NODE_BIN' in text
-    assert 'OPENKB_UI_PORT:-8000' in text
+    assert 'OPENKB_UI_PORT:-8764' in text
     assert 'run dev' in text
     assert 'pgrep -a -f "next dev" 2>/dev/null || true' in text
     assert "OPENKB_API_TARGET" in text
     assert "client-api-" in text
     assert "client-ui-" in text
-    assert "--port ${PORT:-8000}" in package["scripts"]["dev"]
-    assert "--port ${PORT:-8000}" in package["scripts"]["start"]
+    assert "--port ${PORT:-8764}" in package["scripts"]["dev"]
+    assert "--port ${PORT:-8764}" in package["scripts"]["start"]
 
 
 def test_shell_stop_script_stops_new_ui_and_api():
     text = (REPO_ROOT / "scripts" / "stop-openkb-client.sh").read_text(encoding="utf-8")
 
     assert "OPENKB_UI_PORT" in text
-    assert 'OPENKB_UI_PORT:-8000' in text
+    assert 'OPENKB_UI_PORT:-8764' in text
     assert "client-api-" in text
     assert "client-ui-" in text
     assert "next" in text

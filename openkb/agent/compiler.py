@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable, Iterator
@@ -3003,6 +3003,7 @@ async def _compile_concepts(
     max_concurrency: int,
     doc_brief: str = "",
     doc_type: str = "short",
+    write_lock=None,
 ) -> None:
     """Shared Steps 2-4: concepts plan → generate/update → index.
 
@@ -3010,6 +3011,9 @@ async def _compile_concepts(
     actions, then executes each action type accordingly.
     """
     source_file = f"summaries/{doc_name}.md"
+
+    def _write_context():
+        return write_lock if write_lock is not None else nullcontext()
 
     # --- Step 2a: Get company plan (A cached) ---
     company_briefs = _read_company_briefs(wiki_dir)
@@ -3138,7 +3142,8 @@ async def _compile_concepts(
         | {f"summaries/{doc_name}"}
     )
     summary = _normalize_wiki_links(summary, concept_aliases, allowed_concept_slugs, valid_pages)
-    _rewrite_summary_links(wiki_dir, doc_name, concept_aliases, allowed_concept_slugs, valid_pages)
+    with _write_context():
+        _rewrite_summary_links(wiki_dir, doc_name, concept_aliases, allowed_concept_slugs, valid_pages)
 
     investment_page_items = [
         (subdir, item)
@@ -3147,7 +3152,8 @@ async def _compile_concepts(
     ]
 
     if not company_items and not investment_page_items and not create_items and not update_items and not related_items:
-        _update_index(wiki_dir, doc_name, [], doc_brief=doc_brief, doc_type=doc_type)
+        with _write_context():
+            _update_index(wiki_dir, doc_name, [], doc_brief=doc_brief, doc_type=doc_type)
         return
 
     # --- Step 3: Generate/update company and concept pages concurrently (A cached) ---
@@ -3348,12 +3354,32 @@ async def _compile_concepts(
     concept_names: list[str] = []
     concept_briefs_map: dict[str, str] = {}
 
+    company_results = []
+    investment_page_results = []
+    concept_results = []
+
     if company_tasks:
         total = len(company_tasks)
         sys.stdout.write(f"    Generating {total} company page(s) (concurrency={max_concurrency})...\n")
         sys.stdout.flush()
 
         company_results = await asyncio.gather(*company_tasks, return_exceptions=True)
+
+    if investment_page_tasks:
+        total = len(investment_page_tasks)
+        sys.stdout.write(f"    Generating {total} dedicated investment page(s) (concurrency={max_concurrency})...\n")
+        sys.stdout.flush()
+
+        investment_page_results = await asyncio.gather(*investment_page_tasks, return_exceptions=True)
+
+    if tasks:
+        total = len(tasks)
+        sys.stdout.write(f"    Generating {total} concept(s) (concurrency={max_concurrency})...\n")
+        sys.stdout.flush()
+
+        concept_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    with _write_context():
         for r in company_results:
             if isinstance(r, Exception):
                 logger.warning("Company generation failed: %s", r)
@@ -3374,12 +3400,6 @@ async def _compile_concepts(
             if index_brief:
                 company_briefs_map[safe_name] = index_brief
 
-    if investment_page_tasks:
-        total = len(investment_page_tasks)
-        sys.stdout.write(f"    Generating {total} dedicated investment page(s) (concurrency={max_concurrency})...\n")
-        sys.stdout.flush()
-
-        investment_page_results = await asyncio.gather(*investment_page_tasks, return_exceptions=True)
         for r in investment_page_results:
             if isinstance(r, Exception):
                 logger.warning("Investment page generation failed: %s", r)
@@ -3400,14 +3420,7 @@ async def _compile_concepts(
             if brief:
                 investment_page_briefs_map[subdir][safe_name] = brief
 
-    if tasks:
-        total = len(tasks)
-        sys.stdout.write(f"    Generating {total} concept(s) (concurrency={max_concurrency})...\n")
-        sys.stdout.flush()
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for r in results:
+        for r in concept_results:
             if isinstance(r, Exception):
                 logger.warning("Concept generation failed: %s", r)
                 continue
@@ -3432,74 +3445,31 @@ async def _compile_concepts(
             if index_brief:
                 concept_briefs_map[safe_name] = index_brief
 
-    # --- Step 3b: Process related items (code only, no LLM) ---
-    sanitized_related = [_sanitize_concept_name(s) for s in related_items]
-    for slug in sanitized_related:
-        _add_related_link(wiki_dir, slug, doc_name, source_file)
+        # --- Step 3b: Process related items (code only, no LLM) ---
+        sanitized_related = [_sanitize_concept_name(s) for s in related_items]
+        for slug in sanitized_related:
+            _add_related_link(wiki_dir, slug, doc_name, source_file)
 
-    # --- Step 3c: Backlink — summary ↔ concepts (code only) ---
-    successful_concept_slugs = set(concept_names + sanitized_related)
-    final_valid_pages = _known_wiki_pages(wiki_dir) | {f"summaries/{doc_name}"}
-    final_aliases = {
-        key: slug
-        for key, slug in concept_aliases.items()
-        if slug in successful_concept_slugs
-    }
-    _rewrite_summary_links(
-        wiki_dir,
-        doc_name,
-        final_aliases,
-        successful_concept_slugs,
-        final_valid_pages,
-    )
-    for slug in concept_names:
-        concept_path = wiki_dir / "concepts" / f"{slug}.md"
-        if not concept_path.exists():
-            continue
-        text = concept_path.read_text(encoding="utf-8")
-        normalized_text = _normalize_wiki_links(
-            text,
+        # --- Step 3c: Backlink — summary ↔ concepts (code only) ---
+        successful_concept_slugs = set(concept_names + sanitized_related)
+        final_valid_pages = _known_wiki_pages(wiki_dir) | {f"summaries/{doc_name}"}
+        final_aliases = {
+            key: slug
+            for key, slug in concept_aliases.items()
+            if slug in successful_concept_slugs
+        }
+        _rewrite_summary_links(
+            wiki_dir,
+            doc_name,
             final_aliases,
             successful_concept_slugs,
             final_valid_pages,
         )
-        if normalized_text != text:
-            concept_path.write_text(normalized_text, encoding="utf-8")
-            text = normalized_text
-        _record_generated_page_evidence(
-            wiki_dir,
-            f"concepts/{slug}.md",
-            text,
-            source_file,
-            merge_sources=True,
-        )
-    for slug in company_names:
-        company_path = wiki_dir / "companies" / f"{slug}.md"
-        if not company_path.exists():
-            continue
-        text = company_path.read_text(encoding="utf-8")
-        normalized_text = _normalize_wiki_links(
-            text,
-            final_aliases,
-            successful_concept_slugs,
-            final_valid_pages,
-        )
-        if normalized_text != text:
-            company_path.write_text(normalized_text, encoding="utf-8")
-            text = normalized_text
-        _record_generated_page_evidence(
-            wiki_dir,
-            f"companies/{slug}.md",
-            text,
-            source_file,
-            merge_sources=True,
-        )
-    for subdir, names in investment_page_names.items():
-        for slug in names:
-            page_path = wiki_dir / subdir / f"{slug}.md"
-            if not page_path.exists():
+        for slug in concept_names:
+            concept_path = wiki_dir / "concepts" / f"{slug}.md"
+            if not concept_path.exists():
                 continue
-            text = page_path.read_text(encoding="utf-8")
+            text = concept_path.read_text(encoding="utf-8")
             normalized_text = _normalize_wiki_links(
                 text,
                 final_aliases,
@@ -3507,28 +3477,71 @@ async def _compile_concepts(
                 final_valid_pages,
             )
             if normalized_text != text:
-                page_path.write_text(normalized_text, encoding="utf-8")
+                concept_path.write_text(normalized_text, encoding="utf-8")
                 text = normalized_text
             _record_generated_page_evidence(
                 wiki_dir,
-                f"{subdir}/{slug}.md",
+                f"concepts/{slug}.md",
                 text,
                 source_file,
                 merge_sources=True,
             )
+        for slug in company_names:
+            company_path = wiki_dir / "companies" / f"{slug}.md"
+            if not company_path.exists():
+                continue
+            text = company_path.read_text(encoding="utf-8")
+            normalized_text = _normalize_wiki_links(
+                text,
+                final_aliases,
+                successful_concept_slugs,
+                final_valid_pages,
+            )
+            if normalized_text != text:
+                company_path.write_text(normalized_text, encoding="utf-8")
+                text = normalized_text
+            _record_generated_page_evidence(
+                wiki_dir,
+                f"companies/{slug}.md",
+                text,
+                source_file,
+                merge_sources=True,
+            )
+        for subdir, names in investment_page_names.items():
+            for slug in names:
+                page_path = wiki_dir / subdir / f"{slug}.md"
+                if not page_path.exists():
+                    continue
+                text = page_path.read_text(encoding="utf-8")
+                normalized_text = _normalize_wiki_links(
+                    text,
+                    final_aliases,
+                    successful_concept_slugs,
+                    final_valid_pages,
+                )
+                if normalized_text != text:
+                    page_path.write_text(normalized_text, encoding="utf-8")
+                    text = normalized_text
+                _record_generated_page_evidence(
+                    wiki_dir,
+                    f"{subdir}/{slug}.md",
+                    text,
+                    source_file,
+                    merge_sources=True,
+                )
 
-    all_concept_slugs = concept_names + sanitized_related
-    if all_concept_slugs:
-        _backlink_summary(wiki_dir, doc_name, all_concept_slugs)
-        _backlink_concepts(wiki_dir, doc_name, all_concept_slugs)
+        all_concept_slugs = concept_names + sanitized_related
+        if all_concept_slugs:
+            _backlink_summary(wiki_dir, doc_name, all_concept_slugs)
+            _backlink_concepts(wiki_dir, doc_name, all_concept_slugs)
 
-    # --- Step 4: Update index (code only) ---
-    _update_index(wiki_dir, doc_name, concept_names,
-                  doc_brief=doc_brief, concept_briefs=concept_briefs_map,
-                  company_names=company_names, company_briefs=company_briefs_map,
-                  industry_names=investment_page_names["industries"],
-                  industry_briefs=investment_page_briefs_map["industries"],
-                  doc_type=doc_type)
+        # --- Step 4: Update index (code only) ---
+        _update_index(wiki_dir, doc_name, concept_names,
+                      doc_brief=doc_brief, concept_briefs=concept_briefs_map,
+                      company_names=company_names, company_briefs=company_briefs_map,
+                      industry_names=investment_page_names["industries"],
+                      industry_briefs=investment_page_briefs_map["industries"],
+                      doc_type=doc_type)
 
 
 async def _compile_short_doc_to_wiki(

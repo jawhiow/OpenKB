@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -42,6 +43,18 @@ from openkb.workflows.summary_pipeline import read_review_summary
 
 
 PromotionProgressCallback = Callable[[dict[str, Any]], None]
+_PROMOTION_WRITE_LOCKS: dict[str, threading.RLock] = {}
+_PROMOTION_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _promotion_write_lock(kb_dir: Path) -> threading.RLock:
+    key = str(Path(kb_dir).resolve())
+    with _PROMOTION_WRITE_LOCKS_GUARD:
+        lock = _PROMOTION_WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PROMOTION_WRITE_LOCKS[key] = lock
+        return lock
 
 
 def promote_summary_document(
@@ -51,9 +64,11 @@ def promote_summary_document(
     model: str | None = None,
     force: bool = False,
     max_concurrency: int | None = None,
+    write_lock: Any | None = None,
 ) -> dict[str, Any]:
     """Promote one approved summary into downstream wiki synthesis."""
     kb_dir = Path(kb_dir)
+    lock = write_lock or _promotion_write_lock(kb_dir)
     document = resolve_source_document(kb_dir, selector)
     file_hash = str(document["hash"])
     stem = str(document["stem"])
@@ -76,7 +91,8 @@ def promote_summary_document(
             "promotion_state": "promoted",
         }
 
-    update_document_workflow_state(kb_dir, file_hash, {"promotion_state": "running"})
+    with lock:
+        update_document_workflow_state(kb_dir, file_hash, {"promotion_state": "running"})
     try:
         artifacts = _run_promotion_compile(
             kb_dir,
@@ -84,19 +100,22 @@ def promote_summary_document(
             ledger_record=ledger_record,
             model=model,
             max_concurrency=max_concurrency,
+            write_lock=lock,
         )
     except Exception as exc:
-        _mark_promotion_failed(kb_dir, file_hash, exc)
+        with lock:
+            _mark_promotion_failed(kb_dir, file_hash, exc)
         raise
 
-    upsert_document_ledger_record(
-        kb_dir,
-        file_hash,
-        {
-            "workflow_state": {"promotion_state": "promoted"},
-            "execution": {"last_error": "", "updated_at": _now_iso()},
-        },
-    )
+    with lock:
+        upsert_document_ledger_record(
+            kb_dir,
+            file_hash,
+            {
+                "workflow_state": {"promotion_state": "promoted"},
+                "execution": {"last_error": "", "updated_at": _now_iso()},
+            },
+        )
     return {
         "file_hash": file_hash,
         "name": document["name"],
@@ -112,10 +131,14 @@ def promote_summary_documents(
     file_hashes: list[str] | None = None,
     model: str | None = None,
     force: bool = False,
+    max_workers: int = 1,
+    write_lock: Any | None = None,
     progress_callback: PromotionProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Batch-promote approved summaries."""
+    del max_workers
     selected_hashes = _selected_promotion_hashes(kb_dir, file_hashes=file_hashes)
+    lock = write_lock or _promotion_write_lock(Path(kb_dir))
     results: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     promoted = 0
@@ -131,7 +154,7 @@ def promote_summary_documents(
     for index, file_hash in enumerate(selected_hashes, 1):
         emit("start", index=index, file_hash=file_hash)
         try:
-            result = promote_summary_document(kb_dir, file_hash, model=model, force=force)
+            result = promote_summary_document(kb_dir, file_hash, model=model, force=force, write_lock=lock)
         except Exception as exc:
             completed += 1
             failure = {"file_hash": file_hash, "name": _promotion_document_name(kb_dir, file_hash), "error": str(exc)}
@@ -163,6 +186,7 @@ def _run_promotion_compile(
     ledger_record: dict[str, Any] | None,
     model: str | None,
     max_concurrency: int | None,
+    write_lock: Any | None,
 ) -> dict[str, str]:
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     selected_model = model or str(config.get("model") or DEFAULT_CONFIG["model"])
@@ -176,19 +200,21 @@ def _run_promotion_compile(
         ingested_at=document.get("ingested_at"),
         review_summary_path=str((ledger_record or {}).get("review_summary_path") or ""),
     )
-    promotion_artifacts = _promote_source_artifacts(kb_dir, document, ledger_record=ledger_record)
     doc_type = _doc_type_for_document(document)
     summary_body = summary_text
     if summary_body.startswith("---"):
         end = summary_body.find("---", 3)
         if end != -1:
             summary_body = summary_body[end + 3:].lstrip("\n")
-    _write_summary(wiki_dir, stem, summary_body, doc_type=doc_type)
-    _rewrite_formal_summary_full_text(
-        wiki_dir / "summaries" / f"{stem}.md",
-        promotion_artifacts["formal_source_rel"],
-    )
-    summary = (wiki_dir / "summaries" / f"{stem}.md").read_text(encoding="utf-8")
+    lock = write_lock or _promotion_write_lock(kb_dir)
+    with lock:
+        promotion_artifacts = _promote_source_artifacts(kb_dir, document, ledger_record=ledger_record)
+        _write_summary(wiki_dir, stem, summary_body, doc_type=doc_type)
+        _rewrite_formal_summary_full_text(
+            wiki_dir / "summaries" / f"{stem}.md",
+            promotion_artifacts["formal_source_rel"],
+        )
+        summary = (wiki_dir / "summaries" / f"{stem}.md").read_text(encoding="utf-8")
     system_msg = {
         "role": "system",
         "content": _SYSTEM_TEMPLATE.format(schema_md=get_agents_md(wiki_dir), language=language),
@@ -209,15 +235,17 @@ def _run_promotion_compile(
             get_compile_max_concurrency(max_concurrency),
             doc_brief="",
             doc_type=doc_type,
+            write_lock=lock,
         )
     )
-    _update_promoted_document_metadata(
-        kb_dir,
-        document,
-        ledger_record=ledger_record,
-        raw_rel=promotion_artifacts["formal_raw_rel"],
-        source_rel=promotion_artifacts["formal_source_rel"],
-    )
+    with lock:
+        _update_promoted_document_metadata(
+            kb_dir,
+            document,
+            ledger_record=ledger_record,
+            raw_rel=promotion_artifacts["formal_raw_rel"],
+            source_rel=promotion_artifacts["formal_source_rel"],
+        )
     return {
         "model": selected_model,
         "doc_type": doc_type,
