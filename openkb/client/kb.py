@@ -630,7 +630,36 @@ def _resolve_wiki_path(kb_dir: Path, relative_path: str) -> Path:
     return full_path
 
 
-def build_wiki_tree(kb_dir: Path) -> list[dict[str, Any]]:
+def _extract_markdown_title(path: Path) -> str:
+    """Return the first Markdown H1 for display, falling back to the file stem."""
+    fallback = path.stem
+    if path.suffix.lower() != ".md":
+        return fallback
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return fallback
+    in_frontmatter = text.startswith("---\n")
+    in_fence = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if in_frontmatter:
+            if line == "---":
+                in_frontmatter = False
+            continue
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = re.match(r"^#\s+(.+?)\s*#*\s*$", line)
+        if match:
+            title = match.group(1).strip()
+            return title or fallback
+    return fallback
+
+
+def build_wiki_tree(kb_dir: Path, *, query: str = "") -> list[dict[str, Any]]:
     """Return a flat, sorted tree of readable wiki files."""
     kb_dir = require_kb_dir(kb_dir)
     root = kb_dir / "wiki"
@@ -644,10 +673,17 @@ def build_wiki_tree(kb_dir: Path) -> list[dict[str, Any]]:
         parts = relative.split("/")
         if parts and parts[0] in LEGACY_WIKI_DIRS:
             continue
+        title = _extract_markdown_title(path)
+        needle = str(query or "").strip().casefold()
+        if needle:
+            haystack = " ".join((relative, path.name, path.stem, title, "/".join(parts[:-1]))).casefold()
+            if needle not in haystack:
+                continue
         entries.append(
             {
                 "path": relative,
                 "name": path.name,
+                "title": title,
                 "directory": "/".join(parts[:-1]),
                 "depth": len(parts) - 1,
                 "extension": path.suffix.lower(),

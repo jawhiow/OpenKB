@@ -30,6 +30,7 @@ import { getReviewSummaryFile, getWikiFile, saveWikiFile } from '@/lib/api';
 interface WikiFileNode {
   path: string;
   name: string;
+  title: string;
   directory: string;
   depth: number;
   extension: string;
@@ -221,6 +222,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
     const syntheticFile: WikiFileNode = {
       path: selectedFilePath,
       name: selectedFilePath.split('/').pop() || selectedFilePath,
+      title: (selectedFilePath.split('/').pop() || selectedFilePath).replace(/\.md$/i, ''),
       directory: selectedFilePath.split('/').slice(0, -1).join('/'),
       depth: Math.max(selectedFilePath.split('/').length - 1, 0),
       extension: '.md',
@@ -235,6 +237,7 @@ export function WikiTab({ kbDir, initialPath }: { kbDir: string; initialPath?: s
     return allFiles.filter(
       (file) =>
         file.name.toLowerCase().includes(trimmedSearch) ||
+        file.title.toLowerCase().includes(trimmedSearch) ||
         file.path.toLowerCase().includes(trimmedSearch),
     );
   }, [allFiles, trimmedSearch]);
@@ -654,7 +657,19 @@ function FileGroupSection({
                     isActive ? 'opacity-90' : 'opacity-60',
                   )}
                 />
-                <span className="min-w-0 flex-1 truncate">{file.name}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{file.title || file.name}</span>
+                  {file.title && file.title !== file.name ? (
+                    <span
+                      className={cn(
+                        'block truncate text-[10px]',
+                        isActive ? 'text-primary-foreground/70' : 'text-muted-foreground',
+                      )}
+                    >
+                      {file.path}
+                    </span>
+                  ) : null}
+                </span>
               </button>
             );
           })}

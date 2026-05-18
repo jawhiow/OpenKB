@@ -449,6 +449,7 @@ def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
     assert summaries_entry["directory"] == "summaries"
     assert summaries_entry["depth"] == 1
     assert summaries_entry["extension"] == ".md"
+    assert summaries_entry["title"] == "Paper"
     assert read_wiki_file(kb_dir, "index.md")["content"] == "# Index\n"
 
     write_wiki_file(kb_dir, "concepts/new-page.md", "# New\n")
@@ -462,6 +463,29 @@ def test_wiki_tree_and_file_access_are_limited_to_wiki_root(tmp_path: Path):
         read_wiki_file(kb_dir, "../.env")
     with pytest.raises(PathSecurityError):
         write_wiki_file(kb_dir, "../outside.md", "bad")
+
+
+def test_wiki_tree_uses_h1_titles_and_searches_by_h1(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / "wiki" / "companies").mkdir()
+    (kb_dir / "wiki" / "companies" / "szse-000002.md").write_text(
+        "---\nsources: []\n---\n\n# 万科（Vanke）\n\n## Business\n",
+        encoding="utf-8",
+    )
+    (kb_dir / "wiki" / "companies" / "no-heading.md").write_text(
+        "Body without a heading\n",
+        encoding="utf-8",
+    )
+
+    tree = build_wiki_tree(kb_dir)
+    vanke = next(entry for entry in tree if entry["path"] == "companies/szse-000002.md")
+    fallback = next(entry for entry in tree if entry["path"] == "companies/no-heading.md")
+
+    assert vanke["title"] == "万科（Vanke）"
+    assert fallback["title"] == "no-heading"
+
+    h1_matches = build_wiki_tree(kb_dir, query="万科")
+    assert [entry["path"] for entry in h1_matches] == ["companies/szse-000002.md"]
 
 
 def test_config_data_can_be_updated_with_visible_api_key(tmp_path: Path):

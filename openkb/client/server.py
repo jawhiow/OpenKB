@@ -1318,9 +1318,9 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
         return {"job": job.to_dict()}
 
     @app.get("/api/wiki/tree")
-    def wiki_tree(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+    def wiki_tree(kb_dir: str | None = Query(default=None), query: str = "") -> dict[str, Any]:
         try:
-            return {"files": kb_helpers.build_wiki_tree(_resolve_kb_dir(kb_dir))}
+            return {"files": kb_helpers.build_wiki_tree(_resolve_kb_dir(kb_dir), query=query)}
         except Exception as exc:
             raise translate_error(exc) from exc
 
