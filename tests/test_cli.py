@@ -50,6 +50,8 @@ def test_init_creates_structure(tmp_path):
         assert (cwd / "wiki" / "index.md").is_file()
         assert (cwd / ".openkb" / "config.yaml").is_file()
         assert (cwd / ".openkb" / "hashes.json").is_file()
+        assert (cwd / ".openkb" / "entity_registry" / "companies.yaml").is_file()
+        assert (cwd / ".openkb" / "entity_registry" / "industries.yaml").is_file()
         assert (cwd / ".git").is_dir()
         assert "/raw/" in (cwd / ".gitignore").read_text(encoding="utf-8")
 
@@ -66,6 +68,8 @@ def test_init_creates_structure(tmp_path):
 
         config = json.loads(json.dumps(yaml.safe_load((cwd / ".openkb" / "config.yaml").read_text())))
         assert config["wire_api"] == "responses"
+        assert (cwd / ".openkb" / "entity_registry" / "companies.yaml").read_text(encoding="utf-8") == "companies: {}\n"
+        assert (cwd / ".openkb" / "entity_registry" / "industries.yaml").read_text(encoding="utf-8") == "industries: {}\n"
 
         # index.md header
         index_content = (cwd / "wiki" / "index.md").read_text()

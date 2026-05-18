@@ -22,6 +22,7 @@ from openkb.agent.compiler import (
     _ensure_summary_links_in_plan,
     _normalize_concept_links,
     _normalize_wiki_links,
+    _registered_entity_link_aliases,
     _parse_json,
     _sanitize_concept_name,
     _extract_company_candidates_from_summary,
@@ -40,9 +41,12 @@ from openkb.agent.compiler import (
     _canonicalize_company_item,
     _canonicalize_concept_item,
     _canonicalize_investment_page_item,
+    _resolve_company_items_against_registry,
+    _resolve_investment_page_plan_against_registry,
     get_compile_max_concurrency,
     _llm_call,
 )
+from openkb.entity_registry import EntityRegistry
 from openkb.lint import find_broken_links
 from openkb.llm_runtime import CompletionResult
 
@@ -95,6 +99,112 @@ def test_generated_page_items_prefer_chinese_title_for_filename():
     assert _canonicalize_concept_item(
         {"name": "advanced-packaging", "title": "先进封装"}
     )["name"] == "先进封装"
+
+
+def test_resolve_company_items_against_registry_uses_canonical_id(tmp_path):
+    registry_dir = tmp_path / ".openkb" / "entity_registry"
+    registry_dir.mkdir(parents=True)
+    (registry_dir / "companies.yaml").write_text(
+        (
+            "companies:\n"
+            "  tencent-holdings:\n"
+            "    canonical_name: 腾讯控股有限公司\n"
+            "    display_name: 腾讯控股\n"
+            "    aliases: [腾讯控股, 腾讯控股有限公司, Tencent Holdings]\n"
+        ),
+        encoding="utf-8",
+    )
+    (registry_dir / "industries.yaml").write_text("industries: {}\n", encoding="utf-8")
+    registry = EntityRegistry.load(tmp_path)
+
+    items, resolved = _resolve_company_items_against_registry(
+        [{"name": "腾讯控股有限公司", "title": "腾讯控股有限公司", "action": "create"}],
+        registry,
+    )
+
+    assert items == [{"name": "tencent-holdings", "title": "腾讯控股有限公司", "action": "update"}]
+    assert resolved[0].path == "companies/tencent-holdings"
+
+
+def test_resolve_investment_page_plan_against_registry_canonicalizes_industry_and_drops_company(tmp_path):
+    registry_dir = tmp_path / ".openkb" / "entity_registry"
+    registry_dir.mkdir(parents=True)
+    (registry_dir / "companies.yaml").write_text(
+        (
+            "companies:\n"
+            "  tencent-holdings:\n"
+            "    canonical_name: 腾讯控股有限公司\n"
+            "    display_name: 腾讯控股\n"
+            "    aliases: [腾讯控股]\n"
+        ),
+        encoding="utf-8",
+    )
+    (registry_dir / "industries.yaml").write_text(
+        (
+            "industries:\n"
+            "  online-advertising:\n"
+            "    canonical_name: 在线广告\n"
+            "    display_name: 在线广告\n"
+            "    aliases: [在线广告, 互联网广告]\n"
+        ),
+        encoding="utf-8",
+    )
+    registry = EntityRegistry.load(tmp_path)
+
+    plan, resolved = _resolve_investment_page_plan_against_registry(
+        {
+            "industries": [
+                {"name": "腾讯控股", "title": "腾讯控股", "action": "create"},
+                {"name": "互联网广告", "title": "互联网广告", "action": "create"},
+                {"name": "游戏行业", "title": "游戏行业", "action": "create"},
+            ],
+        },
+        registry,
+    )
+
+    assert plan["industries"] == [
+        {"name": "online-advertising", "title": "在线广告", "action": "update"},
+        {"name": "游戏行业", "title": "游戏行业", "action": "create"},
+    ]
+    assert resolved[0].path == "industries/online-advertising"
+
+
+def test_registered_entity_link_aliases_normalize_company_and_industry_links(tmp_path):
+    registry_dir = tmp_path / ".openkb" / "entity_registry"
+    registry_dir.mkdir(parents=True)
+    (registry_dir / "companies.yaml").write_text(
+        (
+            "companies:\n"
+            "  tencent-holdings:\n"
+            "    canonical_name: 腾讯控股有限公司\n"
+            "    display_name: 腾讯控股\n"
+            "    aliases: [腾讯控股]\n"
+        ),
+        encoding="utf-8",
+    )
+    (registry_dir / "industries.yaml").write_text(
+        (
+            "industries:\n"
+            "  online-advertising:\n"
+            "    canonical_name: 在线广告\n"
+            "    display_name: 在线广告\n"
+            "    aliases: [互联网广告]\n"
+        ),
+        encoding="utf-8",
+    )
+    registry = EntityRegistry.load(tmp_path)
+
+    aliases = _registered_entity_link_aliases(registry)
+    text = "[[companies/腾讯控股]] benefits from [[industries/互联网广告]]."
+    normalized = _normalize_wiki_links(
+        text,
+        aliases,
+        allowed_slugs=set(),
+        valid_pages={"companies/tencent-holdings", "industries/online-advertising"},
+    )
+
+    assert "[[companies/tencent-holdings]]" in normalized
+    assert "[[industries/online-advertising]]" in normalized
 
 
 def test_dedupe_concept_plan_merges_suffix_variant_into_existing_concept(tmp_path):
@@ -1610,6 +1720,115 @@ class TestCompileConceptsPlan:
         assert "[[concepts/HBM]] - Memory bottleneck for AI accelerators" in index_text
 
     @pytest.mark.asyncio
+    async def test_company_plan_uses_registered_canonical_company_path(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "tencent-report.md").write_text(
+            "腾讯控股有限公司游戏和广告业务更新。",
+            encoding="utf-8",
+        )
+        registry_dir = tmp_path / ".openkb" / "entity_registry"
+        registry_dir.mkdir(parents=True)
+        (registry_dir / "companies.yaml").write_text(
+            (
+                "companies:\n"
+                "  tencent-holdings:\n"
+                "    canonical_name: 腾讯控股有限公司\n"
+                "    display_name: 腾讯控股\n"
+                "    aliases: [腾讯控股, 腾讯控股有限公司, Tencent Holdings]\n"
+            ),
+            encoding="utf-8",
+        )
+        (registry_dir / "industries.yaml").write_text("industries: {}\n", encoding="utf-8")
+
+        company_plan_response = json.dumps({
+            "companies": [
+                {"name": "腾讯控股有限公司", "title": "腾讯控股有限公司", "action": "create"},
+            ],
+        })
+        investment_page_plan_response = json.dumps({"industries": []})
+        concept_plan_response = json.dumps({"create": [], "update": [], "related": []})
+        company_page_response = json.dumps({
+            "brief": "游戏和广告业务更新",
+            "content": "# 腾讯控股有限公司\n\n公司业务更新。",
+        })
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    company_plan_response,
+                    investment_page_plan_response,
+                    concept_plan_response,
+                ]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([company_page_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki,
+                tmp_path,
+                "gpt-4o-mini",
+                {"role": "system", "content": "You are a wiki agent."},
+                {"role": "user", "content": "Document content."},
+                "腾讯控股有限公司游戏和广告业务更新。",
+                "tencent-report",
+                5,
+            )
+
+        assert (wiki / "companies" / "tencent-holdings.md").exists()
+        assert not (wiki / "companies" / "腾讯控股有限公司.md").exists()
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[companies/tencent-holdings]] - 游戏和广告业务更新" in index_text
+
+    @pytest.mark.asyncio
+    async def test_registered_company_summary_concept_link_does_not_create_concept(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "tencent-report.md").write_text(
+            "See [[concepts/腾讯控股]] for details.",
+            encoding="utf-8",
+        )
+        registry_dir = tmp_path / ".openkb" / "entity_registry"
+        registry_dir.mkdir(parents=True)
+        (registry_dir / "companies.yaml").write_text(
+            (
+                "companies:\n"
+                "  tencent-holdings:\n"
+                "    canonical_name: 腾讯控股有限公司\n"
+                "    display_name: 腾讯控股\n"
+                "    aliases: [腾讯控股]\n"
+            ),
+            encoding="utf-8",
+        )
+        (registry_dir / "industries.yaml").write_text("industries: {}\n", encoding="utf-8")
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    json.dumps({"companies": []}),
+                    json.dumps({"industries": []}),
+                    json.dumps({"create": [], "update": [], "related": []}),
+                ]),
+            ),
+            patch("openkb.agent.compiler.acompletion", side_effect=_mock_acompletion([])) as mock_acompletion,
+        ):
+            await _compile_concepts(
+                wiki,
+                tmp_path,
+                "gpt-4o-mini",
+                {"role": "system", "content": "You are a wiki agent."},
+                {"role": "user", "content": "Document content."},
+                "See [[concepts/腾讯控股]] for details.",
+                "tencent-report",
+                5,
+            )
+
+        assert mock_acompletion.await_count == 0
+        assert not (wiki / "concepts" / "腾讯控股.md").exists()
+
+    @pytest.mark.asyncio
     async def test_investment_page_plan_routes_only_industries_to_dedicated_pages(self, tmp_path):
         wiki = self._setup_wiki(tmp_path)
         (wiki / "summaries" / "test-doc.md").write_text(
@@ -1690,6 +1909,79 @@ class TestCompileConceptsPlan:
         assert "## Themes" not in index_text
         assert "## Metrics" not in index_text
         assert "## Risks" not in index_text
+
+    @pytest.mark.asyncio
+    async def test_industry_plan_uses_registered_path_and_drops_company_alias(self, tmp_path):
+        wiki = self._setup_wiki(tmp_path)
+        (wiki / "summaries" / "tencent-report.md").write_text(
+            "腾讯控股受益于互联网广告复苏。",
+            encoding="utf-8",
+        )
+        registry_dir = tmp_path / ".openkb" / "entity_registry"
+        registry_dir.mkdir(parents=True)
+        (registry_dir / "companies.yaml").write_text(
+            (
+                "companies:\n"
+                "  tencent-holdings:\n"
+                "    canonical_name: 腾讯控股有限公司\n"
+                "    display_name: 腾讯控股\n"
+                "    aliases: [腾讯控股]\n"
+            ),
+            encoding="utf-8",
+        )
+        (registry_dir / "industries.yaml").write_text(
+            (
+                "industries:\n"
+                "  online-advertising:\n"
+                "    canonical_name: 在线广告\n"
+                "    display_name: 在线广告\n"
+                "    aliases: [在线广告, 互联网广告]\n"
+            ),
+            encoding="utf-8",
+        )
+
+        company_plan_response = json.dumps({"companies": []})
+        investment_page_plan_response = json.dumps({
+            "industries": [
+                {"name": "腾讯控股", "title": "腾讯控股", "action": "create"},
+                {"name": "互联网广告", "title": "互联网广告", "action": "create"},
+            ],
+        })
+        concept_plan_response = json.dumps({"create": [], "update": [], "related": []})
+        industry_page_response = json.dumps({
+            "brief": "平台广告变现行业",
+            "content": "# 在线广告\n\n广告行业更新。",
+        })
+
+        with (
+            patch(
+                "openkb.agent.compiler.completion",
+                side_effect=_mock_completion([
+                    company_plan_response,
+                    investment_page_plan_response,
+                    concept_plan_response,
+                ]),
+            ),
+            patch(
+                "openkb.agent.compiler.acompletion",
+                side_effect=_mock_acompletion([industry_page_response]),
+            ),
+        ):
+            await _compile_concepts(
+                wiki,
+                tmp_path,
+                "gpt-4o-mini",
+                {"role": "system", "content": "You are a wiki agent."},
+                {"role": "user", "content": "Document content."},
+                "腾讯控股受益于互联网广告复苏。",
+                "tencent-report",
+                5,
+            )
+
+        assert (wiki / "industries" / "online-advertising.md").exists()
+        assert not (wiki / "industries" / "腾讯控股.md").exists()
+        index_text = (wiki / "index.md").read_text(encoding="utf-8")
+        assert "[[industries/online-advertising]] - 平台广告变现行业" in index_text
 
     @pytest.mark.asyncio
     async def test_generated_company_and_concept_pages_update_evidence_map(self, tmp_path):

@@ -1167,6 +1167,10 @@ def init():
 
     # Create .openkb/ state directory
     openkb_dir.mkdir()
+    entity_registry_dir = openkb_dir / "entity_registry"
+    entity_registry_dir.mkdir(exist_ok=True)
+    (entity_registry_dir / "companies.yaml").write_text("companies: {}\n", encoding="utf-8")
+    (entity_registry_dir / "industries.yaml").write_text("industries: {}\n", encoding="utf-8")
     resolved_wire_api = "responses" if model_prefers_responses_api(model) else DEFAULT_CONFIG["wire_api"]
     config = {
         "active_llm_profile": "default",

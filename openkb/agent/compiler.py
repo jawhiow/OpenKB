@@ -28,6 +28,7 @@ from typing import Callable, Iterator
 import litellm
 
 from openkb.agent.evidence import update_evidence_map
+from openkb.entity_registry import EntityRegistry, ResolvedEntity
 from openkb.schema import get_agents_md
 from openkb.llm_runtime import acompletion, completion
 
@@ -1403,6 +1404,43 @@ def _canonicalize_investment_page_item(item: dict) -> dict | None:
     }
 
 
+def _resolve_company_items_against_registry(
+    items: list[dict],
+    registry: EntityRegistry | None,
+) -> tuple[list[dict], list[ResolvedEntity]]:
+    """Resolve company plan items to registered canonical company ids.
+
+    Unknown companies intentionally keep the existing LLM-proposed item so
+    unregistered but useful company pages can still be created automatically.
+    """
+    if registry is None:
+        return items, []
+
+    resolved_items: list[dict] = []
+    resolved_entities: list[ResolvedEntity] = []
+    seen: set[str] = set()
+    for item in items:
+        surface = str(item.get("title") or item.get("name") or "").strip()
+        match = registry.resolve(surface, namespace_hint="company")
+        if match is None:
+            slug = _sanitize_concept_name(str(item.get("name") or ""))
+            if slug and slug not in seen:
+                seen.add(slug)
+                resolved_items.append(item)
+            continue
+
+        if match.canonical_id in seen:
+            continue
+        seen.add(match.canonical_id)
+        resolved_entities.append(match)
+        resolved_items.append({
+            "name": match.canonical_id,
+            "title": match.canonical_name,
+            "action": "update",
+        })
+    return resolved_items, resolved_entities
+
+
 def _empty_investment_page_plan() -> dict[str, list[dict]]:
     """Return an empty dedicated investment page plan keyed by subdir."""
     return {subdir: [] for subdir in _INVESTMENT_PAGE_SUBDIRS}
@@ -1479,6 +1517,48 @@ def _dedupe_investment_page_plan(
             seen_slugs.add(slug)
             deduped[subdir].append({"name": slug, "title": title, "action": action})
     return deduped
+
+
+def _resolve_investment_page_plan_against_registry(
+    plan: dict[str, list[dict]],
+    registry: EntityRegistry | None,
+) -> tuple[dict[str, list[dict]], list[ResolvedEntity]]:
+    """Resolve industry plan items to registered canonical industry ids.
+
+    Unknown industries keep the existing behavior and can still be generated.
+    Registered company aliases are dropped from industry plans to avoid pages
+    like ``industries/腾讯控股.md``.
+    """
+    if registry is None:
+        return plan, []
+
+    resolved_plan = _empty_investment_page_plan()
+    resolved_entities: list[ResolvedEntity] = []
+    for subdir, items in plan.items():
+        seen: set[str] = set()
+        for item in items:
+            surface = str(item.get("title") or item.get("name") or "").strip()
+            if registry.resolve(surface, namespace_hint="company") is not None:
+                continue
+
+            match = registry.resolve(surface, namespace_hint="industry")
+            if match is None:
+                slug = _sanitize_concept_name(str(item.get("name") or ""))
+                if slug and slug not in seen:
+                    seen.add(slug)
+                    resolved_plan[subdir].append(item)
+                continue
+
+            if match.canonical_id in seen:
+                continue
+            seen.add(match.canonical_id)
+            resolved_entities.append(match)
+            resolved_plan[subdir].append({
+                "name": match.canonical_id,
+                "title": match.canonical_name,
+                "action": "update",
+            })
+    return resolved_plan, resolved_entities
 
 
 def _planned_investment_page_slugs(plan: dict[str, list[dict]]) -> dict[str, set[str]]:
@@ -1801,6 +1881,63 @@ def _filter_concept_plan_against_companies(plan: dict, company_keys: set[str]) -
     return filtered
 
 
+def _registered_entity_alias_keys(registry: EntityRegistry | None, entity_type: str) -> set[str]:
+    """Return alias keys for registered company or industry records."""
+    if registry is None:
+        return set()
+    keys: set[str] = set()
+    for record in registry.records:
+        if record.entity_type != entity_type:
+            continue
+        for value in record.all_names():
+            keys.add(_concept_alias_key(value))
+    return keys
+
+
+def _registered_entity_link_aliases(registry: EntityRegistry | None) -> dict[str, str]:
+    """Return wikilink alias keys for registered company and industry pages."""
+    if registry is None:
+        return {}
+    aliases: dict[str, str] = {}
+    for record in registry.records:
+        namespace = "companies" if record.entity_type == "company" else "industries"
+        for value in record.all_names():
+            aliases[_concept_alias_key(f"{namespace}/{value}")] = record.path
+    return aliases
+
+
+def _filter_concept_plan_against_registered_industries(
+    plan: dict,
+    registry: EntityRegistry | None,
+) -> dict:
+    """Remove registered industry names from concept plan.
+
+    Company aliases are already included in ``company_keys`` by the caller.
+    This keeps the scope narrow: concepts are not otherwise changed.
+    """
+    industry_keys = _registered_entity_alias_keys(registry, "industry")
+    if not industry_keys:
+        return plan
+
+    filtered = {"create": [], "update": [], "related": []}
+    for action in ("create", "update"):
+        for item in plan.get(action, []):
+            if not isinstance(item, dict):
+                continue
+            raw_name = str(item.get("name", "")).strip()
+            raw_title = str(item.get("title", raw_name)).strip()
+            if _concept_alias_key(raw_name) in industry_keys or _concept_alias_key(raw_title) in industry_keys:
+                continue
+            filtered[action].append(item)
+
+    for related in plan.get("related", []):
+        raw = str(related).strip()
+        if raw and _concept_alias_key(raw) not in industry_keys:
+            filtered["related"].append(raw)
+
+    return filtered
+
+
 def _extract_concept_link_targets(text: str) -> list[str]:
     """Return raw targets from [[concepts/...]] links."""
     return [match.group(1).strip() for match in _CONCEPT_WIKILINK_RE.finditer(text)]
@@ -1899,6 +2036,10 @@ def _normalize_wiki_links(
         label = (match.group(2) or raw_target).strip()
 
         slug = aliases.get(_concept_alias_key(raw_target))
+        if slug and "/" in slug and slug in valid_pages:
+            if match.group(2):
+                return f"[[{slug}|{label}]]"
+            return f"[[{slug}]]"
         if slug in allowed_slugs:
             return f"[[concepts/{slug}]]"
 
@@ -3011,6 +3152,7 @@ async def _compile_concepts(
     actions, then executes each action type accordingly.
     """
     source_file = f"summaries/{doc_name}.md"
+    registry = EntityRegistry.load(kb_dir)
 
     def _write_context():
         return write_lock if write_lock is not None else nullcontext()
@@ -3052,7 +3194,9 @@ async def _compile_concepts(
             ]
     if not company_items:
         company_items = fallback_company_items
+    company_items, resolved_company_entities = _resolve_company_items_against_registry(company_items, registry)
     company_keys = _company_alias_keys(company_items + fallback_company_items)
+    company_keys.update(_registered_entity_alias_keys(registry, "company"))
 
     planned_company_slugs = {
         _sanitize_concept_name(str(item["name"]))
@@ -3079,6 +3223,10 @@ async def _compile_concepts(
 
     investment_page_plan = _parse_investment_page_plan(investment_page_parsed)
     investment_page_plan = _dedupe_investment_page_plan(wiki_dir, investment_page_plan)
+    investment_page_plan, resolved_investment_entities = _resolve_investment_page_plan_against_registry(
+        investment_page_plan,
+        registry,
+    )
     planned_investment_slugs = _planned_investment_page_slugs(investment_page_plan)
 
     # --- Step 2c: Get concepts plan (A cached) ---
@@ -3112,7 +3260,10 @@ async def _compile_concepts(
 
     summary_concept_targets = _extract_concept_link_targets(summary)
     plan = _filter_concept_plan_against_companies(plan, company_keys)
+    plan = _filter_concept_plan_against_registered_industries(plan, registry)
     plan = _ensure_summary_links_in_plan(wiki_dir, summary, plan)
+    plan = _filter_concept_plan_against_companies(plan, company_keys)
+    plan = _filter_concept_plan_against_registered_industries(plan, registry)
     plan = _dedupe_concept_plan(wiki_dir, plan)
     planned_after_filter = _planned_concept_slugs(plan["create"], plan["update"], plan["related"])
     if len(planned_after_filter) < 5 and not summary_concept_targets:
@@ -3129,6 +3280,10 @@ async def _compile_concepts(
     update_items = plan["update"]
     related_items = plan["related"]
     concept_aliases = _build_concept_aliases(wiki_dir, create_items, update_items, related_items)
+    wiki_link_aliases = {
+        **concept_aliases,
+        **_registered_entity_link_aliases(registry),
+    }
     allowed_concept_slugs = _planned_concept_slugs(create_items, update_items, related_items)
     valid_pages = (
         _known_wiki_pages(wiki_dir)
@@ -3141,9 +3296,9 @@ async def _compile_concepts(
         | {f"concepts/{slug}" for slug in allowed_concept_slugs}
         | {f"summaries/{doc_name}"}
     )
-    summary = _normalize_wiki_links(summary, concept_aliases, allowed_concept_slugs, valid_pages)
+    summary = _normalize_wiki_links(summary, wiki_link_aliases, allowed_concept_slugs, valid_pages)
     with _write_context():
-        _rewrite_summary_links(wiki_dir, doc_name, concept_aliases, allowed_concept_slugs, valid_pages)
+        _rewrite_summary_links(wiki_dir, doc_name, wiki_link_aliases, allowed_concept_slugs, valid_pages)
 
     investment_page_items = [
         (subdir, item)
@@ -3387,7 +3542,7 @@ async def _compile_concepts(
             name, page_content, is_update, brief = r
             page_content = _normalize_wiki_links(
                 page_content,
-                concept_aliases,
+                wiki_link_aliases,
                 allowed_concept_slugs,
                 valid_pages,
             )
@@ -3407,7 +3562,7 @@ async def _compile_concepts(
             subdir, name, page_content, is_update, brief = r
             page_content = _normalize_wiki_links(
                 page_content,
-                concept_aliases,
+                wiki_link_aliases,
                 allowed_concept_slugs,
                 valid_pages,
             )
@@ -3432,7 +3587,7 @@ async def _compile_concepts(
             )
             page_content = _normalize_wiki_links(
                 page_content,
-                concept_aliases,
+                wiki_link_aliases,
                 allowed_concept_slugs,
                 valid_pages,
             )
@@ -3458,6 +3613,7 @@ async def _compile_concepts(
             for key, slug in concept_aliases.items()
             if slug in successful_concept_slugs
         }
+        final_aliases.update(_registered_entity_link_aliases(registry))
         _rewrite_summary_links(
             wiki_dir,
             doc_name,
