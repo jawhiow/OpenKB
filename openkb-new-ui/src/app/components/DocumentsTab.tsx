@@ -10,6 +10,8 @@ import {
   FileUp,
   FolderPlus,
   Loader2,
+  Maximize2,
+  Minimize2,
   MoreHorizontal,
   RefreshCcw,
   ShieldCheck,
@@ -650,7 +652,6 @@ export function DocumentsTab({
                 }
                 onPromote={(hash) => promoteMutation.mutate([hash])}
                 onViewDetail={setDetailDocument}
-                onViewRaw={openRawSource}
                 showDelete
               />
               <Pagination
@@ -1467,7 +1468,6 @@ function DocumentStageTable({
   onReject,
   onPromote,
   onViewDetail,
-  onViewRaw,
   inlineScorecard = false,
   showDelete = false,
 }: {
@@ -1489,7 +1489,6 @@ function DocumentStageTable({
   onReject?: (hash: string) => void;
   onPromote?: (hash: string) => void;
   onViewDetail?: (document: DocumentItem) => void;
-  onViewRaw?: (document: DocumentItem) => void;
   inlineScorecard?: boolean;
   showDelete?: boolean;
 }) {
@@ -1609,14 +1608,8 @@ function DocumentStageTable({
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          onClick={() => {
-                            if (onViewRaw && document.raw_exists && document.raw_path) {
-                              onViewRaw(document);
-                              return;
-                            }
-                            onViewDetail?.(document);
-                          }}
-                          title={onViewRaw && document.raw_exists && document.raw_path ? 'View raw source' : 'View detail'}
+                          onClick={() => onViewDetail?.(document)}
+                          title="View detail"
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
@@ -1806,7 +1799,7 @@ function DocumentDetailDialog({
 
   return (
     <Dialog open={!!document} onOpenChange={onOpenChange}>
-      <DialogContent className="!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 h-dvh !w-screen !max-w-none overflow-y-auto overflow-x-hidden rounded-none border-0 p-4 sm:!left-1/2 sm:!top-1/2 sm:h-auto sm:max-h-[85vh] sm:!w-[min(96vw,64rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border sm:p-6">
+      <DialogContent className="!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 h-dvh !w-screen !max-w-none overflow-y-auto overflow-x-hidden rounded-none border-0 p-4 sm:!left-1/2 sm:!top-1/2 sm:h-auto sm:max-h-[85vh] sm:!w-[min(98vw,88rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border sm:p-6">
         <DialogHeader className="pr-8 text-left">
           <DialogTitle className="break-all leading-snug">{document?.name || 'Document detail'}</DialogTitle>
           <DialogDescription>
@@ -1931,12 +1924,18 @@ function RawSourcePreviewDialog({
   kbDir: string;
   onOpenChange: (open: boolean) => void;
 }) {
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const fileUrl = document?.raw_path ? rawFileUrl(kbDir, document.raw_path) : '';
   const previewKind = document?.raw_path ? rawPreviewKind(document.raw_path) : 'unsupported';
 
   return (
     <Dialog open={!!document} onOpenChange={onOpenChange}>
-      <DialogContent className="!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 flex h-dvh !w-screen !max-w-none flex-col overflow-hidden rounded-none border-0 p-0 sm:!left-1/2 sm:!top-1/2 sm:h-[min(88vh,56rem)] sm:!w-[min(96vw,72rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border">
+      <DialogContent
+        className={isFullscreen
+          ? "!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 flex h-dvh !w-screen !max-w-none flex-col overflow-hidden rounded-none border-0 p-0"
+          : "!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 flex h-dvh !w-screen !max-w-none flex-col overflow-hidden rounded-none border-0 p-0 sm:!left-1/2 sm:!top-1/2 sm:h-[min(88vh,56rem)] sm:!w-[min(96vw,72rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border"
+        }
+      >
         <DialogHeader className="shrink-0 border-b px-4 py-3 pr-12 text-left sm:px-5">
           <DialogTitle className="break-all text-base leading-snug">
             {document?.name || 'Raw source preview'}
@@ -1944,6 +1943,17 @@ function RawSourcePreviewDialog({
           <DialogDescription className="break-all text-xs">
             {document?.raw_path || 'Source file'}
           </DialogDescription>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="absolute right-10 top-3"
+            onClick={() => setIsFullscreen((value) => !value)}
+            aria-label={isFullscreen ? 'Exit full screen' : 'Full screen'}
+            title={isFullscreen ? 'Exit full screen' : 'Full screen'}
+          >
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 overflow-hidden bg-background">
