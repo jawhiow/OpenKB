@@ -1799,7 +1799,7 @@ function DocumentDetailDialog({
 
   return (
     <Dialog open={!!document} onOpenChange={onOpenChange}>
-      <DialogContent className="!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 h-dvh !w-screen !max-w-none overflow-y-auto overflow-x-hidden rounded-none border-0 p-4 sm:!left-1/2 sm:!top-1/2 sm:h-auto sm:max-h-[85vh] sm:!w-[min(98vw,88rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border sm:p-6">
+      <DialogContent className="!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 h-dvh !w-screen !max-w-none overflow-y-auto overflow-x-hidden rounded-none border-0 p-4 sm:!left-1/2 sm:!top-1/2 sm:h-auto sm:max-h-[94vh] sm:!w-[min(98vw,88rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border sm:p-6">
         <DialogHeader className="pr-8 text-left">
           <DialogTitle className="break-all leading-snug">{document?.name || 'Document detail'}</DialogTitle>
           <DialogDescription>
@@ -1933,7 +1933,7 @@ function RawSourcePreviewDialog({
       <DialogContent
         className={isFullscreen
           ? "!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 flex h-dvh !w-screen !max-w-none flex-col overflow-hidden rounded-none border-0 p-0"
-          : "!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 flex h-dvh !w-screen !max-w-none flex-col overflow-hidden rounded-none border-0 p-0 sm:!left-1/2 sm:!top-1/2 sm:h-[min(88vh,56rem)] sm:!w-[min(96vw,72rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border"
+          : "!left-0 !top-0 !translate-x-0 !translate-y-0 inset-0 flex h-dvh !w-screen !max-w-none flex-col overflow-hidden rounded-none border-0 p-0 sm:!left-1/2 sm:!top-1/2 sm:h-[min(94vh,64rem)] sm:!w-[min(96vw,72rem)] sm:!max-w-none sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:rounded-xl sm:border"
         }
       >
         <DialogHeader className="shrink-0 border-b px-4 py-3 pr-12 text-left sm:px-5">
