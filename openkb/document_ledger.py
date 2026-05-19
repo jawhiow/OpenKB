@@ -29,6 +29,8 @@ REVIEW_DEFAULTS = {
     "promotion_score": None,
     "summary_score_source": "",
     "summary_scorecard": None,
+    "summary_scorecard_v1": None,
+    "scorecard_version": "",
     "review_notes": "",
     "recommended_ingest_mode": "",
     "approved_by": "",
@@ -363,7 +365,7 @@ def _overlay_document_record(target: dict[str, Any], source: Mapping[str, Any]) 
                 continue
             if key.endswith("_score"):
                 target["review"][key] = _normalized_optional_int(review.get(key))
-            elif key == "summary_scorecard":
+            elif key in ("summary_scorecard", "summary_scorecard_v1"):
                 target["review"][key] = _normalized_summary_scorecard(review.get(key))
             elif key == "approved_at":
                 target["review"][key] = _normalized_optional_text(review.get(key))
@@ -425,12 +427,19 @@ def _normalized_summary_scorecard(value: Any) -> dict[str, Any] | None:
         }
 
     normalized = {
+        "version": str(value.get("version") or "").strip(),
         "method": str(value.get("method") or "").strip(),
         "overall_assessment": str(value.get("overall_assessment") or "").strip(),
         "total_score": _normalized_optional_int(value.get("total_score")),
         "dimensions": dimensions,
     }
-    if normalized["method"] or normalized["overall_assessment"] or normalized["total_score"] is not None or dimensions:
+    if (
+        normalized["version"]
+        or normalized["method"]
+        or normalized["overall_assessment"]
+        or normalized["total_score"] is not None
+        or dimensions
+    ):
         return normalized
     return None
 

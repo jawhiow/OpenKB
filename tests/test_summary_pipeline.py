@@ -211,5 +211,6 @@ def test_summarize_document_source_falls_back_to_heuristic_scorecard_when_missin
     assert record is not None
     assert record["review"]["summary_score_source"] == "auto"
     assert isinstance(record["review"]["summary_score"], int)
-    assert record["review"]["summary_scorecard"]["method"] == "heuristic_summary_value_v1"
+    assert record["review"]["summary_scorecard"]["method"] == "heuristic_summary_value_v2"
+    assert record["review"]["summary_scorecard"]["version"] == "v2"
     assert record["review"]["summary_scorecard"]["total_score"] == record["review"]["summary_score"]

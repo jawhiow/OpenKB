@@ -147,6 +147,8 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
                 "promotion_score": None,
                 "summary_score_source": "",
                 "summary_scorecard": None,
+                "summary_scorecard_v1": None,
+                "scorecard_version": "",
                 "review_notes": "",
                 "recommended_ingest_mode": "",
                 "approved_by": "",
@@ -196,6 +198,8 @@ def test_get_document_data_maps_types_and_lists_wiki_pages(tmp_path: Path):
                 "promotion_score": None,
                 "summary_score_source": "",
                 "summary_scorecard": None,
+                "summary_scorecard_v1": None,
+                "scorecard_version": "",
                 "review_notes": "",
                 "recommended_ingest_mode": "",
                 "approved_by": "",
@@ -297,7 +301,8 @@ def test_get_document_data_treats_staged_review_summary_as_ready(tmp_path: Path)
     assert manual["workflow_state"]["review_state"] == "unreviewed"
     assert manual["review"]["summary_score"] is not None
     assert manual["review"]["summary_score_source"] == "heuristic"
-    assert manual["review"]["summary_scorecard"]["method"] == "heuristic_summary_value_v1"
+    assert manual["review"]["summary_scorecard"]["method"] == "heuristic_summary_value_v2"
+    assert manual["review"]["summary_scorecard"]["version"] == "v2"
 
 
 def test_get_document_data_filters_new_and_any_failed_workflow_status(tmp_path: Path):

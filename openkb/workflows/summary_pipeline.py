@@ -40,6 +40,22 @@ _SUMMARY_LEDGER_LOCKS_LOCK = threading.Lock()
 
 
 _SUMMARY_SCORE_DIMENSIONS: tuple[tuple[str, str, int], ...] = (
+    ("research_depth", "Research Depth", 15),
+    ("durability", "Durability", 15),
+    ("source_coverage", "Source Coverage", 15),
+    ("factual_density", "Factual Density", 15),
+    ("retrieval_value", "Retrieval Value", 10),
+    ("novelty_vs_kb", "Novelty vs KB", 10),
+    ("structure_clarity", "Structure & Clarity", 5),
+    ("actionability", "Actionability", 5),
+    ("cross_linking", "Cross-linking", 5),
+    ("topic_fit", "Topic Fit", 5),
+)
+
+_SUMMARY_SCORE_DIMENSION_MAX = {name: max_score for name, _label, max_score in _SUMMARY_SCORE_DIMENSIONS}
+_SUMMARY_SCORECARD_VERSION = "v2"
+
+_LEGACY_SUMMARY_SCORE_DIMENSIONS_V1: tuple[tuple[str, str, int], ...] = (
     ("source_coverage", "Source Coverage", 25),
     ("factual_density", "Factual Density", 20),
     ("structure_clarity", "Structure & Clarity", 15),
@@ -47,8 +63,99 @@ _SUMMARY_SCORE_DIMENSIONS: tuple[tuple[str, str, int], ...] = (
     ("actionability", "Actionability", 10),
     ("cross_linking", "Cross-linking", 10),
 )
+_LEGACY_SUMMARY_SCORE_DIMENSION_MAX_V1 = {
+    name: max_score for name, _label, max_score in _LEGACY_SUMMARY_SCORE_DIMENSIONS_V1
+}
 
-_SUMMARY_SCORE_DIMENSION_MAX = {name: max_score for name, _label, max_score in _SUMMARY_SCORE_DIMENSIONS}
+_SUMMARY_SCORE_RUBRIC = """\
+Scoring rubric (v2). Each dimension has explicit anchors — DO NOT default to high scores.
+Read the anchors and pick the band that best matches the document. Be honest about weaknesses.
+
+- research_depth (0-15): Is this a research artifact or a news/transcript snippet?
+    13-15 = industry deep dive, value-chain teardown, long thesis-driven analysis
+    8-12  = company deep dive, sector outlook, thematic note with original analysis
+    4-7   = short broker note, single-event commentary, end-of-day recap
+    1-3   = roadshow / call / conference / interview transcript, news roundup
+    0     = pure news copy, headline list, social-media chatter
+    Hard cap: if title contains 录音/纪要/路演/电话会/调研纪要/访谈/对话/快讯/速报, cap this dimension at 5.
+
+- durability (0-15): How fast does the content decay?
+    13-15 = industry structure, capacity cycle, technology roadmap, valuation framework (24+ months)
+    8-12  = annual/interim report analysis, full-year strategy outlook (12 months)
+    4-7   = quarterly earnings note, quarter-ahead outlook (3-6 months)
+    1-3   = daily/weekly/monthly digest, end-of-day note, risk-spotter, dawn brief (days)
+    0     = same-day news, single hot-topic chase
+    Hard cap: if title contains 每日/周报/月报/避雷/收市/盘前/盘后/晨会/晨报/早评/夜报, cap this dimension at 3.
+
+- source_coverage (0-15): Does the summary capture the source's major sections and claims?
+    13-15 = preserves all major sections, claims, numbers
+    8-12  = covers core claims, drops some peripheral detail
+    4-7   = covers headline message only
+    0-3   = thin, misses important sections
+
+- factual_density (0-15): Numbers, entities, dates, assumptions, source-backed facts?
+    13-15 = many concrete numbers + entities + dates traceable to source
+    8-12  = good factual content but uneven
+    4-7   = some specifics, mostly prose
+    0-3   = vague, qualitative, hand-wavy
+
+- retrieval_value (0-10): Will this help future queries on this KB?
+    8-10 = high recall value, indexable claims and concepts
+    5-7  = useful but generic
+    2-4  = limited; mostly restates source style
+    0-1  = unlikely to surface in any future query
+
+- novelty_vs_kb (0-10): How novel is this relative to {EXISTING_CONCEPTS_DIGEST}?
+    8-10 = brand-new topic OR material update to existing concept
+    5-7  = adds incremental angle to existing pages
+    2-4  = mostly already covered in the existing wiki
+    0-1  = ≥80% overlap with an existing page
+
+- structure_clarity (0-5): Strict — do NOT default to 5.
+    5 = full heading hierarchy + lists/tables + scannable
+    3 = readable but uneven structure or long paragraphs
+    1 = paragraph dump, no clear sections
+    0 = unstructured prose
+
+- actionability (0-5):
+    4-5 = preserves decisions, indicators, catalysts, risk triggers, monitoring metrics
+    2-3 = some actionable signals but partial
+    0-1 = informational only, no actionable hooks
+
+- cross_linking (0-5):
+    4-5 = identifies multiple durable [[concepts/...]] worth reusing
+    2-3 = 1-2 cross-link candidates
+    0-1 = no reusable concept hooks
+
+- topic_fit (0-5): Is this within the KB's scope?
+    KB scope: {KB_TOPIC}
+    5 = direct investment research with tickers/ratings/forecasts
+    3 = investment-adjacent (macro, policy, value chain)
+    1 = weak investment angle (general business commentary)
+    0 = completely unrelated to investment research
+
+Sum across all 10 dimensions must equal total_score (0-100).
+Default toward the lower band when the document is borderline — over-scoring causes KB bloat.
+"""
+
+_SUMMARY_SCORE_JSON_SHAPE = """\
+"scorecard": an object with:
+  - "version": must be the string "v2"
+  - "method": short label for the scoring method
+  - "overall_assessment": one short paragraph explaining the score, citing weakest dimensions
+  - "total_score": integer 0-100 (must equal sum of all dimension scores)
+  - "dimensions": object with EXACTLY these keys:
+    - "research_depth": {{"score": 0-15, "reason": ""}}
+    - "durability": {{"score": 0-15, "reason": ""}}
+    - "source_coverage": {{"score": 0-15, "reason": ""}}
+    - "factual_density": {{"score": 0-15, "reason": ""}}
+    - "retrieval_value": {{"score": 0-10, "reason": ""}}
+    - "novelty_vs_kb": {{"score": 0-10, "reason": ""}}
+    - "structure_clarity": {{"score": 0-5, "reason": ""}}
+    - "actionability": {{"score": 0-5, "reason": ""}}
+    - "cross_linking": {{"score": 0-5, "reason": ""}}
+    - "topic_fit": {{"score": 0-5, "reason": ""}}\
+"""
 
 _SUMMARY_WITH_SCORE_USER = """\
 New document: {doc_name}
@@ -57,16 +164,13 @@ Full text:
 {content}
 
 Write a review-stage summary page for this document in Markdown, and score the
-document's summary value for the knowledge base.
+document's value for admission into the knowledge base.
 
 Scoring intent:
-- This is NOT an ingest gate score.
-- Judge the document on how valuable, information-rich, well-structured, and
-  reusable it is after summarization for a long-lived KB.
-- Reward concrete facts, durable insights, monitoring indicators, and strong
-  traceability.
-- Penalize vague, repetitive, low-signal, poorly structured, or weakly
-  evidenced content.
+- This IS a KB-admission score (not just summary-quality). Score conservatively.
+- Penalize documents that are timely-news/transcripts/short notes, even if well-written.
+- Penalize content that overlaps heavily with existing concepts.
+- Reward durable, deep, original investment research.
 
 For investment research reports, use an investment-research structure when the
 source supports it:
@@ -82,28 +186,12 @@ Keep all material claims traceable to the source text. Preserve important
 numbers, dates, companies, and units. Use [[concepts/...]] only for concepts
 that deserve durable cross-document pages.
 
+{scoring_rubric}
+
 Return a JSON object with these keys:
 - "brief": A single sentence (under 100 chars) describing the document's main contribution
 - "content": The full summary in Markdown
-- "scorecard": an object with:
-  - "method": short label for the scoring method
-  - "overall_assessment": one short paragraph explaining the score
-  - "total_score": integer 0-100
-  - "dimensions": object with exactly these keys:
-    - "source_coverage": {{"score": 0-25, "reason": ""}}
-    - "factual_density": {{"score": 0-20, "reason": ""}}
-    - "structure_clarity": {{"score": 0-15, "reason": ""}}
-    - "retrieval_value": {{"score": 0-20, "reason": ""}}
-    - "actionability": {{"score": 0-10, "reason": ""}}
-    - "cross_linking": {{"score": 0-10, "reason": ""}}
-
-Scoring rubric:
-- source_coverage: how completely the summary captures the source's major sections and claims
-- factual_density: how many concrete numbers, entities, dates, assumptions, and source-backed facts it preserves
-- structure_clarity: whether the summary is easy to scan and logically organized
-- retrieval_value: whether future querying and recall will benefit from the summary
-- actionability: whether it preserves decisions, indicators, risks, catalysts, or next-step value
-- cross_linking: whether it identifies durable concepts suitable for KB reuse
+- {scorecard_shape}
 
 Return ONLY valid JSON, no fences.
 """
@@ -114,33 +202,24 @@ This is a page-indexed local extraction for long document "{doc_name}".
 {content}
 
 Based on this page-indexed extraction, write a high-signal review-stage summary
-page and score the document's summary value for the knowledge base.
+page and score the document's value for admission into the knowledge base.
 
 Scoring intent:
-- This is NOT an ingest gate score.
-- Focus on how useful the resulting summary will be for long-term knowledge
-  retrieval, synthesis, and downstream wiki generation.
-- Reward coverage, factual precision, durable insights, and good structure.
-- Penalize thin, repetitive, generic, or poorly evidenced summaries.
+- This IS a KB-admission score (not just summary-quality). Score conservatively.
+- Penalize documents that are timely-news/transcripts/short notes, even if well-written.
+- Penalize content that overlaps heavily with existing concepts.
+- Reward durable, deep, original investment research.
 
 For investment research reports, preserve ratings, company names, forecasts,
 valuation context, key numbers, catalysts, risks, and monitoring indicators.
 Use page references like "p.12" where evidence is available.
 
+{scoring_rubric}
+
 Return a JSON object with these keys:
 - "brief": A single sentence (under 100 chars) describing the document's main contribution
 - "content": The full summary in Markdown with durable [[concepts/...]] links
-- "scorecard": an object with:
-  - "method": short label for the scoring method
-  - "overall_assessment": one short paragraph explaining the score
-  - "total_score": integer 0-100
-  - "dimensions": object with exactly these keys:
-    - "source_coverage": {{"score": 0-25, "reason": ""}}
-    - "factual_density": {{"score": 0-20, "reason": ""}}
-    - "structure_clarity": {{"score": 0-15, "reason": ""}}
-    - "retrieval_value": {{"score": 0-20, "reason": ""}}
-    - "actionability": {{"score": 0-10, "reason": ""}}
-    - "cross_linking": {{"score": 0-10, "reason": ""}}
+- {scorecard_shape}
 
 Return ONLY valid JSON, no fences.
 """
@@ -434,10 +513,249 @@ def update_summary_reviews(
     }
 
 
+_RESCORE_USER = """\
+Rescore the existing review-stage summary for "{doc_name}" against the v2
+scoring rubric below. DO NOT rewrite the summary; only return a fresh
+scorecard object that scores the summary text as a candidate for KB admission.
+
+Existing summary (already written):
+{summary}
+
+{scoring_rubric}
+
+Return a JSON object with exactly these top-level keys:
+- {scorecard_shape}
+
+Return ONLY valid JSON, no fences. Do not include any other top-level keys.
+"""
+
+
+def rescore_summary(
+    kb_dir: Path,
+    selector: str,
+    *,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Recompute the v2 scorecard for an existing review summary without regenerating it."""
+    kb_dir = Path(kb_dir)
+    document = resolve_source_document(kb_dir, selector)
+    file_hash = str(document["hash"])
+    stem = str(document["stem"])
+
+    ledger_record = get_document_ledger_record(kb_dir, file_hash)
+    if ledger_record is None:
+        ledger_record = build_document_ledger_record(
+            file_hash,
+            defaults=infer_document_ledger_defaults(document),
+        )
+
+    review = ledger_record.get("review", {}) if isinstance(ledger_record.get("review"), dict) else {}
+    old_scorecard = review.get("summary_scorecard")
+    old_version = ""
+    if isinstance(old_scorecard, dict):
+        old_version = str(old_scorecard.get("version") or "").strip().lower()
+    if old_version == "v2":
+        return {
+            "file_hash": file_hash,
+            "name": document["name"],
+            "skipped": True,
+            "skip_reason": "already_v2",
+            "new_total_score": (old_scorecard.get("total_score") if isinstance(old_scorecard, dict) else None),
+        }
+
+    summary_text, _rel = read_review_summary(
+        kb_dir,
+        stem=stem,
+        ingested_at=document.get("ingested_at"),
+        review_summary_path=str(ledger_record.get("review_summary_path") or ""),
+    )
+    summary_body = _strip_summary_frontmatter(summary_text)
+    selected_model = model or _default_model(kb_dir)
+
+    new_scorecard = _rescore_summary_text(kb_dir, doc_name=document["name"], summary=summary_body, model=selected_model)
+
+    updates: dict[str, Any] = {
+        "review": {
+            "summary_score": new_scorecard.get("total_score"),
+            "summary_score_source": "auto_rescore_v2",
+            "summary_scorecard": new_scorecard,
+            "scorecard_version": str(new_scorecard.get("version") or _SUMMARY_SCORECARD_VERSION),
+        },
+        "execution": {
+            "last_error": "",
+            "updated_at": _now_iso(),
+        },
+    }
+    if isinstance(old_scorecard, dict) and old_scorecard:
+        updates["review"]["summary_scorecard_v1"] = old_scorecard
+
+    upsert_document_ledger_record(kb_dir, file_hash, updates)
+
+    return {
+        "file_hash": file_hash,
+        "name": document["name"],
+        "skipped": False,
+        "new_total_score": new_scorecard.get("total_score"),
+        "old_total_score": old_scorecard.get("total_score") if isinstance(old_scorecard, dict) else None,
+        "scorecard_version": new_scorecard.get("version"),
+    }
+
+
+def rescore_summaries(
+    kb_dir: Path,
+    *,
+    file_hashes: list[str] | None = None,
+    model: str | None = None,
+    only_unreviewed: bool = True,
+    progress_callback: SummaryProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Batch rescore existing review summaries with the v2 rubric.
+
+    When ``only_unreviewed`` is True, restrict to documents in review_state
+    "unreviewed" with a written review summary. When False, rescore every
+    document that has a non-v2 scorecard.
+    """
+    selected = _selected_rescore_hashes(kb_dir, file_hashes=file_hashes, only_unreviewed=only_unreviewed)
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    rescored = 0
+    skipped = 0
+    total = len(selected)
+    completed = 0
+
+    def emit(event: str, **payload: Any) -> None:
+        if progress_callback is not None:
+            progress_callback({"event": event, "completed": completed, "total": total, **payload})
+
+    emit("selected")
+    for index, file_hash in enumerate(selected, 1):
+        emit("start", index=index, file_hash=file_hash)
+        try:
+            result = rescore_summary(kb_dir, file_hash, model=model)
+        except Exception as exc:
+            completed += 1
+            failures.append({"file_hash": file_hash, "error": str(exc)})
+            emit("failure", index=index, file_hash=file_hash, error=str(exc))
+            continue
+        completed += 1
+        results.append(result)
+        if result.get("skipped"):
+            skipped += 1
+            emit("skipped", index=index, file_hash=file_hash, reason=result.get("skip_reason"))
+        else:
+            rescored += 1
+            emit(
+                "rescored",
+                index=index,
+                file_hash=file_hash,
+                old=result.get("old_total_score"),
+                new=result.get("new_total_score"),
+            )
+    return {
+        "rescored": rescored,
+        "skipped": skipped,
+        "failed": len(failures),
+        "total": total,
+        "failures": failures,
+        "documents": results,
+    }
+
+
+def _selected_rescore_hashes(
+    kb_dir: Path,
+    *,
+    file_hashes: list[str] | None,
+    only_unreviewed: bool,
+) -> list[str]:
+    if file_hashes is not None:
+        return [str(h).strip() for h in file_hashes if str(h).strip()]
+    filters: dict[str, Any] = {"summary_state": "ready"}
+    if only_unreviewed:
+        filters["review_state"] = "unreviewed"
+    return [
+        record["file_hash"]
+        for record in select_document_ledger_records(kb_dir, **filters)
+    ]
+
+
+def _rescore_summary_text(kb_dir: Path, *, doc_name: str, summary: str, model: str) -> dict[str, Any]:
+    wiki_dir = kb_dir / "wiki"
+    config = load_config(kb_dir / ".openkb" / "config.yaml")
+    language = str(config.get("language") or DEFAULT_CONFIG["language"])
+    kb_topic = _kb_topic_for_scoring(config, wiki_dir)
+    existing_concepts = _existing_concepts_digest(wiki_dir)
+    scoring_rubric = _render_scoring_rubric(kb_topic=kb_topic, existing_concepts=existing_concepts)
+    system_msg = {
+        "role": "system",
+        "content": _SYSTEM_TEMPLATE.format(schema_md=get_agents_md(wiki_dir), language=language),
+    }
+    user_msg = {
+        "role": "user",
+        "content": _RESCORE_USER.format(
+            doc_name=doc_name,
+            summary=summary,
+            scoring_rubric=scoring_rubric,
+            scorecard_shape=_SUMMARY_SCORE_JSON_SHAPE,
+        ),
+    }
+    raw = _llm_call(model, [system_msg, user_msg], "rescore-summary")
+    try:
+        parsed = _parse_json(raw)
+        if isinstance(parsed, dict):
+            payload = parsed.get("scorecard") if isinstance(parsed.get("scorecard"), dict) else parsed
+            return _normalize_summary_scorecard(payload, summary)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return _fallback_summary_scorecard(summary)
+
+
+def _kb_topic_for_scoring(config: dict, wiki_dir: Path) -> str:
+    """Return the KB topic description used to anchor topic_fit scoring."""
+    cfg_topic = ""
+    auto_cfg = config.get("auto_review") if isinstance(config.get("auto_review"), dict) else {}
+    if isinstance(auto_cfg.get("kb_topic"), str):
+        cfg_topic = str(auto_cfg.get("kb_topic")).strip()
+    if cfg_topic:
+        return cfg_topic
+    return (
+        "Cross-market (A-shares / HK / US) investment research — companies, "
+        "industries, themes, risks, metrics, and value-chain structure."
+    )
+
+
+def _existing_concepts_digest(wiki_dir: Path, *, limit: int = 30) -> str:
+    """Return a short digest of existing concept page names for novelty scoring."""
+    concepts_dir = wiki_dir / "concepts"
+    if not concepts_dir.exists():
+        return "(no existing concept pages yet)"
+    try:
+        stems = sorted(
+            (p.stem for p in concepts_dir.glob("*.md") if p.is_file()),
+            key=str.lower,
+        )
+    except OSError:
+        return "(unable to enumerate existing concept pages)"
+    if not stems:
+        return "(no existing concept pages yet)"
+    head = stems[:limit]
+    suffix = f" ... and {len(stems) - len(head)} more" if len(stems) > len(head) else ""
+    return ", ".join(head) + suffix
+
+
+def _render_scoring_rubric(*, kb_topic: str, existing_concepts: str) -> str:
+    return _SUMMARY_SCORE_RUBRIC.format(
+        KB_TOPIC=kb_topic,
+        EXISTING_CONCEPTS_DIGEST=existing_concepts,
+    )
+
+
 def _generate_summary_only(kb_dir: Path, doc_name: str, source_path: Path, model: str) -> dict[str, Any]:
     wiki_dir = kb_dir / "wiki"
     config = load_config(kb_dir / ".openkb" / "config.yaml")
     language = str(config.get("language") or DEFAULT_CONFIG["language"])
+    kb_topic = _kb_topic_for_scoring(config, wiki_dir)
+    existing_concepts = _existing_concepts_digest(wiki_dir)
+    scoring_rubric = _render_scoring_rubric(kb_topic=kb_topic, existing_concepts=existing_concepts)
     system_msg = {
         "role": "system",
         "content": _SYSTEM_TEMPLATE.format(schema_md=get_agents_md(wiki_dir), language=language),
@@ -446,14 +764,24 @@ def _generate_summary_only(kb_dir: Path, doc_name: str, source_path: Path, model
         content = _build_local_long_doc_context(source_path)
         doc_msg = {
             "role": "user",
-            "content": _LOCAL_LONG_DOC_SUMMARY_WITH_SCORE_USER.format(doc_name=doc_name, content=content),
+            "content": _LOCAL_LONG_DOC_SUMMARY_WITH_SCORE_USER.format(
+                doc_name=doc_name,
+                content=content,
+                scoring_rubric=scoring_rubric,
+                scorecard_shape=_SUMMARY_SCORE_JSON_SHAPE,
+            ),
         }
         step_name = "local-long-summary"
     else:
         content = source_path.read_text(encoding="utf-8")
         doc_msg = {
             "role": "user",
-            "content": _SUMMARY_WITH_SCORE_USER.format(doc_name=doc_name, content=content),
+            "content": _SUMMARY_WITH_SCORE_USER.format(
+                doc_name=doc_name,
+                content=content,
+                scoring_rubric=scoring_rubric,
+                scorecard_shape=_SUMMARY_SCORE_JSON_SHAPE,
+            ),
         }
         step_name = "summary-only"
 
@@ -523,9 +851,15 @@ def _normalize_summary_scorecard(raw: Any, summary: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return fallback
     dimensions_raw = raw.get("dimensions") if isinstance(raw.get("dimensions"), dict) else {}
+
+    # Detect whether the LLM returned a v1 scorecard (old 6-dim shape) and adapt.
+    version_raw = str(raw.get("version") or "").strip().lower()
+    is_v1_payload = version_raw == "v1" or _looks_like_v1_scorecard(dimensions_raw)
+    schema = _LEGACY_SUMMARY_SCORE_DIMENSIONS_V1 if is_v1_payload else _SUMMARY_SCORE_DIMENSIONS
+
     dimensions: dict[str, dict[str, Any]] = {}
     total = 0
-    for name, label, max_score in _SUMMARY_SCORE_DIMENSIONS:
+    for name, label, max_score in schema:
         dimension_raw = dimensions_raw.get(name) if isinstance(dimensions_raw.get(name), dict) else {}
         score = _bounded_int(dimension_raw.get("score"), minimum=0, maximum=max_score)
         reason = str(dimension_raw.get("reason") or "").strip()
@@ -539,10 +873,17 @@ def _normalize_summary_scorecard(raw: Any, summary: str) -> dict[str, Any]:
 
     stated_total = _bounded_int(raw.get("total_score"), minimum=0, maximum=100)
     overall = str(raw.get("overall_assessment") or "").strip()
-    method = str(raw.get("method") or "").strip() or "llm_summary_value_v1"
+    if is_v1_payload:
+        default_method = "llm_summary_value_v1"
+        version = "v1"
+    else:
+        default_method = "llm_summary_value_v2"
+        version = _SUMMARY_SCORECARD_VERSION
+    method = str(raw.get("method") or "").strip() or default_method
     if not overall:
         overall = fallback["overall_assessment"]
     return {
+        "version": version,
         "method": method,
         "overall_assessment": overall,
         "total_score": total if stated_total != total else stated_total,
@@ -550,57 +891,124 @@ def _normalize_summary_scorecard(raw: Any, summary: str) -> dict[str, Any]:
     }
 
 
+def _looks_like_v1_scorecard(dimensions_raw: dict) -> bool:
+    """Return True when the LLM payload matches the legacy v1 dimension shape.
+
+    We treat it as v1 only when NONE of the v2-only keys (research_depth,
+    durability, novelty_vs_kb, topic_fit) are present AND at least one legacy
+    key is present. This keeps backward compatibility for older test fixtures
+    and ledger entries.
+    """
+    if not isinstance(dimensions_raw, dict):
+        return False
+    v2_only = {"research_depth", "durability", "novelty_vs_kb", "topic_fit"}
+    if v2_only & set(dimensions_raw.keys()):
+        return False
+    legacy_only_max = {
+        # Score values that would only fit under v1 max ranges (>= v2 cap + 1)
+        "source_coverage": _SUMMARY_SCORE_DIMENSION_MAX["source_coverage"],
+        "factual_density": _SUMMARY_SCORE_DIMENSION_MAX["factual_density"],
+        "structure_clarity": _SUMMARY_SCORE_DIMENSION_MAX["structure_clarity"],
+        "retrieval_value": _SUMMARY_SCORE_DIMENSION_MAX["retrieval_value"],
+        "actionability": _SUMMARY_SCORE_DIMENSION_MAX["actionability"],
+        "cross_linking": _SUMMARY_SCORE_DIMENSION_MAX["cross_linking"],
+    }
+    has_legacy_score = False
+    for key, v2_cap in legacy_only_max.items():
+        raw_dim = dimensions_raw.get(key)
+        if not isinstance(raw_dim, dict):
+            continue
+        try:
+            score = int(raw_dim.get("score", 0))
+        except (TypeError, ValueError):
+            continue
+        if score > v2_cap:
+            return True
+        if key in dimensions_raw:
+            has_legacy_score = True
+    # Fallback heuristic: only the 6 legacy keys are present and no v2 keys
+    legacy_keys = set(legacy_only_max.keys())
+    present = set(dimensions_raw.keys()) & legacy_keys
+    return has_legacy_score and present == set(dimensions_raw.keys()) and len(present) >= 4
+
+
 def _fallback_summary_scorecard(summary: str) -> dict[str, Any]:
     text = str(summary or "")
     line_count = len([line for line in text.splitlines() if line.strip()])
     bullet_count = text.count("\n- ") + text.count("\n* ")
     wiki_link_count = text.count("[[")
+    concept_link_count = text.count("[[concepts/")
     digit_count = sum(char.isdigit() for char in text)
     heading_count = sum(1 for line in text.splitlines() if line.strip().startswith("#"))
     sentences = [part.strip() for part in text.replace("\n", " ").split("。")]
     sentences = [part for part in sentences if part]
 
     dimensions = {
+        "research_depth": {
+            "label": "Research Depth",
+            "score": min(15, 4 + min(heading_count, 5) + min(line_count, 30) // 6),
+            "max": 15,
+            "reason": "Heuristic estimate based on summary length and structure depth.",
+        },
+        "durability": {
+            "label": "Durability",
+            "score": min(15, 6 + min(concept_link_count, 5)),
+            "max": 15,
+            "reason": "Heuristic estimate — assumes neutral durability without title signals.",
+        },
         "source_coverage": {
             "label": "Source Coverage",
-            "score": min(25, 8 + min(line_count, 24) // 2 + min(heading_count, 3) * 2),
-            "max": 25,
+            "score": min(15, 5 + min(line_count, 24) // 3 + min(heading_count, 3)),
+            "max": 15,
             "reason": "Heuristic estimate based on summary breadth, sectioning, and coverage signals.",
         },
         "factual_density": {
             "label": "Factual Density",
-            "score": min(20, 4 + min(digit_count, 32) // 3),
-            "max": 20,
-            "reason": "Heuristic estimate based on preserved numeric and concrete source-backed detail.",
-        },
-        "structure_clarity": {
-            "label": "Structure & Clarity",
-            "score": min(15, 5 + min(heading_count, 4) * 2 + min(bullet_count, 8) // 2),
+            "score": min(15, 3 + min(digit_count, 36) // 4),
             "max": 15,
-            "reason": "Heuristic estimate based on headings, list structure, and scanability.",
+            "reason": "Heuristic estimate based on preserved numeric and concrete source-backed detail.",
         },
         "retrieval_value": {
             "label": "Retrieval Value",
-            "score": min(20, 6 + min(line_count, 18) // 2 + min(len(sentences), 10) // 2),
-            "max": 20,
+            "score": min(10, 3 + min(line_count, 18) // 3 + min(len(sentences), 6) // 3),
+            "max": 10,
             "reason": "Heuristic estimate of how useful the summary will be for later recall and querying.",
+        },
+        "novelty_vs_kb": {
+            "label": "Novelty vs KB",
+            "score": min(10, 5),  # Neutral fallback — overlap not measurable from text alone.
+            "max": 10,
+            "reason": "Heuristic neutral score; deterministic overlap is computed by auto_review_overlap.",
+        },
+        "structure_clarity": {
+            "label": "Structure & Clarity",
+            "score": min(5, 1 + min(heading_count, 3) + min(bullet_count, 6) // 3),
+            "max": 5,
+            "reason": "Heuristic estimate based on headings, list structure, and scanability.",
         },
         "actionability": {
             "label": "Actionability",
-            "score": min(10, 2 + min(bullet_count, 10) // 2 + (2 if digit_count >= 6 else 0)),
-            "max": 10,
+            "score": min(5, 1 + min(bullet_count, 8) // 3 + (1 if digit_count >= 6 else 0)),
+            "max": 5,
             "reason": "Heuristic estimate based on whether the summary likely preserves indicators, risks, or decisions.",
         },
         "cross_linking": {
             "label": "Cross-linking",
-            "score": min(10, 1 + min(wiki_link_count, 9)),
-            "max": 10,
+            "score": min(5, min(wiki_link_count, 5)),
+            "max": 5,
             "reason": "Heuristic estimate based on reusable concept linking signals in the summary.",
+        },
+        "topic_fit": {
+            "label": "Topic Fit",
+            "score": min(5, 3),  # Neutral default; topic mismatch is rare and not detectable from text alone.
+            "max": 5,
+            "reason": "Heuristic neutral score; topic fit requires KB-context awareness.",
         },
     }
     total = sum(int(item["score"]) for item in dimensions.values())
     return {
-        "method": "heuristic_summary_value_v1",
+        "version": _SUMMARY_SCORECARD_VERSION,
+        "method": "heuristic_summary_value_v2",
         "overall_assessment": (
             "Fallback score derived from summary structure, factual detail density, "
             "and reuse signals because a structured LLM scorecard was unavailable."

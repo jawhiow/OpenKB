@@ -2391,6 +2391,147 @@ def h1_rename(ctx, do_apply: bool, confidence: float, language: str):
     )
 
 
+@cli.command(name="rescore")
+@click.option("--all", "all_docs", is_flag=True, default=False, help="Rescore every document that has a non-v2 scorecard.")
+@click.option("--unreviewed/--include-reviewed", "only_unreviewed", default=True, help="Default: only rescore review_state=unreviewed. Use --include-reviewed to also rescore approved/rejected.")
+@click.option("--file-hash", "file_hashes", multiple=True, help="Restrict rescoring to specific document hashes (repeatable).")
+@click.option("--explain", "explain_hash", default=None, help="Print old vs new scorecard for one document.")
+@click.option("--model", default=None, help="Override the LLM model used for rescoring.")
+@click.pass_context
+def rescore_cmd(ctx, all_docs, only_unreviewed, file_hashes, explain_hash, model):
+    """Recompute the v2 summary scorecard without regenerating summaries."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    from openkb.workflows.summary_pipeline import rescore_summaries, rescore_summary
+
+    _setup_llm_key(kb_dir)
+
+    if explain_hash:
+        result = rescore_summary(kb_dir, explain_hash, model=model)
+        for key in ("file_hash", "name", "skipped", "skip_reason", "old_total_score", "new_total_score", "scorecard_version"):
+            if result.get(key) is not None:
+                click.echo(f"{key}: {result[key]}")
+        return
+
+    only_unreviewed_effective = not all_docs and only_unreviewed
+    selected_hashes = list(file_hashes) if file_hashes else None
+    result = rescore_summaries(
+        kb_dir,
+        file_hashes=selected_hashes,
+        model=model,
+        only_unreviewed=only_unreviewed_effective,
+        progress_callback=lambda event: None,
+    )
+    click.echo(
+        f"rescore  total={result['total']}  rescored={result['rescored']}  "
+        f"skipped={result['skipped']}  failed={result['failed']}"
+    )
+    for failure in result["failures"][:5]:
+        click.echo(f"  ! {failure.get('file_hash')}: {failure.get('error')}")
+
+
+@cli.command(name="auto-review")
+@click.option("--dry-run/--apply", "dry_run_flag", default=None, help="Preview decisions without changing ledger state (default), or apply them.")
+@click.option("--file-hash", "file_hashes", multiple=True, help="Restrict review to specific document hashes (repeatable).")
+@click.option("--explain", "explain_hash", default=None, help="Print a detailed decision tree for one document and exit.")
+@click.option("--revert", "revert_run_id", default=None, help="Revert all approved/rejected decisions made by a given run_id.")
+@click.option("--report", is_flag=True, default=False, help="Print a summary of historical auto-review runs and exit.")
+@click.option("--operator", default="", help="Operator name recorded in the audit trail.")
+@click.pass_context
+def auto_review_cmd(ctx, dry_run_flag, file_hashes, explain_hash, revert_run_id, report, operator):
+    """Auto-classify pending review summaries into approved / rejected / held_for_human."""
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        click.echo("No knowledge base found. Run `openkb init` first.")
+        return
+    from openkb.workflows.auto_review import (
+        AUTO_REVIEW_HISTORY,
+        auto_review_config,
+        evaluate_document,
+        revert_run,
+        run_auto_review,
+    )
+
+    if report:
+        history_path = kb_dir / ".openkb" / AUTO_REVIEW_HISTORY
+        if not history_path.exists():
+            click.echo("No auto-review history yet.")
+            return
+        counts: dict[str, dict[str, int]] = {}
+        for line in history_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            run_id = str(entry.get("run_id") or "(none)")
+            slot = counts.setdefault(run_id, {"approved": 0, "rejected": 0, "held_for_human": 0, "dry": 0})
+            decision = str(entry.get("final_decision") or "")
+            if decision in slot:
+                slot[decision] += 1
+            if entry.get("dry_run"):
+                slot["dry"] += 1
+        for run_id, slot in sorted(counts.items()):
+            mode = "DRY" if slot.get("dry") else "APPLY"
+            click.echo(
+                f"{run_id}  [{mode}]  approved={slot['approved']} rejected={slot['rejected']} held={slot['held_for_human']}"
+            )
+        return
+
+    if revert_run_id:
+        result = revert_run(kb_dir, revert_run_id)
+        click.echo(f"reverted run_id={result['run_id']} count={result['reverted']} errors={result['errors']}")
+        return
+
+    if explain_hash:
+        decision = evaluate_document(kb_dir, explain_hash)
+        click.echo(f"file_hash: {decision.file_hash}")
+        click.echo(f"name: {decision.name}")
+        click.echo(f"final_decision: {decision.final_decision}")
+        click.echo(f"total_score: {decision.total_score}")
+        click.echo(f"scorecard_version: {decision.scorecard_version}")
+        click.echo(f"decision_path: {decision.decision_path}")
+        if decision.dimension_snapshot:
+            click.echo("dimensions:")
+            for key, value in decision.dimension_snapshot.items():
+                click.echo(f"  - {key}: {value}")
+        if decision.hard_signals.get("any_match"):
+            click.echo(f"hard_signals: {decision.hard_signals}")
+        if decision.overlap.get("max_overlap"):
+            click.echo(
+                f"overlap: max={decision.overlap.get('max_overlap')} "
+                f"top={decision.overlap.get('top_hits')}"
+            )
+        if decision.reasons:
+            click.echo("reasons:")
+            for r in decision.reasons:
+                click.echo(f"  - {r}")
+        return
+
+    raw_cfg = load_config(kb_dir / ".openkb" / "config.yaml")
+    cfg = auto_review_config(raw_cfg)
+    is_dry = cfg.dry_run if dry_run_flag is None else bool(dry_run_flag)
+
+    selected_hashes = list(file_hashes) if file_hashes else None
+    result = run_auto_review(
+        kb_dir,
+        file_hashes=selected_hashes,
+        dry_run=is_dry,
+        progress_callback=lambda event: None,
+        operator=operator,
+    )
+    mode = "DRY-RUN" if result["dry_run"] else "APPLY"
+    click.echo(
+        f"auto-review {mode}  run_id={result['run_id']}  "
+        f"total={result['total']}  approved={result['approved']}  "
+        f"rejected={result['rejected']}  held={result['held_for_human']}  "
+        f"errors={result['errors']}"
+    )
+
+
 @cli.command()
 @click.option("--host", default="0.0.0.0", show_default=True, help="Host to bind the local client server.")
 @click.option("--port", default=8765, show_default=True, type=int, help="Port for the local client server.")

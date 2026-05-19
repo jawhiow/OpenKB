@@ -78,6 +78,8 @@ def test_save_and_load_document_ledger_normalize_records(tmp_path: Path):
             "promotion_score": None,
             "summary_score_source": "",
             "summary_scorecard": None,
+            "summary_scorecard_v1": None,
+            "scorecard_version": "",
             "review_notes": "",
             "recommended_ingest_mode": "",
             "approved_by": "",

@@ -9,5 +9,26 @@ ingest_gate:
   log_all_decisions: true        # Record gate decisions to wiki/explorations + .openkb history
   allow_force_pass: true         # Allow CLI/operator override to force a pass
   allow_force_reject: true       # Allow CLI/operator override to force a reject
+auto_review:
+  enabled: false                 # Enable post-summary auto-review
+  dry_run: true                  # Write audit log but do not modify ledger state
+  kb_topic: ""                   # Optional override for topic_fit anchor; falls back to KB-default
+  approve_threshold: 70          # Auto-approve when v2 total >= this AND no HOLD gates trip
+  reject_threshold: 50           # Auto-reject when v2 total < this OR critical floor breached
+  min_research_depth: 8          # /15 — below this triggers HOLD
+  min_durability: 6              # /15 — below this triggers HOLD
+  min_novelty_vs_kb: 5           # /10 — below this triggers HOLD
+  min_topic_fit: 2               # /5  — below this triggers HOLD
+  min_source_coverage: 8         # /15 — below this triggers HOLD
+  daily_approve_budget: 15       # Soft cap on daily auto-approvals; extras roll to HOLD
+  hard_signals:
+    ephemeral_patterns: [每日, 周报, 月报, 避雷, 收市, 盘前, 盘后, 晨会, 晨报, 早评, 夜报]
+    transcript_patterns: [对话, 纪要, 路演, 电话会, 调研纪要, 访谈, 录音]
+    news_patterns: [快讯, 速报, 热点, 突发]
+  overlap:
+    reject_threshold: 0.80       # Jaccard with any existing wiki page above this → reject
+    hold_threshold: 0.60         # 0.60 ≤ overlap < 0.80 → hold for human merge decision
+    top_k: 5                     # Keep this many top hits in the audit log
+    min_report_score: 0.30       # Below this, hits are not reported (max_overlap still tracked)
 wire_api: responses              # gpt-5 models prefer responses; others may use chat_completions
 base_url: ""                     # Optional OpenAI-compatible gateway URL, e.g. https://api.example.com/v1
