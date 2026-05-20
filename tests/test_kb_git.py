@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 import openkb.kb_git as kb_git
-from openkb.kb_git import commit_kb_changes, ensure_kb_git
+from openkb.kb_git import commit_kb_changes, commit_kb_paths, ensure_kb_git
 
 
 def _git(kb_dir: Path, *args: str) -> str:
@@ -68,6 +68,39 @@ def test_commit_kb_changes_skips_empty_commits_and_keeps_raw_untracked(tmp_path:
     assert "raw/source.pdf" not in tracked
 
 
+def test_commit_kb_paths_can_record_ledger_when_legacy_gitignore_ignores_openkb(tmp_path: Path):
+    kb_dir = tmp_path / "kb"
+    (kb_dir / ".openkb").mkdir(parents=True)
+    (kb_dir / "wiki").mkdir()
+    (kb_dir / ".gitignore").write_text(".openkb/\n", encoding="utf-8")
+    (kb_dir / ".openkb" / "document_ledger.json").write_text(
+        '{"version":1,"documents":{}}\n',
+        encoding="utf-8",
+    )
+
+    result = commit_kb_paths(kb_dir, "Review summaries", [".openkb/document_ledger.json"])
+
+    assert result.committed is True
+    tracked = set(_git(kb_dir, "ls-files").splitlines())
+    assert ".gitignore" in tracked
+    assert ".openkb/document_ledger.json" in tracked
+    assert _git(kb_dir, "log", "-1", "--pretty=%s") == "Review summaries"
+
+
+def test_commit_kb_paths_skips_missing_untracked_pathspecs(tmp_path: Path):
+    kb_dir = tmp_path / "kb"
+    kb_dir.mkdir()
+
+    result = commit_kb_paths(kb_dir, "Review summaries", [".openkb/document_ledger.json"])
+
+    assert result.git_available is True
+    assert result.committed is True
+    assert set(_git(kb_dir, "ls-files").splitlines()) == {".gitignore"}
+    empty = commit_kb_paths(kb_dir, "Review summaries", [".openkb/document_ledger.json"])
+    assert empty.committed is False
+    assert empty.skipped_reason == "no_changes"
+
+
 def test_run_git_decodes_output_as_utf8_with_replacement(monkeypatch, tmp_path: Path):
     calls = []
 
@@ -81,3 +114,25 @@ def test_run_git_decodes_output_as_utf8_with_replacement(monkeypatch, tmp_path: 
 
     assert calls[0]["encoding"] == "utf-8"
     assert calls[0]["errors"] == "replace"
+
+
+def test_run_git_retries_transient_index_lock(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(
+                128,
+                cmd,
+                stderr="fatal: Unable to create '.git/index.lock': File exists.",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(kb_git.subprocess, "run", fake_run)
+    monkeypatch.setattr(kb_git, "_GIT_LOCK_RETRY_DELAY_SECONDS", 0)
+
+    result = kb_git._run_git(tmp_path, "add", "--", ".gitignore")
+
+    assert result.stdout == "ok\n"
+    assert len(calls) == 2

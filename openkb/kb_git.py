@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,8 +29,14 @@ _UNCACHED_PATHS = (
     ".openkb/model-pool/status.json",
 )
 
+_FORCE_ADD_PATHS = (
+    ".openkb/document_ledger.json",
+)
+
 _KB_GIT_LOCKS: dict[Path, threading.RLock] = {}
 _KB_GIT_LOCKS_LOCK = threading.Lock()
+_GIT_LOCK_RETRY_ATTEMPTS = 3
+_GIT_LOCK_RETRY_DELAY_SECONDS = 0.2
 
 
 @dataclass(frozen=True)
@@ -43,15 +50,28 @@ class KbGitResult:
     skipped_reason: str = ""
 
 
+def _is_git_index_lock_error(exc: subprocess.CalledProcessError) -> bool:
+    text = "\n".join(str(part or "") for part in (exc.stderr, exc.output))
+    return "index.lock" in text and "File exists" in text
+
+
 def _run_git(kb_dir: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=kb_dir,
-        check=check,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-    )
+    attempts = _GIT_LOCK_RETRY_ATTEMPTS if check else 1
+    for attempt in range(attempts):
+        try:
+            return subprocess.run(
+                ["git", *args],
+                cwd=kb_dir,
+                check=check,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            if attempt + 1 >= attempts or not _is_git_index_lock_error(exc):
+                raise
+            time.sleep(_GIT_LOCK_RETRY_DELAY_SECONDS)
+    raise RuntimeError("unreachable git retry state")
 
 
 def _kb_git_lock(kb_dir: Path) -> threading.RLock:
@@ -110,12 +130,46 @@ def _untrack_protected_paths(kb_dir: Path) -> None:
             _run_git(kb_dir, "rm", "-r", "--cached", "--quiet", "--", pathspec, check=False)
 
 
+def _pathspec_exists_or_tracked(kb_dir: Path, pathspec: str) -> bool:
+    if (kb_dir / pathspec).exists():
+        return True
+    tracked = _run_git(kb_dir, "ls-files", "--", pathspec, check=False).stdout.strip()
+    return bool(tracked)
+
+
+def _is_protected_pathspec(pathspec: str) -> bool:
+    normalized = pathspec.replace("\\", "/").strip("/")
+    for protected in _UNCACHED_PATHS:
+        if normalized == protected or normalized.startswith(f"{protected}/"):
+            return True
+    return False
+
+
+def _should_force_add_pathspec(pathspec: str) -> bool:
+    normalized = pathspec.replace("\\", "/").strip("/")
+    return normalized in _FORCE_ADD_PATHS
+
+
+def _stage_selected_pathspecs(kb_dir: Path, pathspecs: tuple[str, ...]) -> tuple[str, ...]:
+    stageable = tuple(
+        pathspec
+        for pathspec in pathspecs
+        if not _is_protected_pathspec(pathspec) and _pathspec_exists_or_tracked(kb_dir, pathspec)
+    )
+    normal_pathspecs = tuple(pathspec for pathspec in stageable if not _should_force_add_pathspec(pathspec))
+    force_pathspecs = tuple(pathspec for pathspec in stageable if _should_force_add_pathspec(pathspec))
+    if normal_pathspecs:
+        _run_git(kb_dir, "add", "--", *normal_pathspecs)
+    if force_pathspecs:
+        _run_git(kb_dir, "add", "-f", "--", *force_pathspecs)
+    return stageable
+
+
 def _stage_and_commit(kb_dir: Path, message: str, pathspecs: tuple[str, ...] | None = None) -> KbGitResult:
     _ensure_gitignore(kb_dir)
     _untrack_protected_paths(kb_dir)
     if pathspecs:
-        commit_pathspecs = (".gitignore", *pathspecs)
-        _run_git(kb_dir, "add", "--", *commit_pathspecs)
+        commit_pathspecs = _stage_selected_pathspecs(kb_dir, (".gitignore", *pathspecs))
         has_changes = _run_git(kb_dir, "diff", "--cached", "--quiet", "--", *commit_pathspecs, check=False).returncode != 0
     else:
         commit_pathspecs = ()

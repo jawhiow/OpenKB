@@ -6,6 +6,7 @@ import concurrent.futures
 import inspect
 import json
 import os
+import subprocess
 import shutil
 import tempfile
 import threading
@@ -1086,11 +1087,17 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
             job.add_log("Updating summary review metadata")
             result = update_summary_reviews(target_kb, reviews)
             if result["updated"]:
-                commit_kb_paths(
-                    target_kb,
-                    f"Review {result['updated']} summary document(s)",
-                    [".openkb/document_ledger.json"],
-                )
+                try:
+                    commit_kb_paths(
+                        target_kb,
+                        f"Review {result['updated']} summary document(s)",
+                        [".openkb/document_ledger.json"],
+                    )
+                except Exception as exc:
+                    detail = str(exc)
+                    if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+                        detail = str(exc.stderr).strip()
+                    job.add_log(f"Git auto-commit failed after review update: {detail}", level="warning")
             job.raise_if_stopped()
             job.add_log(f"Updated {result['updated']} review record(s), failed {result['failed']}")
             return result

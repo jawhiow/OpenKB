@@ -1010,6 +1010,35 @@ def test_review_summary_job_commits_only_document_ledger(tmp_path, monkeypatch):
     assert commit_calls == [(kb_dir, "Review 1 summary document(s)", (".openkb/document_ledger.json",))]
 
 
+def test_review_summary_job_succeeds_when_git_autocommit_fails(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    reviews = [{"file_hash": "hash-a", "review_state": "approved", "summary_score": 90}]
+
+    def fake_update_summary_reviews(_target_kb, _review_payload):
+        return {"updated": 1, "failed": 0, "total": 1, "failures": [], "documents": []}
+
+    def fail_commit(_target_kb, _message, _paths):
+        raise subprocess.CalledProcessError(
+            128,
+            ["git", "add", "--", ".gitignore"],
+            stderr="fatal: Unable to create '.git/index.lock': File exists.",
+        )
+
+    monkeypatch.setattr("openkb.workflows.summary_pipeline.update_summary_reviews", fake_update_summary_reviews)
+    monkeypatch.setattr("openkb.client.server.commit_kb_paths", fail_commit)
+
+    app = create_app(registry=registry)
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/review-summary")
+    response = route.endpoint({"kb_dir": str(kb_dir), "reviews": reviews})
+    job = registry.wait(response["job"]["id"], timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded", job.error
+    assert job.result["updated"] == 1
+    assert any(entry["level"] == "warning" and "Git auto-commit failed" in entry["message"] for entry in job.logs)
+
+
 def test_promote_document_job_uses_promotion_pipeline(tmp_path, monkeypatch):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / ".env").write_text("LLM_API_KEY=sk-test\n", encoding="utf-8")
