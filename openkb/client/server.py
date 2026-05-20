@@ -20,7 +20,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from openkb.client.jobs import JobRegistry, JobStopped, default_registry
-from openkb.kb_git import commit_kb_changes
+from openkb.kb_git import commit_kb_changes, commit_kb_paths
 from openkb.client import kb as kb_helpers
 from openkb.config import DEFAULT_CONFIG, load_config, load_global_config
 
@@ -1086,7 +1086,11 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
             job.add_log("Updating summary review metadata")
             result = update_summary_reviews(target_kb, reviews)
             if result["updated"]:
-                commit_kb_changes(target_kb, f"Review {result['updated']} summary document(s)")
+                commit_kb_paths(
+                    target_kb,
+                    f"Review {result['updated']} summary document(s)",
+                    [".openkb/document_ledger.json"],
+                )
             job.raise_if_stopped()
             job.add_log(f"Updated {result['updated']} review record(s), failed {result['failed']}")
             return result

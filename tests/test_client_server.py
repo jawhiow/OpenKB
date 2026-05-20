@@ -966,7 +966,7 @@ def test_review_summary_job_uses_summary_review_pipeline(tmp_path, monkeypatch):
         return {"updated": 1, "failed": 0, "total": 1, "failures": [], "documents": []}
 
     monkeypatch.setattr("openkb.workflows.summary_pipeline.update_summary_reviews", fake_update_summary_reviews)
-    monkeypatch.setattr("openkb.client.server.commit_kb_changes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("openkb.client.server.commit_kb_paths", lambda *_args, **_kwargs: None)
 
     app = create_app(registry=registry)
     route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/review-summary")
@@ -978,6 +978,36 @@ def test_review_summary_job_uses_summary_review_pipeline(tmp_path, monkeypatch):
     assert job.type == "review_summary"
     assert job.result["updated"] == 1
     assert calls == {"target_kb": kb_dir, "reviews": reviews}
+
+
+def test_review_summary_job_commits_only_document_ledger(tmp_path, monkeypatch):
+    kb_dir = _make_kb(tmp_path)
+    registry = JobRegistry()
+    reviews = [{"file_hash": "hash-a", "review_state": "approved", "summary_score": 90}]
+    commit_calls: list[tuple[Path, str, tuple[str, ...]]] = []
+
+    def fake_update_summary_reviews(_target_kb, _review_payload):
+        return {"updated": 1, "failed": 0, "total": 1, "failures": [], "documents": []}
+
+    def fail_full_commit(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "add", "-A", "--", "."])
+
+    def fake_commit_kb_paths(target_kb, message, paths):
+        commit_calls.append((target_kb, message, tuple(paths)))
+
+    monkeypatch.setattr("openkb.workflows.summary_pipeline.update_summary_reviews", fake_update_summary_reviews)
+    monkeypatch.setattr("openkb.client.server.commit_kb_changes", fail_full_commit)
+    monkeypatch.setattr("openkb.client.server.commit_kb_paths", fake_commit_kb_paths)
+
+    app = create_app(registry=registry)
+    route = next(route for route in app.routes if getattr(route, "path", "") == "/api/documents/review-summary")
+    response = route.endpoint({"kb_dir": str(kb_dir), "reviews": reviews})
+    job = registry.wait(response["job"]["id"], timeout=10)
+
+    assert job is not None
+    assert job.status == "succeeded", job.error
+    assert job.result["updated"] == 1
+    assert commit_calls == [(kb_dir, "Review 1 summary document(s)", (".openkb/document_ledger.json",))]
 
 
 def test_promote_document_job_uses_promotion_pipeline(tmp_path, monkeypatch):

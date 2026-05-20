@@ -21,6 +21,7 @@ from openkb.document_ledger import (
     build_document_ledger_record,
     get_document_ledger_record,
     infer_document_ledger_defaults,
+    list_effective_document_ledger_records,
     select_document_ledger_records,
     update_document_workflow_state,
     upsert_document_ledger_record,
@@ -72,7 +73,7 @@ def promote_summary_document(
     document = resolve_source_document(kb_dir, selector)
     file_hash = str(document["hash"])
     stem = str(document["stem"])
-    ledger_record = get_document_ledger_record(kb_dir, file_hash)
+    ledger_record = list_effective_document_ledger_records(kb_dir).get(file_hash)
     if ledger_record is None:
         ledger_record = build_document_ledger_record(
             file_hash,
@@ -112,7 +113,13 @@ def promote_summary_document(
             kb_dir,
             file_hash,
             {
-                "workflow_state": {"promotion_state": "promoted"},
+                "source_path": normalize_kb_relative_path(artifacts.get("source_path")),
+                "workflow_state": {
+                    "source_state": "ready",
+                    "summary_state": "ready",
+                    "review_state": "approved",
+                    "promotion_state": "promoted",
+                },
                 "execution": {"last_error": "", "updated_at": _now_iso()},
             },
         )

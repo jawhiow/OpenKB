@@ -106,3 +106,36 @@ def test_promote_summary_document_supports_legacy_kb_without_persisted_ledger(kb
     record = get_document_ledger_record(kb_dir, "hash-report")
     assert record is not None
     assert record["workflow_state"]["promotion_state"] == "promoted"
+
+
+def test_promote_summary_document_uses_effective_state_for_stale_ledger(kb_dir: Path):
+    (kb_dir / "wiki" / "sources").mkdir(parents=True, exist_ok=True)
+    (kb_dir / "wiki" / "sources" / "report.json").write_text("{}", encoding="utf-8")
+    (kb_dir / "wiki" / "summaries" / "report.md").write_text(
+        "---\nfull_text: sources/report.json\n---\n\n# Summary",
+        encoding="utf-8",
+    )
+    (kb_dir / ".openkb" / "hashes.json").write_text(
+        json.dumps({"hash-report": {"name": "report.pdf", "type": "long_pdf"}}),
+        encoding="utf-8",
+    )
+    upsert_document_ledger_record(
+        kb_dir,
+        "hash-report",
+        {
+            "name": "report.pdf",
+            "stem": "report",
+            "workflow_state": {
+                "source_state": "queued",
+                "summary_state": "not_started",
+                "review_state": "unreviewed",
+                "promotion_state": "not_selected",
+            },
+        },
+    )
+
+    with patch("openkb.workflows.promotion_pipeline._compile_concepts", new_callable=AsyncMock) as mock_compile:
+        result = promote_summary_document(kb_dir, "hash-report", model="gpt-test")
+
+    assert result["promotion_state"] == "promoted"
+    assert mock_compile.await_count == 1

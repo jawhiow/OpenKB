@@ -234,6 +234,48 @@ def test_list_effective_document_ledger_records_infers_ready_review_summary(tmp_
     assert records["hash-a"]["workflow_state"]["promotion_state"] == "not_selected"
 
 
+def test_list_effective_document_ledger_records_repairs_stale_workflow_from_wiki_artifacts(tmp_path: Path):
+    kb_dir = _make_kb(tmp_path)
+    (kb_dir / "wiki" / "sources").mkdir(parents=True)
+    (kb_dir / "wiki" / "summaries").mkdir(parents=True)
+    (kb_dir / "wiki" / "concepts").mkdir(parents=True)
+    (kb_dir / ".openkb" / "hashes.json").write_text(
+        json.dumps({"hash-a": {"name": "paper.pdf", "type": "long_pdf"}}),
+        encoding="utf-8",
+    )
+    (kb_dir / "wiki" / "sources" / "paper.json").write_text("{}", encoding="utf-8")
+    (kb_dir / "wiki" / "summaries" / "paper.md").write_text(
+        "---\nfull_text: sources/paper.json\n---\n\n# Paper\n",
+        encoding="utf-8",
+    )
+    (kb_dir / "wiki" / "concepts" / "moat.md").write_text(
+        "---\nsources: [summaries/paper.md]\n---\n\n# Moat\n",
+        encoding="utf-8",
+    )
+    upsert_document_ledger_record(
+        kb_dir,
+        "hash-a",
+        {
+            "name": "paper.pdf",
+            "stem": "paper",
+            "workflow_state": {
+                "source_state": "queued",
+                "summary_state": "not_started",
+                "review_state": "unreviewed",
+                "promotion_state": "not_selected",
+            },
+        },
+    )
+
+    records = list_effective_document_ledger_records(kb_dir)
+
+    assert records["hash-a"]["source_path"] == "sources/paper.json"
+    assert records["hash-a"]["workflow_state"]["source_state"] == "ready"
+    assert records["hash-a"]["workflow_state"]["summary_state"] == "ready"
+    assert records["hash-a"]["workflow_state"]["review_state"] == "approved"
+    assert records["hash-a"]["workflow_state"]["promotion_state"] == "promoted"
+
+
 def test_backfill_document_ledger_persists_effective_records(tmp_path: Path):
     kb_dir = _make_kb(tmp_path)
     (kb_dir / "raw").mkdir(parents=True)

@@ -129,11 +129,13 @@ def list_effective_document_ledger_records(kb_dir: Path) -> dict[str, dict[str, 
         file_hash = str(document.get("hash") or "").strip()
         if not file_hash:
             continue
+        defaults = infer_document_ledger_defaults(document)
         effective_records[file_hash] = build_document_ledger_record(
             file_hash,
             stored=stored_records.get(file_hash),
-            defaults=infer_document_ledger_defaults(document),
+            defaults=defaults,
         )
+        _repair_effective_record_from_defaults(effective_records[file_hash], defaults)
 
     for file_hash, record in stored_records.items():
         effective_records.setdefault(
@@ -142,6 +144,48 @@ def list_effective_document_ledger_records(kb_dir: Path) -> dict[str, dict[str, 
         )
 
     return effective_records
+
+
+def _repair_effective_record_from_defaults(record: dict[str, Any], defaults: Mapping[str, Any]) -> None:
+    """Let durable wiki artifacts override stale pre-ledger workflow placeholders."""
+    for key in _TOP_LEVEL_KEYS:
+        if key == "scan_detected":
+            continue
+        default_value = defaults.get(key)
+        if key == "page_count":
+            if record.get(key) is None and default_value is not None:
+                record[key] = _normalized_optional_int(default_value)
+            continue
+        if key == "ingested_at":
+            if record.get(key) is None and default_value is not None:
+                record[key] = _normalized_optional_text(default_value)
+            continue
+        if not str(record.get(key) or "").strip() and str(default_value or "").strip():
+            record[key] = str(default_value).strip()
+
+    default_workflow = defaults.get("workflow_state")
+    if not isinstance(default_workflow, Mapping):
+        return
+    workflow = record.get("workflow_state")
+    if not isinstance(workflow, dict):
+        return
+    _promote_if_stale(workflow, "source_state", default_workflow, stale_values={"queued"})
+    _promote_if_stale(workflow, "summary_state", default_workflow, stale_values={"not_started"})
+    _promote_if_stale(workflow, "review_state", default_workflow, stale_values={"unreviewed"})
+    _promote_if_stale(workflow, "promotion_state", default_workflow, stale_values={"not_selected"})
+
+
+def _promote_if_stale(
+    workflow: dict[str, Any],
+    key: str,
+    defaults: Mapping[str, Any],
+    *,
+    stale_values: set[str],
+) -> None:
+    default_value = str(defaults.get(key) or "").strip()
+    current_value = str(workflow.get(key) or "").strip()
+    if default_value and current_value in stale_values and default_value != current_value:
+        workflow[key] = default_value
 
 
 def get_document_ledger_record(
