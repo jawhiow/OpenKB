@@ -477,6 +477,14 @@ export const deleteDocument = async (kbDir: string, selector: string): Promise<J
   return response.data;
 };
 
+export const deleteDocuments = async (kbDir: string, selectors: string[]): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/documents/batch-delete', {
+    kb_dir: kbDir,
+    file_hashes: selectors,
+  });
+  return response.data;
+};
+
 export const getJob = async (jobId: string): Promise<JobPayload | null> => {
   if (!jobId) return null;
   const response = await apiClient.get(`/jobs/${jobId}`);

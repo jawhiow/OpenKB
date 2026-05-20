@@ -28,6 +28,7 @@ import { DataFreshness } from '@/components/ui/data-freshness';
 import { ArrowDown, ArrowUp, ChevronsUpDown } from 'lucide-react';
 import {
   deleteDocument,
+  deleteDocuments,
   DocumentItem,
   DocumentQueryParams,
   getDocuments,
@@ -466,6 +467,16 @@ export function DocumentsTab({
     onError: (error) => toast.error('Delete failed', errorMessage(error)),
   });
 
+  const batchDeleteMutation = useMutation({
+    mutationFn: (selectors: string[]) => deleteDocuments(kbDir, selectors),
+    onSuccess: (data) => {
+      setSelection({});
+      handleJobStart(data?.job?.id);
+      toast.success('Batch delete job started');
+    },
+    onError: (error) => toast.error('Batch delete failed', errorMessage(error)),
+  });
+
   const retryImportMutation = useMutation({
     mutationFn: (selector: string) => retryDocumentImport(kbDir, selector),
     onSuccess: (data) => {
@@ -492,6 +503,7 @@ export function DocumentsTab({
     rejectMutation.isPending ||
     promoteMutation.isPending ||
     deleteMutation.isPending ||
+    batchDeleteMutation.isPending ||
     retryImportMutation.isPending;
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -889,14 +901,33 @@ export function DocumentsTab({
 
       <BatchBar count={selectedHashes.length} onClear={() => setSelection({})} itemLabel="documents selected" className="bottom-20 md:bottom-4">
         {stageView === 'inventory' && (
-          <Button
-            size="sm"
-            onClick={() => summarizeMutation.mutate(summarizableSelectedHashes)}
-            disabled={summarizeMutation.isPending || !summarizableSelectedHashes.length}
-          >
-            {summarizeMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
-            Summarize
-          </Button>
+          <>
+            <Button
+              size="sm"
+              onClick={() => summarizeMutation.mutate(summarizableSelectedHashes)}
+              disabled={summarizeMutation.isPending || !summarizableSelectedHashes.length}
+            >
+              {summarizeMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
+              Summarize
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={async () => {
+                const ok = await confirmDialog({
+                  title: 'Delete selected documents?',
+                  description: `${selectedHashes.length} document(s) will be permanently removed from inventory.`,
+                  confirmLabel: 'Delete',
+                  variant: 'danger',
+                });
+                if (ok) batchDeleteMutation.mutate(selectedHashes);
+              }}
+              disabled={batchDeleteMutation.isPending || !selectedHashes.length}
+            >
+              {batchDeleteMutation.isPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Trash2 className="mr-1.5 h-3.5 w-3.5" />}
+              Delete
+            </Button>
+          </>
         )}
         {stageView === 'review' && (
           <>

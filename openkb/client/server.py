@@ -1297,6 +1297,53 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
             )
         return {"job": job.to_dict()}
 
+    @app.post("/api/documents/batch-delete")
+    def batch_delete_documents(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+            file_hashes = payload.get("file_hashes")
+            if not isinstance(file_hashes, list) or not file_hashes:
+                raise ValueError("file_hashes must be a non-empty list.")
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        def run(job):
+            from openkb.source_relations import get_source_documents
+            from openkb.document_ledger import delete_document_ledger_record
+
+            job.raise_if_stopped()
+            hash_to_stem: dict[str, str] = {}
+            for doc in get_source_documents(target_kb):
+                h = str(doc.get("hash") or "")
+                s = str(doc.get("stem") or "")
+                if h:
+                    hash_to_stem[h] = s
+
+            total = len(file_hashes)
+            removed = 0
+            failed = 0
+            errors: list[dict[str, str]] = []
+            for index, selector in enumerate(file_hashes, 1):
+                selector = str(selector).strip()
+                if not selector:
+                    continue
+                job.raise_if_stopped()
+                try:
+                    result = kb_helpers.delete_source_document_data(target_kb, selector)
+                    removed += 1
+                    job.add_log(f"Deleted {index}/{total}: {selector}")
+                except Exception as exc:
+                    failed += 1
+                    errors.append({"selector": selector, "error": str(exc)})
+                    job.add_log(f"Failed {index}/{total}: {selector}: {exc}", level="error")
+                job.set_progress(index, total)
+
+            commit_kb_changes(target_kb, f"Batch deleted {removed} document(s)")
+            return {"removed": removed, "failed": failed, "total": total, "errors": errors}
+
+        job = registry.submit("batch_delete", run, message=f"Batch deleting {len(file_hashes)} document(s)")
+        return {"job": job.to_dict()}
+
     @app.delete("/api/documents/{selector}")
     def delete_document(selector: str, kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
         try:

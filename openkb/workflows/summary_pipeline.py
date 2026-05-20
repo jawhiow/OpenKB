@@ -40,16 +40,16 @@ _SUMMARY_LEDGER_LOCKS_LOCK = threading.Lock()
 
 
 _SUMMARY_SCORE_DIMENSIONS: tuple[tuple[str, str, int], ...] = (
-    ("research_depth", "Research Depth", 15),
-    ("durability", "Durability", 15),
-    ("source_coverage", "Source Coverage", 15),
-    ("factual_density", "Factual Density", 15),
-    ("retrieval_value", "Retrieval Value", 10),
-    ("novelty_vs_kb", "Novelty vs KB", 10),
-    ("structure_clarity", "Structure & Clarity", 5),
-    ("actionability", "Actionability", 5),
-    ("cross_linking", "Cross-linking", 5),
-    ("topic_fit", "Topic Fit", 5),
+    ("research_depth", "研究深度", 15),
+    ("durability", "耐久性", 15),
+    ("source_coverage", "来源覆盖", 15),
+    ("factual_density", "事实密度", 15),
+    ("retrieval_value", "检索价值", 10),
+    ("novelty_vs_kb", "知识库新颖度", 10),
+    ("structure_clarity", "结构与清晰度", 5),
+    ("actionability", "可操作性", 5),
+    ("cross_linking", "交叉链接", 5),
+    ("topic_fit", "主题契合度", 5),
 )
 
 _SUMMARY_SCORE_DIMENSION_MAX = {name: max_score for name, _label, max_score in _SUMMARY_SCORE_DIMENSIONS}
@@ -68,160 +68,154 @@ _LEGACY_SUMMARY_SCORE_DIMENSION_MAX_V1 = {
 }
 
 _SUMMARY_SCORE_RUBRIC = """\
-Scoring rubric (v2). Each dimension has explicit anchors — DO NOT default to high scores.
-Read the anchors and pick the band that best matches the document. Be honest about weaknesses.
+评分标准 (v2)。每个维度有明确锚点——不要默认给高分。
+仔细阅读锚点，选择最匹配文档的分数段。诚实面对弱点。
 
-- research_depth (0-15): Is this a research artifact or a news/transcript snippet?
-    13-15 = industry deep dive, value-chain teardown, long thesis-driven analysis
-    8-12  = company deep dive, sector outlook, thematic note with original analysis
-    4-7   = short broker note, single-event commentary, end-of-day recap
-    1-3   = roadshow / call / conference / interview transcript, news roundup
-    0     = pure news copy, headline list, social-media chatter
-    Hard cap: if title contains 录音/纪要/路演/电话会/调研纪要/访谈/对话/快讯/速报, cap this dimension at 5.
+- research_depth (0-15)：这是研究性文档还是新闻/纪要片段？
+    13-15 = 行业深度报告、产业链拆解、长篇论点驱动分析
+    8-12  = 公司深度报告、行业展望、含原创分析的主题笔记
+    4-7   = 短篇券商观点、单事件点评、收盘回顾
+    1-3   = 路演/电话会/调研纪要/访谈/对话/快讯/速报
+    0     = 纯新闻通稿、标题列表、社交媒体讨论
+    硬上限：标题包含 录音/纪要/路演/电话会/调研纪要/访谈/对话/快讯/速报 时，本维度上限为5。
 
-- durability (0-15): How fast does the content decay?
-    13-15 = industry structure, capacity cycle, technology roadmap, valuation framework (24+ months)
-    8-12  = annual/interim report analysis, full-year strategy outlook (12 months)
-    4-7   = quarterly earnings note, quarter-ahead outlook (3-6 months)
-    1-3   = daily/weekly/monthly digest, end-of-day note, risk-spotter, dawn brief (days)
-    0     = same-day news, single hot-topic chase
-    Hard cap: if title contains 每日/周报/月报/避雷/收市/盘前/盘后/晨会/晨报/早评/夜报, cap this dimension at 3.
+- durability (0-15)：内容衰减速度如何？
+    13-15 = 行业结构、产能周期、技术路线图、估值框架（24个月+）
+    8-12  = 年报/中报分析、全年策略展望（12个月）
+    4-7   = 季度业绩点评、季度展望（3-6个月）
+    1-3   = 日报/周报/月报、收盘笔记、风险提示、晨会纪要（数天）
+    0     = 当日新闻、单热点追踪
+    硬上限：标题包含 每日/周报/月报/避雷/收市/盘前/盘后/晨会/晨报/早评/夜报 时，本维度上限为3。
 
-- source_coverage (0-15): Does the summary capture the source's major sections and claims?
-    13-15 = preserves all major sections, claims, numbers
-    8-12  = covers core claims, drops some peripheral detail
-    4-7   = covers headline message only
-    0-3   = thin, misses important sections
+- source_coverage (0-15)：摘要是否覆盖了原文主要章节和核心观点？
+    13-15 = 保留所有主要章节、观点和数字
+    8-12  = 覆盖核心观点，省略部分细节
+    4-7   = 仅覆盖标题信息
+    0-3   = 薄弱，遗漏重要章节
 
-- factual_density (0-15): Numbers, entities, dates, assumptions, source-backed facts?
-    13-15 = many concrete numbers + entities + dates traceable to source
-    8-12  = good factual content but uneven
-    4-7   = some specifics, mostly prose
-    0-3   = vague, qualitative, hand-wavy
+- factual_density (0-15)：数字、实体、日期、假设、来源支撑的事实？
+    13-15 = 大量具体数字+实体+日期，可追溯来源
+    8-12  = 事实内容较好但不均匀
+    4-7   = 有部分具体信息，以叙述为主
+    0-3   = 模糊、定性、空泛
 
-- retrieval_value (0-10): Will this help future queries on this KB?
-    8-10 = high recall value, indexable claims and concepts
-    5-7  = useful but generic
-    2-4  = limited; mostly restates source style
-    0-1  = unlikely to surface in any future query
+- retrieval_value (0-10)：对未来查询本知识库有帮助吗？
+    8-10 = 高召回价值，可索引的观点和概念
+    5-7  = 有用但偏通用
+    2-4  = 有限；主要复述原文风格
+    0-1  = 不太可能被任何未来查询命中
 
-- novelty_vs_kb (0-10): How novel is this relative to {EXISTING_CONCEPTS_DIGEST}?
-    8-10 = brand-new topic OR material update to existing concept
-    5-7  = adds incremental angle to existing pages
-    2-4  = mostly already covered in the existing wiki
-    0-1  = ≥80% overlap with an existing page
+- novelty_vs_kb (0-10)：相对于{EXISTING_CONCEPTS_DIGEST}有多新颖？
+    8-10 = 全新主题 或 对已有概念的重大更新
+    5-7  = 为已有页面增加增量角度
+    2-4  = 大部分已在现有wiki中覆盖
+    0-1  = ≥80%与已有页面重叠
 
-- structure_clarity (0-5): Strict — do NOT default to 5.
-    5 = full heading hierarchy + lists/tables + scannable
-    3 = readable but uneven structure or long paragraphs
-    1 = paragraph dump, no clear sections
-    0 = unstructured prose
+- structure_clarity (0-5)：严格——不要默认给5。
+    5 = 完整标题层级+列表/表格+可扫描
+    3 = 可读但结构不均或长段落
+    1 = 段落堆砌，无清晰章节
+    0 = 非结构化叙述
 
-- actionability (0-5):
-    4-5 = preserves decisions, indicators, catalysts, risk triggers, monitoring metrics
-    2-3 = some actionable signals but partial
-    0-1 = informational only, no actionable hooks
+- actionability (0-5)：
+    4-5 = 保留决策、指标、催化剂、风险触发器、监控指标
+    2-3 = 有部分可操作信号但不完整
+    0-1 = 仅信息性内容，无可操作锚点
 
-- cross_linking (0-5):
-    4-5 = identifies multiple durable [[concepts/...]] worth reusing
-    2-3 = 1-2 cross-link candidates
-    0-1 = no reusable concept hooks
+- cross_linking (0-5)：
+    4-5 = 识别多个值得复用的持久[[concepts/...]]
+    2-3 = 1-2个交叉链接候选
+    0-1 = 无可复用概念锚点
 
-- topic_fit (0-5): Is this within the KB's scope?
-    KB scope: {KB_TOPIC}
-    5 = direct investment research with tickers/ratings/forecasts
-    3 = investment-adjacent (macro, policy, value chain)
-    1 = weak investment angle (general business commentary)
-    0 = completely unrelated to investment research
+- topic_fit (0-5)：是否在知识库范围内？
+    知识库范围：{KB_TOPIC}
+    5 = 直接投资研究，含股票代码/评级/预测
+    3 = 投资相关（宏观、政策、产业链）
+    1 = 投资角度较弱（一般商业评论）
+    0 = 完全与投资研究无关
 
-Sum across all 10 dimensions must equal total_score (0-100).
-Default toward the lower band when the document is borderline — over-scoring causes KB bloat.
+所有10个维度之和必须等于total_score (0-100)。
+边界情况下倾向较低分数段——过高评分会导致知识库膨胀。
 """
 
 _SUMMARY_SCORE_JSON_SHAPE = """\
 "scorecard": an object with:
   - "version": must be the string "v2"
   - "method": short label for the scoring method
-  - "overall_assessment": one short paragraph explaining the score, citing weakest dimensions
+  - "overall_assessment": one short paragraph in Chinese explaining the score, citing weakest dimensions
   - "total_score": integer 0-100 (must equal sum of all dimension scores)
   - "dimensions": object with EXACTLY these keys:
-    - "research_depth": {{"score": 0-15, "reason": ""}}
-    - "durability": {{"score": 0-15, "reason": ""}}
-    - "source_coverage": {{"score": 0-15, "reason": ""}}
-    - "factual_density": {{"score": 0-15, "reason": ""}}
-    - "retrieval_value": {{"score": 0-10, "reason": ""}}
-    - "novelty_vs_kb": {{"score": 0-10, "reason": ""}}
-    - "structure_clarity": {{"score": 0-5, "reason": ""}}
-    - "actionability": {{"score": 0-5, "reason": ""}}
-    - "cross_linking": {{"score": 0-5, "reason": ""}}
-    - "topic_fit": {{"score": 0-5, "reason": ""}}\
+    - "research_depth": {{"score": 0-15, "reason": "评分理由（中文）"}}
+    - "durability": {{"score": 0-15, "reason": "评分理由（中文）"}}
+    - "source_coverage": {{"score": 0-15, "reason": "评分理由（中文）"}}
+    - "factual_density": {{"score": 0-15, "reason": "评分理由（中文）"}}
+    - "retrieval_value": {{"score": 0-10, "reason": "评分理由（中文）"}}
+    - "novelty_vs_kb": {{"score": 0-10, "reason": "评分理由（中文）"}}
+    - "structure_clarity": {{"score": 0-5, "reason": "评分理由（中文）"}}
+    - "actionability": {{"score": 0-5, "reason": "评分理由（中文）"}}
+    - "cross_linking": {{"score": 0-5, "reason": "评分理由（中文）"}}
+    - "topic_fit": {{"score": 0-5, "reason": "评分理由（中文）"}}\
 """
 
 _SUMMARY_WITH_SCORE_USER = """\
-New document: {doc_name}
+新文档：{doc_name}
 
-Full text:
+全文：
 {content}
 
-Write a review-stage summary page for this document in Markdown, and score the
-document's value for admission into the knowledge base.
+为该文档撰写评审阶段的摘要页面（Markdown格式），并对其纳入知识库的价值进行评分。
 
-Scoring intent:
-- This IS a KB-admission score (not just summary-quality). Score conservatively.
-- Penalize documents that are timely-news/transcripts/short notes, even if well-written.
-- Penalize content that overlaps heavily with existing concepts.
-- Reward durable, deep, original investment research.
+评分意图：
+- 这是知识库准入评分（不仅仅是摘要质量）。保守评分。
+- 即使撰写良好，也要惩罚时效性新闻/纪要/短评类文档。
+- 惩罚与已有概念高度重叠的内容。
+- 奖励持久、深入、原创的投资研究。
 
-For investment research reports, use an investment-research structure when the
-source supports it:
-- Core thesis and conclusion
-- Ratings / top ideas / company table when available
-- Key numbers, assumptions, forecasts, and valuation context
-- Industry chain map and bottlenecks
-- Catalysts and monitoring indicators
-- Risks, bear-case evidence, and disconfirming signals
-- Source evidence with page references when page markers are present
+对于投资研究报告，在原文支持时使用投资研究结构：
+- 核心论点和结论
+- 评级/首选观点/公司表格（如有）
+- 关键数字、假设、预测和估值背景
+- 产业链图谱和瓶颈
+- 催化剂和监控指标
+- 风险、看空证据和反驳信号
+- 页面引用（如有页码标记）
 
-Keep all material claims traceable to the source text. Preserve important
-numbers, dates, companies, and units. Use [[concepts/...]] only for concepts
-that deserve durable cross-document pages.
+确保所有重要观点可追溯至原文。保留重要数字、日期、公司和单位。仅在概念值得持久跨文档页面时使用[[concepts/...]]。
 
 {scoring_rubric}
 
-Return a JSON object with these keys:
-- "brief": A single sentence (under 100 chars) describing the document's main contribution
-- "content": The full summary in Markdown
+返回JSON对象，包含以下键：
+- "brief"：一句话描述文档主要贡献（100字符以内）
+- "content"：完整Markdown格式摘要
 - {scorecard_shape}
 
-Return ONLY valid JSON, no fences.
+仅返回有效JSON，不要代码围栏。
 """
 
 _LOCAL_LONG_DOC_SUMMARY_WITH_SCORE_USER = """\
-This is a page-indexed local extraction for long document "{doc_name}".
+这是长文档"{doc_name}"的分页索引提取。
 
 {content}
 
-Based on this page-indexed extraction, write a high-signal review-stage summary
-page and score the document's value for admission into the knowledge base.
+基于此分页索引提取，撰写高信号评审阶段摘要页面，并对文档纳入知识库的价值进行评分。
 
-Scoring intent:
-- This IS a KB-admission score (not just summary-quality). Score conservatively.
-- Penalize documents that are timely-news/transcripts/short notes, even if well-written.
-- Penalize content that overlaps heavily with existing concepts.
-- Reward durable, deep, original investment research.
+评分意图：
+- 这是知识库准入评分（不仅仅是摘要质量）。保守评分。
+- 即使撰写良好，也要惩罚时效性新闻/纪要/短评类文档。
+- 惩罚与已有概念高度重叠的内容。
+- 奖励持久、深入、原创的投资研究。
 
-For investment research reports, preserve ratings, company names, forecasts,
-valuation context, key numbers, catalysts, risks, and monitoring indicators.
-Use page references like "p.12" where evidence is available.
+对于投资研究报告，保留评级、公司名称、预测、估值背景、关键数字、催化剂、风险和监控指标。
+在证据可用时使用页码引用，如"第12页"。
 
 {scoring_rubric}
 
-Return a JSON object with these keys:
-- "brief": A single sentence (under 100 chars) describing the document's main contribution
-- "content": The full summary in Markdown with durable [[concepts/...]] links
+返回JSON对象，包含以下键：
+- "brief"：一句话描述文档主要贡献（100字符以内）
+- "content"：带持久[[concepts/...]]链接的完整Markdown摘要
 - {scorecard_shape}
 
-Return ONLY valid JSON, no fences.
+仅返回有效JSON，不要代码围栏。
 """
 
 
@@ -464,6 +458,21 @@ def update_summary_review(
     approved_by: str = "",
 ) -> dict[str, Any]:
     """Update review metadata for one generated summary."""
+    from openkb.source_relations import resolve_source_document
+
+    # Ensure ledger record has document metadata when it was created
+    # as an empty shell (e.g. via batch approve before summarize).
+    record = get_document_ledger_record(kb_dir, file_hash)
+    needs_metadata = record is not None and not str(record.get("name") or "").strip()
+    if needs_metadata:
+        try:
+            document = resolve_source_document(kb_dir, file_hash)
+            defaults = infer_document_ledger_defaults(document)
+        except (ValueError, RuntimeError):
+            defaults = None
+    else:
+        defaults = None
+
     updates: dict[str, Any] = {
         "workflow_state": {"review_state": review_state},
         "review": {"review_notes": review_notes},
@@ -476,7 +485,7 @@ def update_summary_review(
         updates["review"]["approved_by"] = approved_by
     if review_state == "approved":
         updates["review"]["approved_at"] = _now_iso()
-    return upsert_document_ledger_record(kb_dir, file_hash, updates)
+    return upsert_document_ledger_record(kb_dir, file_hash, updates, defaults=defaults)
 
 
 def update_summary_reviews(
@@ -514,19 +523,17 @@ def update_summary_reviews(
 
 
 _RESCORE_USER = """\
-Rescore the existing review-stage summary for "{doc_name}" against the v2
-scoring rubric below. DO NOT rewrite the summary; only return a fresh
-scorecard object that scores the summary text as a candidate for KB admission.
+按照下方v2评分标准，对"{doc_name}"的已有评审摘要重新评分。不要重写摘要；仅返回新的评分卡对象，将摘要文本作为知识库准入候选进行评分。
 
-Existing summary (already written):
+已有摘要（已撰写完成）：
 {summary}
 
 {scoring_rubric}
 
-Return a JSON object with exactly these top-level keys:
+返回JSON对象，仅包含以下顶层键：
 - {scorecard_shape}
 
-Return ONLY valid JSON, no fences. Do not include any other top-level keys.
+仅返回有效JSON，不要代码围栏。不要包含其他顶层键。
 """
 
 
@@ -945,64 +952,64 @@ def _fallback_summary_scorecard(summary: str) -> dict[str, Any]:
 
     dimensions = {
         "research_depth": {
-            "label": "Research Depth",
+            "label": "研究深度",
             "score": min(15, 4 + min(heading_count, 5) + min(line_count, 30) // 6),
             "max": 15,
-            "reason": "Heuristic estimate based on summary length and structure depth.",
+            "reason": "基于摘要长度和结构深度的启发式估计。",
         },
         "durability": {
-            "label": "Durability",
+            "label": "耐久性",
             "score": min(15, 6 + min(concept_link_count, 5)),
             "max": 15,
-            "reason": "Heuristic estimate — assumes neutral durability without title signals.",
+            "reason": "启发式估计——假设中性耐久性，无标题信号。",
         },
         "source_coverage": {
-            "label": "Source Coverage",
+            "label": "来源覆盖",
             "score": min(15, 5 + min(line_count, 24) // 3 + min(heading_count, 3)),
             "max": 15,
-            "reason": "Heuristic estimate based on summary breadth, sectioning, and coverage signals.",
+            "reason": "基于摘要广度、分段和覆盖信号的启发式估计。",
         },
         "factual_density": {
-            "label": "Factual Density",
+            "label": "事实密度",
             "score": min(15, 3 + min(digit_count, 36) // 4),
             "max": 15,
-            "reason": "Heuristic estimate based on preserved numeric and concrete source-backed detail.",
+            "reason": "基于保留数字和来源支撑事实的启发式估计。",
         },
         "retrieval_value": {
-            "label": "Retrieval Value",
+            "label": "检索价值",
             "score": min(10, 3 + min(line_count, 18) // 3 + min(len(sentences), 6) // 3),
             "max": 10,
-            "reason": "Heuristic estimate of how useful the summary will be for later recall and querying.",
+            "reason": "基于摘要未来召回和查询价值的启发式估计。",
         },
         "novelty_vs_kb": {
-            "label": "Novelty vs KB",
+            "label": "知识库新颖度",
             "score": min(10, 5),  # Neutral fallback — overlap not measurable from text alone.
             "max": 10,
-            "reason": "Heuristic neutral score; deterministic overlap is computed by auto_review_overlap.",
+            "reason": "启发式中性分数；确定性重叠由auto_review_overlap计算。",
         },
         "structure_clarity": {
-            "label": "Structure & Clarity",
+            "label": "结构与清晰度",
             "score": min(5, 1 + min(heading_count, 3) + min(bullet_count, 6) // 3),
             "max": 5,
-            "reason": "Heuristic estimate based on headings, list structure, and scanability.",
+            "reason": "基于标题、列表结构和可扫描性的启发式估计。",
         },
         "actionability": {
-            "label": "Actionability",
+            "label": "可操作性",
             "score": min(5, 1 + min(bullet_count, 8) // 3 + (1 if digit_count >= 6 else 0)),
             "max": 5,
-            "reason": "Heuristic estimate based on whether the summary likely preserves indicators, risks, or decisions.",
+            "reason": "基于摘要是否可能保留指标、风险或决策的启发式估计。",
         },
         "cross_linking": {
-            "label": "Cross-linking",
+            "label": "交叉链接",
             "score": min(5, min(wiki_link_count, 5)),
             "max": 5,
-            "reason": "Heuristic estimate based on reusable concept linking signals in the summary.",
+            "reason": "基于可复用概念链接信号的启发式估计。",
         },
         "topic_fit": {
-            "label": "Topic Fit",
+            "label": "主题契合度",
             "score": min(5, 3),  # Neutral default; topic mismatch is rare and not detectable from text alone.
             "max": 5,
-            "reason": "Heuristic neutral score; topic fit requires KB-context awareness.",
+            "reason": "启发式中性分数；主题契合需要知识库上下文感知。",
         },
     }
     total = sum(int(item["score"]) for item in dimensions.values())
@@ -1010,8 +1017,7 @@ def _fallback_summary_scorecard(summary: str) -> dict[str, Any]:
         "version": _SUMMARY_SCORECARD_VERSION,
         "method": "heuristic_summary_value_v2",
         "overall_assessment": (
-            "Fallback score derived from summary structure, factual detail density, "
-            "and reuse signals because a structured LLM scorecard was unavailable."
+            "因结构化LLM评分卡不可用，基于摘要结构、事实密度和复用信号生成的回退评分。"
         ),
         "total_score": total,
         "dimensions": dimensions,
