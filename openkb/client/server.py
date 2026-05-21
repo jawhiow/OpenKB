@@ -2391,8 +2391,36 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
 
         if all_registered:
             def run(job) -> dict[str, Any]:
+                refreshed = 0
+                cached = 0
+                failed = 0
+
+                def on_progress(current: int, total: int, outcome) -> None:
+                    nonlocal refreshed, cached, failed
+                    if outcome is not None:
+                        if outcome.status == "refreshed":
+                            refreshed += 1
+                        elif outcome.status == "cached":
+                            cached += 1
+                        elif outcome.status == "failed":
+                            failed += 1
+                    job.set_progress(current, total)
+                    job.message = (
+                        f"Refreshing registered symbols: {current}/{total} "
+                        f"(refreshed={refreshed} cached={cached} failed={failed})"
+                    )
+                    if outcome is not None and outcome.status != "refreshed":
+                        job.add_log(
+                            f"{outcome.symbol} {outcome.status}: {outcome.error or 'unknown error'}",
+                            level="warning",
+                        )
+
                 result = refresh_all_registered(
-                    target_kb, provider=provider, rate_limits=DEFAULT_RATE_LIMITS,
+                    target_kb,
+                    provider=provider,
+                    rate_limits=DEFAULT_RATE_LIMITS,
+                    on_progress=on_progress,
+                    stop_check=job.raise_if_stopped,
                 )
                 return {
                     "summary": result.summary(),
