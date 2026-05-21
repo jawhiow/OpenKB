@@ -107,6 +107,18 @@ def package_available(name: str) -> bool:
         return False
 
 
+def _repo_venv_site_paths(repo_root: Path) -> list[Path]:
+    venv = repo_root / ".venv"
+    if not venv.exists():
+        return []
+    candidates = [
+        venv / "Lib" / "site-packages",
+        *sorted((venv / "lib").glob("python*/site-packages")),
+        *sorted((venv / "lib").glob("python*/dist-packages")),
+    ]
+    return [path.resolve() for path in candidates if path.exists()]
+
+
 def bootstrap_openkb_repo_path() -> Path | None:
     """Put a local OpenKB source checkout on sys.path when it is nearby.
 
@@ -115,9 +127,28 @@ def bootstrap_openkb_repo_path() -> Path | None:
     working directory already is the repo checkout.
     """
     current = Path.cwd().resolve()
-    for candidate in (current, *current.parents):
+    candidates = [current, *current.parents]
+    env_repo = os.environ.get("OPENKB_REPO_PATH", "").strip()
+    if env_repo:
+        candidates.insert(0, Path(env_repo).expanduser().resolve())
+    for parent in (current, *current.parents):
+        candidates.extend([
+            parent / "OpenKB",
+            parent / "openkb",
+        ])
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         if (candidate / "openkb" / "cli.py").exists():
             repo_root = candidate
+            for site_path in reversed(_repo_venv_site_paths(repo_root)):
+                site_path_str = str(site_path)
+                if site_path_str not in sys.path:
+                    sys.path.insert(0, site_path_str)
             repo_root_str = str(repo_root)
             if repo_root_str not in sys.path:
                 sys.path.insert(0, repo_root_str)

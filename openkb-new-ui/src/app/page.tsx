@@ -27,6 +27,8 @@ import {
   ChevronUp,
   Pin,
   PinOff,
+  Building2,
+  TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { usePersistentState } from '@/lib/use-persistent-state';
@@ -43,6 +45,8 @@ import { QualityTab } from './components/QualityTab';
 import { ScoringTab } from './components/ScoringTab';
 import { LlmUsageTab } from './components/LlmUsageTab';
 import { OverviewTab } from './components/OverviewTab';
+import { EntitiesTab } from './components/EntitiesTab';
+import { MarketTab } from './components/MarketTab';
 
 interface KnownKb {
   path: string;
@@ -118,6 +122,8 @@ export default function Home() {
     { value: 'quality', label: 'Quality', icon: <ShieldCheck className="h-3.5 w-3.5" /> },
     { value: 'scoring', label: 'Scoring', icon: <SlidersHorizontal className="h-3.5 w-3.5" /> },
     { value: 'usage', label: 'LLM Usage', icon: <Activity className="h-3.5 w-3.5" /> },
+    { value: 'entities', label: 'Entities', icon: <Building2 className="h-3.5 w-3.5" /> },
+    { value: 'market', label: 'Market', icon: <TrendingUp className="h-3.5 w-3.5" /> },
   ];
 
   const mobileNavItems = tabDefinitions.filter((tab) =>
@@ -404,6 +410,8 @@ export default function Home() {
                 <TabTrigger value="quality" icon={<ShieldCheck />} label="Quality" />
                 <TabTrigger value="scoring" icon={<SlidersHorizontal />} label="Scoring" />
                 <TabTrigger value="usage" icon={<Activity />} label="LLM Usage" />
+                <TabTrigger value="entities" icon={<Building2 />} label="Entities" />
+                <TabTrigger value="market" icon={<TrendingUp />} label="Market" />
                 <TabTrigger value="wiki" icon={<BookOpen />} label="Wiki" />
               </TabsList>
             </div>
@@ -483,6 +491,20 @@ export default function Home() {
                 <TabsContent value="usage" className="h-full m-0 outline-none data-[state=active]:flex">
                   <LlmUsageTab
                     key={`usage-${resolvedSelectedKb ?? 'none'}`}
+                    kbDir={resolvedSelectedKb}
+                  />
+                </TabsContent>
+
+                <TabsContent value="entities" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <EntitiesTab
+                    key={`entities-${resolvedSelectedKb ?? 'none'}`}
+                    kbDir={resolvedSelectedKb}
+                  />
+                </TabsContent>
+
+                <TabsContent value="market" className="h-full m-0 outline-none data-[state=active]:flex">
+                  <MarketTab
+                    key={`market-${resolvedSelectedKb ?? 'none'}`}
                     kbDir={resolvedSelectedKb}
                   />
                 </TabsContent>

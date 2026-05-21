@@ -658,6 +658,111 @@ def apply_safe_h1_fix(path: Path) -> bool:
     return True
 
 
+def find_company_alias_misuse(kb_dir: Path) -> list[str]:
+    """Report registered company aliases that appear under concepts/ or industries/.
+
+    Aliases come from the entity registry. A registered company alias used as
+    a concept/industry page slug or H1 indicates the compiler missed a
+    duplication or the page predates the registry entry.
+    """
+    try:
+        from openkb.entity_registry import EntityRegistry, alias_key
+    except Exception:
+        return []
+    registry = EntityRegistry.load(kb_dir)
+    company_keys: dict[str, str] = {}
+    for record in registry.records:
+        if record.entity_type != "company":
+            continue
+        for name in record.all_names():
+            key = alias_key(name)
+            if key:
+                company_keys.setdefault(key, record.canonical_id)
+    if not company_keys:
+        return []
+    wiki = kb_dir / "wiki"
+    issues: list[str] = []
+    for sub in ("concepts", "industries"):
+        ns_dir = wiki / sub
+        if not ns_dir.exists():
+            continue
+        for path in sorted(ns_dir.glob("*.md")):
+            stem_key = alias_key(path.stem)
+            text = _read_md(path)
+            h1_match = re.search(r"^#\s+(.+?)\s*$", text, re.MULTILINE)
+            h1 = h1_match.group(1).strip() if h1_match else ""
+            h1_key = alias_key(h1)
+            matched_id = company_keys.get(stem_key) or company_keys.get(h1_key)
+            if matched_id:
+                issues.append(
+                    f"{sub}/{path.stem}.md is a registered company alias of "
+                    f"`{matched_id}` — move to companies/ or merge"
+                )
+    return issues
+
+
+def find_cross_listed_duplicates(kb_dir: Path) -> list[str]:
+    """Report multiple wiki/companies/ pages that resolve to one canonical record."""
+    try:
+        from openkb.entity_registry import EntityRegistry, alias_key
+    except Exception:
+        return []
+    registry = EntityRegistry.load(kb_dir)
+    if not registry.records:
+        return []
+    companies_dir = kb_dir / "wiki" / "companies"
+    if not companies_dir.exists():
+        return []
+    by_canonical: dict[str, list[str]] = {}
+    for path in sorted(companies_dir.glob("*.md")):
+        resolved = registry.resolve(path.stem, namespace_hint="company")
+        if resolved is None:
+            text = _read_md(path)
+            h1_match = re.search(r"^#\s+(.+?)\s*$", text, re.MULTILINE)
+            if h1_match:
+                resolved = registry.resolve(h1_match.group(1).strip(), namespace_hint="company")
+        if resolved is None:
+            continue
+        by_canonical.setdefault(resolved.canonical_id, []).append(path.stem)
+    issues: list[str] = []
+    for canonical_id, stems in by_canonical.items():
+        if len(stems) > 1:
+            issues.append(
+                f"canonical `{canonical_id}` is split across pages: "
+                + ", ".join(f"companies/{s}.md" for s in stems)
+            )
+    return issues
+
+
+def find_unregistered_company_hits(kb_dir: Path) -> list[str]:
+    """Surface review hints recorded by the compiler hot-path."""
+    review_path = kb_dir / ".openkb" / "entity_registry" / "resolution" / "compile_unmatched_companies.json"
+    if not review_path.exists():
+        return []
+    import json as _json
+    try:
+        data = _json.loads(review_path.read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    issues: list[str] = []
+    for record in data:
+        if not isinstance(record, dict):
+            continue
+        surface = record.get("surface") or ""
+        canonical = record.get("proposed_canonical") or ""
+        symbol = record.get("xueqiu_symbol") or ""
+        market = record.get("market") or ""
+        if not surface or not symbol:
+            continue
+        issues.append(
+            f"`{surface}` matches {market} {symbol} ({canonical}); add to registry "
+            "via `openkb entity import-akshare`"
+        )
+    return issues
+
+
 def run_structural_lint(kb_dir: Path) -> str:
     """Run all structural lint checks and return a formatted Markdown report.
 
@@ -678,6 +783,9 @@ def run_structural_lint(kb_dir: Path) -> str:
     investment_issues = find_investment_quality_issues(wiki)
     h1_issues = find_h1_issues(wiki)
     duplicate_clusters = find_concept_duplicate_clusters(kb_dir)
+    alias_misuse = find_company_alias_misuse(kb_dir)
+    cross_listed = find_cross_listed_duplicates(kb_dir)
+    unregistered_hits = find_unregistered_company_hits(kb_dir)
 
     lines = ["## Structural Lint Report\n"]
 
@@ -756,5 +864,29 @@ def run_structural_lint(kb_dir: Path) -> str:
         )
     else:
         lines.append("No duplicate concept clusters detected.")
+
+    lines.append("")
+    lines.append(f"### Registered Company Alias Misuse ({len(alias_misuse)})")
+    if alias_misuse:
+        for issue in alias_misuse:
+            lines.append(f"- {issue}")
+    else:
+        lines.append("No registered company aliases misplaced under concepts/ or industries/.")
+
+    lines.append("")
+    lines.append(f"### Cross-Listed Company Page Splits ({len(cross_listed)})")
+    if cross_listed:
+        for issue in cross_listed:
+            lines.append(f"- {issue}")
+    else:
+        lines.append("No cross-listing splits detected.")
+
+    lines.append("")
+    lines.append(f"### Unregistered Company Hits (compiler hot-path) ({len(unregistered_hits)})")
+    if unregistered_hits:
+        for issue in unregistered_hits:
+            lines.append(f"- {issue}")
+    else:
+        lines.append("No unregistered company hits recorded.")
 
     return "\n".join(lines)

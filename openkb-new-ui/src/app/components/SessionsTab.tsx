@@ -11,6 +11,8 @@ import {
   deleteChatSession,
   getChatSession,
   getChats,
+  getMarketSnapshot,
+  MarketSnapshot,
   streamQuery,
   StreamQueryDonePayload,
 } from '@/lib/api';
@@ -20,7 +22,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Bot, Copy, ExternalLink, Loader2, Menu, MessageSquare, Plus, Send, Trash2, User } from 'lucide-react';
+import { Bot, Copy, ExternalLink, Loader2, Menu, MessageSquare, Plus, Send, Trash2, TrendingUp, User } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toaster';
 import { confirm as confirmDialog } from '@/components/ui/confirm-dialog';
@@ -100,7 +102,114 @@ function referenceLabel(reference: ChatReference): string {
     ].filter(Boolean);
     return parts.length ? `search_long_documents(${parts.join(', ')})` : 'search_long_documents';
   }
+  if (reference.type === 'market_snapshot') {
+    return reference.input ? `market_snapshot(${reference.input})` : 'market_snapshot';
+  }
   return reference.path || reference.type || 'reference';
+}
+
+function MarketSnapshotReferenceCard({
+  kbDir,
+  input,
+}: {
+  kbDir: string;
+  input: string;
+}) {
+  const query = useQuery<MarketSnapshot, Error>({
+    queryKey: ['market-snapshot', kbDir, input],
+    queryFn: () => getMarketSnapshot(kbDir, input),
+    retry: false,
+    staleTime: 60_000,
+  });
+
+  if (query.isLoading) {
+    return (
+      <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs flex items-center gap-2">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Loading snapshot for {input}…
+      </div>
+    );
+  }
+  if (query.isError || !query.data) {
+    return (
+      <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs">
+        <div className="flex items-center gap-2 font-mono">
+          <TrendingUp className="h-3.5 w-3.5" />
+          market_snapshot({input})
+        </div>
+        <div className="text-muted-foreground mt-1">No cached snapshot.</div>
+      </div>
+    );
+  }
+
+  const snap = query.data;
+  const q = snap.quote;
+  const stale = snap.stale;
+
+  return (
+    <div
+      className={cn(
+        'rounded-lg border px-3 py-2.5 text-xs',
+        stale ? 'border-amber-500/50 bg-amber-500/5' : 'border-border bg-muted/40',
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <TrendingUp className="h-3.5 w-3.5 text-primary shrink-0" />
+          <span className="font-semibold truncate">{snap.name}</span>
+          <span className="font-mono text-muted-foreground">{snap.symbol}</span>
+        </div>
+        {stale ? (
+          <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+            stale
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 font-mono">
+        {q.price !== null ? (
+          <Metric label="price" value={`${q.price}${q.currency ? ' ' + q.currency : ''}`} />
+        ) : null}
+        {q.change_pct !== null ? (
+          <Metric label="change" value={`${q.change_pct}%`} />
+        ) : null}
+        {q.pe_ttm !== null ? <Metric label="PE TTM" value={String(q.pe_ttm)} /> : null}
+        {q.pb !== null ? <Metric label="PB" value={String(q.pb)} /> : null}
+        {q.market_cap !== null ? (
+          <Metric label="mkt cap" value={formatMarketCap(q.market_cap)} />
+        ) : null}
+        {q.dividend_yield !== null ? (
+          <Metric label="div %" value={String(q.dividend_yield)} />
+        ) : null}
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>source: {snap.source}</span>
+        <span>as of {new Date(snap.as_of).toLocaleString()}</span>
+      </div>
+      {snap.disclaimer ? (
+        <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+          ⚠ {snap.disclaimer}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
+        {label}
+      </span>
+      <span className="font-semibold">{value}</span>
+    </div>
+  );
+}
+
+function formatMarketCap(value: number): string {
+  if (value >= 1e12) return `${(value / 1e12).toFixed(2)}T`;
+  if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
+  if (value >= 1e4) return `${(value / 1e4).toFixed(2)}万`;
+  return String(value);
 }
 
 const markdownComponents: Components = {
@@ -559,6 +668,15 @@ export function SessionsTab({
                   {activeReferences.map((reference, index) => {
                     const label = referenceLabel(reference);
                     const isWikiNav = reference.type === 'wiki_file' && !!reference.path && !!onNavigateToWiki;
+                    if (reference.type === 'market_snapshot' && reference.input) {
+                      return (
+                        <MarketSnapshotReferenceCard
+                          key={`market-${reference.input}-${index}`}
+                          kbDir={kbDir}
+                          input={reference.input}
+                        />
+                      );
+                    }
                     if (isWikiNav) {
                       return (
                         <button
@@ -654,6 +772,15 @@ export function SessionsTab({
                     {activeReferences.map((reference, index) => {
                       const label = referenceLabel(reference);
                       const isWikiNav = reference.type === 'wiki_file' && !!reference.path && !!onNavigateToWiki;
+                      if (reference.type === 'market_snapshot' && reference.input) {
+                        return (
+                          <MarketSnapshotReferenceCard
+                            key={`market-mobile-${reference.input}-${index}`}
+                            kbDir={kbDir}
+                            input={reference.input}
+                          />
+                        );
+                      }
                       if (isWikiNav) {
                         return (
                           <button

@@ -32,3 +32,42 @@ auto_review:
     min_report_score: 0.30       # Below this, hits are not reported (max_overlap still tracked)
 wire_api: responses              # gpt-5 models prefer responses; others may use chat_completions
 base_url: ""                     # Optional OpenAI-compatible gateway URL, e.g. https://api.example.com/v1
+
+# ---------------------------------------------------------------------------
+# Entity alias enrichment (Phase 1) — feeds AkShare-backed aliases into the
+# entity registry so duplicate company pages don't accumulate.
+# ---------------------------------------------------------------------------
+entity_enrichment:
+  enabled: true
+  provider_priority:
+    - akshare:xueqiu
+    - akshare:fallback
+  symbol_index_ttl_days: 14         # cache .openkb/entity_registry/symbol_index/*.json for this long
+  auto_apply_min_confidence: 0.95   # below this, suggestions need manual review
+  allow_fuzzy_auto_apply: false
+  rate_limit:                       # AkShare per-market throttle for alias enrichment
+    cn_a_requests_per_minute: 30
+    hk_requests_per_minute: 10      # HK is slow/throttled in practice
+    us_requests_per_minute: 6       # US is even slower; keep conservative
+    retry_backoff_seconds: [2, 5, 15]
+
+# ---------------------------------------------------------------------------
+# Market snapshot layer (Phase 2) — on-demand quote/PE/PB/market_cap cache for
+# companies resolved by the entity registry. No full-market crawling.
+# ---------------------------------------------------------------------------
+market_data:
+  enabled: true
+  provider_priority:
+    - akshare:xueqiu
+    - akshare:fallback
+  refresh:
+    equity_ttl_market_hours_minutes: 30   # snapshot freshness during market hours
+    equity_ttl_overnight_hours: 12        # longer TTL outside market hours
+    fund_nav_ttl_hours: 24                # NAV is published once per trading day
+    stale_usable_days_equity: 7           # serve cached equity quotes this long after TTL
+    stale_usable_days_fund: 14            # serve cached NAV this long after TTL
+  retention:
+    history_months: 12                    # keep this many monthly JSONL files per symbol
+    keep_raw_responses: false             # debug only; usually false
+  query_agent:
+    require_stale_disclaimer: true        # agent must surface a disclaimer when stale=true

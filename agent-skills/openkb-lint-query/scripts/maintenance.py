@@ -10,8 +10,13 @@ from _runtime import bootstrap_openkb_repo_path, emit_json, git_status, resolve_
 bootstrap_openkb_repo_path()
 
 try:
+    from add_documents import SUPPORTED_EXTENSIONS, add_documents as staged_add_documents
+except Exception:  # pragma: no cover - used when copied without openkb installed.
+    SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf", ".docx"}
+    staged_add_documents = None  # type: ignore[assignment]
+
+try:
     from openkb.agent.h1_rename import apply_h1_renames, propose_h1_renames, render_suggestions_report
-    from openkb.cli import SUPPORTED_EXTENSIONS, add_single_file
     from openkb.concept_merge import apply_merges, propose_merges
     from openkb.document_ledger import backfill_document_ledger
     from openkb.kb_git import commit_kb_changes
@@ -19,8 +24,6 @@ try:
     from openkb.log import append_log
     from openkb.model_pool import select_model_route
 except Exception:  # pragma: no cover - used when copied without openkb installed.
-    SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf", ".docx"}
-    add_single_file = None  # type: ignore[assignment]
     apply_h1_renames = None  # type: ignore[assignment]
     propose_h1_renames = None  # type: ignore[assignment]
     render_suggestions_report = None  # type: ignore[assignment]
@@ -83,30 +86,63 @@ def rebuild(kb: str, *, yes: bool = False, strict: bool = False) -> dict[str, An
     kb_root, warnings = resolve_kb(kb)
     if kb_root is None:
         return {"ok": False, "error": "No OpenKB knowledge base found.", "warnings": warnings}
-    if add_single_file is None:
-        return {"ok": False, "error": "The OpenKB add helper is unavailable.", "warnings": warnings}
+    if staged_add_documents is None:
+        return {"ok": False, "error": "The OpenKB staged add helper is unavailable.", "warnings": warnings}
     raw_dir = kb_root / "raw"
     files = [path for path in sorted(raw_dir.rglob("*")) if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS] if raw_dir.exists() else []
     if not yes:
-        return {"ok": True, "dry_run": True, "kb_root": str(kb_root), "would_rebuild": [str(path) for path in files], "warnings": warnings}
+        return {
+            "ok": True,
+            "dry_run": True,
+            "workflow": "staged_rebuild",
+            "kb_root": str(kb_root),
+            "would_rebuild": [str(path) for path in files],
+            "warnings": warnings,
+        }
 
     git_before = git_status(kb_root)
-    rebuilt: list[str] = []
-    failed: list[dict[str, str]] = []
-    for file_path in files:
-        try:
-            add_single_file(file_path, kb_root, force=True, strict=strict)
-            rebuilt.append(str(file_path))
-        except Exception as exc:
-            failed.append({"path": str(file_path), "error": str(exc)})
-            if strict:
-                break
+    if not files:
+        return {
+            "ok": True,
+            "dry_run": False,
+            "workflow": "staged_rebuild",
+            "kb_root": str(kb_root),
+            "rebuilt": [],
+            "failed": [],
+            "staged": {
+                "ok": True,
+                "workflow": "staged",
+                "imported": [],
+                "file_hashes": [],
+                "summary": {"generated": 0, "skipped": 0, "failed": 0, "total": 0, "failures": [], "documents": []},
+                "promotion": {"promoted": 0, "skipped": 0, "failed": 0, "total": 0, "failures": [], "documents": []},
+            },
+            "git_status_before": git_before,
+            "git_status_after": git_status(kb_root),
+            "warnings": warnings,
+        }
+
+    staged = staged_add_documents(
+        str(kb_root),
+        str(raw_dir),
+        force=True,
+        strict=strict,
+        promote=False,
+    )
+    failed = list(staged.get("failed") or [])
+    rebuilt = [
+        str(path)
+        for path in files
+        if str(path) not in {str(item.get("path") or "") for item in failed if isinstance(item, dict)}
+    ]
     return {
-        "ok": not failed,
+        "ok": bool(staged.get("ok")) and not failed,
         "dry_run": False,
+        "workflow": "staged_rebuild",
         "kb_root": str(kb_root),
         "rebuilt": rebuilt,
         "failed": failed,
+        "staged": staged,
         "git_status_before": git_before,
         "git_status_after": git_status(kb_root),
         "warnings": warnings,

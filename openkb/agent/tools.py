@@ -464,3 +464,49 @@ def write_wiki_file(path: str, content: str, wiki_root: str) -> str:
     full_path.write_text(content, encoding="utf-8")
     return f"Written: {path}"
 
+
+def get_market_snapshot(entity_or_symbol: str, kb_root: str) -> dict:
+    """Return the latest market snapshot for a company or xueqiu symbol.
+
+    Resolution order:
+        1. Exact xueqiu_symbol match in ``companies.yaml``.
+        2. Registry alias / canonical_id lookup → identifiers.xueqiu_symbol.
+
+    The result always includes ``source`` and ``as_of`` for citation, and a
+    ``stale`` flag with ``stale_reason`` when applicable. Agents MUST surface
+    those fields when citing any number from the snapshot.
+    """
+    kb_dir = Path(kb_root).resolve()
+    try:
+        from openkb.market_data.refresh import resolve_symbol
+        from openkb.market_data.snapshot_store import read_quote_snapshot
+    except Exception as exc:  # pragma: no cover
+        return {"error": f"market_data subsystem unavailable: {exc}"}
+
+    symbol, market, canonical_id = resolve_symbol(kb_dir, entity_or_symbol)
+    if symbol is None or market is None:
+        return {
+            "error": "unresolved_entity_or_symbol",
+            "input": entity_or_symbol,
+            "canonical_id": canonical_id,
+        }
+
+    readout = read_quote_snapshot(kb_dir, symbol)
+    if readout is None:
+        return {
+            "error": "no_snapshot_cached",
+            "symbol": symbol,
+            "market": market,
+            "canonical_id": canonical_id,
+            "hint": "Run `openkb market refresh --symbol " + symbol + "` first.",
+        }
+
+    data = readout.as_dict()
+    data["canonical_id"] = canonical_id
+    if readout.stale:
+        data["disclaimer"] = (
+            "Market data is stale (cache TTL expired). Re-run `openkb market refresh` "
+            "to fetch a fresh snapshot."
+        )
+    return data
+

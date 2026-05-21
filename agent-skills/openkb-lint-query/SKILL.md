@@ -45,30 +45,48 @@ For more detail, read `references/query-playbook.md`.
 
 ## Add Document Workflow
 
-Use this when the user asks to add, 新增, import, ingest, or compile files into the active KB. This operates on user-provided source files and uses OpenKB's normal conversion/compilation path.
+Use this when the user asks to add, 新增, import, ingest, or compile files into the active KB. Default add is a staged workflow aligned with the OpenKB Web client: import source artifacts, generate a scored review summary, and stop before promotion. It does not write downstream `wiki/summaries/`, `wiki/companies/`, `wiki/industries/`, or `wiki/concepts/` pages unless promotion is explicitly requested.
 
-Preview/detect the KB first, then add a file or directory:
+Preview/detect the KB first, then add a file or directory. This may call the configured LLM for summary scoring and writes `.openkb/document_ledger.json` with `summary_score` / `summary_scorecard`; `promotion_state` remains `not_selected` unless `--promote` is used:
 
 ```bash
 python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --json
 ```
 
-Force recompilation only when the user asks to re-add/rebuild/overwrite an already indexed document:
+Force re-import/re-score only when the user asks to re-add/rebuild/overwrite an already indexed document:
 
 ```bash
 python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --force --json
 ```
 
-For staged source preparation without wiki compilation, use import-only mode:
+For source preparation without summary scoring, use import-only mode:
 
 ```bash
 python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --import-only --json
 ```
 
+Run auto-review only when the user asks for automatic approval/rejection after scoring:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --auto-review --json
+```
+
+Promote only when the user explicitly asks to publish/promote approved summaries into wiki synthesis pages:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --auto-review --promote --json
+```
+
+Use the legacy one-step compile path only when the user explicitly asks for legacy immediate wiki compilation/promotion:
+
+```bash
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file-or-folder" --legacy-compile --json
+```
+
 When the user explicitly asks for OCR/local PageIndex import strategy selection, pass the system strategy through rather than manually converting files:
 
 ```bash
-python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file.pdf" --import-only --strategy-override ocr-pageindex-local --json
+python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file.pdf" --strategy-override ocr-pageindex-local --json
 ```
 
 When ingest gate override is requested, include both a forced decision and a reason:
@@ -77,9 +95,9 @@ When ingest gate override is requested, include both a forced decision and a rea
 python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\add_documents.py" --kb . --path "path/to/file.pdf" --force-pass --gate-reason "user approved" --json
 ```
 
-The script skips unsupported extensions in directories and reports them in JSON. For a single unsupported file it returns an error. Adding may call the configured LLM/indexing pipeline, so report any conversion or compilation failures instead of inventing wiki pages manually.
+The script skips unsupported extensions in directories and reports them in JSON. For a single unsupported file it returns an error. Adding may call the configured LLM/indexing pipeline, so report any conversion, scoring, auto-review, or promotion failures instead of inventing wiki pages manually.
 
-Use rebuild only when the user asks to rebuild all `raw/` documents. Preview first unless the user has already clearly requested execution:
+Use rebuild only when the user asks to rebuild all `raw/` documents. Rebuild uses the same staged import + scored summary path and still does not promote unless a separate explicit promotion is requested. Preview first unless the user has already clearly requested execution:
 
 ```bash
 python "%USERPROFILE%\.codex\skills\openkb-lint-query\scripts\maintenance.py" --kb . --mode rebuild --json

@@ -140,6 +140,30 @@ def test_save_exploration_read_set_note_is_todo_free(tmp_path):
     assert "## Read Set" in text
 
 
+def test_runtime_bootstrap_adds_sibling_openkb_checkout_venv_site_packages(tmp_path, monkeypatch):
+    runtime = _load_script("_runtime")
+    workspace = tmp_path / "workspace"
+    kb = workspace / "kb"
+    repo = workspace / "OpenKB"
+    site_packages = repo / ".venv" / "lib" / "python3.10" / "site-packages"
+    (repo / "openkb").mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    (repo / "openkb" / "cli.py").write_text("", encoding="utf-8")
+    kb.mkdir(parents=True)
+
+    original_sys_path = list(sys.path)
+    try:
+        monkeypatch.chdir(kb)
+        detected = runtime.bootstrap_openkb_repo_path()
+
+        assert detected == repo
+        assert str(repo) in sys.path
+        assert str(site_packages) in sys.path
+        assert sys.path.index(str(repo)) < sys.path.index(str(site_packages))
+    finally:
+        sys.path[:] = original_sys_path
+
+
 def test_query_context_detects_investment_decision_and_adds_method_anchors(tmp_path):
     query_context = _load_script("query_context")
     kb = _make_skill_kb(tmp_path)
@@ -210,12 +234,19 @@ def test_skill_metadata_mentions_add_and_delete_workflows():
     assert "kb_inventory.py" in skill_text
     assert "maintenance.py" in skill_text
     assert "import-only" in skill_text
+    assert "auto-review" in skill_text
+    assert "--promote" in skill_text
+    assert "legacy-compile" in skill_text
+    assert "summary_scorecard" in skill_text
     assert "backfill-ledger" in skill_text
     assert "merge-concepts" in skill_text
     assert "h1-rename" in skill_text
     assert "新增" in skill_text or "add" in skill_text.lower()
     assert "删除" in skill_text or "delete" in skill_text.lower()
     assert "Add" in openai_text or "add" in openai_text
+    assert "staged" in openai_text
+    assert "scored review summaries" in openai_text
+    assert "do not promote" in openai_text
     assert "delete" in openai_text.lower()
     assert "maintain" in openai_text.lower()
 
@@ -233,7 +264,7 @@ def test_add_documents_rejects_unsupported_extension(tmp_path):
     assert result["added"] == []
 
 
-def test_add_documents_adds_supported_directory_files_with_openkb_helper(tmp_path):
+def test_add_documents_default_runs_staged_import_and_summary_without_promotion(tmp_path):
     add_documents = _load_script("add_documents")
     kb = _make_skill_kb(tmp_path)
     docs = tmp_path / "docs"
@@ -245,44 +276,164 @@ def test_add_documents_adds_supported_directory_files_with_openkb_helper(tmp_pat
     second.write_text("B", encoding="utf-8")
     skipped.write_text("C", encoding="utf-8")
 
-    calls: list[tuple[Path, Path, bool]] = []
+    import_calls: list[tuple[Path, Path, bool, str | None]] = []
 
-    def fake_add_single_file(file_path, kb_dir, *, force=False, strict=False):
-        calls.append((Path(file_path), Path(kb_dir), force))
-        openkb_dir = Path(kb_dir) / ".openkb"
-        openkb_dir.mkdir(exist_ok=True)
-        hashes_path = openkb_dir / "hashes.json"
-        hashes = json.loads(hashes_path.read_text(encoding="utf-8")) if hashes_path.exists() else {}
-        hashes[f"hash-{Path(file_path).stem}"] = {"name": Path(file_path).name, "type": Path(file_path).suffix.lstrip(".")}
-        hashes_path.write_text(json.dumps(hashes), encoding="utf-8")
+    def fake_import_document_source(file_path, kb_root, *, force=False, strategy_override=None):
+        import_calls.append((Path(file_path), Path(kb_root), force, strategy_override))
+        return {
+            "name": Path(file_path).name,
+            "file_hash": f"hash-{Path(file_path).stem}",
+            "skipped": False,
+            "raw_path": f"raw/{Path(file_path).name}",
+            "source_path": f"wiki/sources/{Path(file_path).stem}.md",
+        }
 
-    with patch.object(add_documents, "add_single_file", side_effect=fake_add_single_file):
+    def fake_summarize_documents(kb_root, *, file_hashes=None, force=False, max_workers=1, progress_callback=None):
+        return {
+            "generated": len(file_hashes or []),
+            "skipped": 0,
+            "failed": 0,
+            "total": len(file_hashes or []),
+            "failures": [],
+            "documents": [
+                {
+                    "file_hash": file_hash,
+                    "name": f"{file_hash}.md",
+                    "skipped": False,
+                    "summary_path": f"review_summaries/{file_hash}.md",
+                }
+                for file_hash in file_hashes or []
+            ],
+        }
+
+    with patch.object(add_documents, "add_single_file") as legacy_add, \
+        patch.object(add_documents, "import_document_source", side_effect=fake_import_document_source), \
+        patch.object(add_documents, "summarize_documents", side_effect=fake_summarize_documents) as summarize, \
+        patch.object(add_documents, "promote_summary_documents") as promote, \
+        patch.object(add_documents, "commit_kb_changes", return_value=None):
         result = add_documents.add_documents(str(kb), str(docs), force=True)
 
     assert result["ok"] is True
-    assert result["added"] == [str(first), str(second)]
-    assert result["skipped"] == [str(skipped)]
-    assert calls == [(first, kb, True), (second, kb, True)]
+    assert result["workflow"] == "staged"
+    assert result["added"] == []
+    assert [item["file_hash"] for item in result["imported"]] == ["hash-a", "hash-b"]
+    assert result["summary"]["generated"] == 2
+    assert result["promotion"]["promoted"] == 0
+    assert result["skipped_unsupported"] == [str(skipped)]
+    assert import_calls == [
+        (first, kb, True, None),
+        (second, kb, True, None),
+    ]
+    summarize.assert_called_once_with(kb, file_hashes=["hash-a", "hash-b"], force=True, max_workers=1)
+    legacy_add.assert_not_called()
+    promote.assert_not_called()
 
 
-def test_add_documents_reports_noop_as_skipped_when_hash_registry_unchanged(tmp_path):
+def test_add_documents_scores_existing_inventory_file_when_import_pipeline_skips(tmp_path):
     add_documents = _load_script("add_documents")
     kb = _make_skill_kb(tmp_path)
-    openkb_dir = kb / ".openkb"
-    openkb_dir.mkdir(exist_ok=True)
-    (openkb_dir / "hashes.json").write_text(
-        json.dumps({"hash-a": {"name": "already.md", "type": "md"}}),
-        encoding="utf-8",
-    )
     source = tmp_path / "already.md"
     source.write_text("# Already", encoding="utf-8")
 
-    with patch.object(add_documents, "add_single_file", return_value=None):
+    with patch.object(add_documents, "add_single_file") as legacy_add, \
+        patch.object(
+            add_documents,
+            "import_document_source",
+            return_value={"name": "already.md", "file_hash": "hash-a", "skipped": True},
+        ), \
+        patch.object(
+            add_documents,
+            "summarize_documents",
+            return_value={"generated": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []},
+        ) as summarize:
         result = add_documents.add_documents(str(kb), str(source))
 
     assert result["ok"] is True
+    assert result["workflow"] == "staged"
     assert result["added"] == []
     assert result["skipped"] == [str(source)]
+    assert result["file_hashes"] == ["hash-a"]
+    assert result["summary"]["generated"] == 1
+    legacy_add.assert_not_called()
+    summarize.assert_called_once_with(kb, file_hashes=["hash-a"], force=False, max_workers=1)
+
+
+def test_add_documents_runs_auto_review_and_promotion_only_when_requested(tmp_path):
+    add_documents = _load_script("add_documents")
+    kb = _make_skill_kb(tmp_path)
+    source = tmp_path / "paper.md"
+    source.write_text("# Paper", encoding="utf-8")
+
+    with patch.object(
+        add_documents,
+        "import_document_source",
+        return_value={
+            "name": "paper.md",
+            "file_hash": "hash-paper",
+            "skipped": False,
+            "raw_path": "raw/paper.md",
+            "source_path": "wiki/sources/paper.md",
+        },
+    ), \
+        patch.object(
+            add_documents,
+            "summarize_documents",
+            return_value={"generated": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []},
+        ), \
+        patch.object(
+            add_documents,
+            "run_auto_review",
+            return_value={
+                "run_id": "auto_run_test",
+                "dry_run": False,
+                "total": 1,
+                "approved": 1,
+                "rejected": 0,
+                "held_for_human": 0,
+                "errors": 0,
+                "decisions": [{"file_hash": "hash-paper", "final_decision": "approved"}],
+            },
+        ) as auto_review, \
+        patch.object(
+            add_documents,
+            "promote_summary_documents",
+            return_value={"promoted": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []},
+        ) as promote, \
+        patch.object(add_documents, "commit_kb_changes", return_value=None):
+        result = add_documents.add_documents(str(kb), str(source), auto_review=True, promote=True)
+
+    assert result["ok"] is True
+    assert result["workflow"] == "staged"
+    assert result["auto_review"]["approved"] == 1
+    assert result["promotion"]["promoted"] == 1
+    auto_review.assert_called_once_with(kb, file_hashes=["hash-paper"], dry_run=False, operator="")
+    promote.assert_called_once_with(kb, file_hashes=["hash-paper"], force=False, max_workers=1)
+
+
+def test_add_documents_legacy_compile_remains_explicit(tmp_path):
+    add_documents = _load_script("add_documents")
+    kb = _make_skill_kb(tmp_path)
+    source = tmp_path / "paper.md"
+    source.write_text("# Paper", encoding="utf-8")
+
+    def fake_add_single_file(file_path, kb_dir, *, force=False, strict=False):
+        openkb_dir = Path(kb_dir) / ".openkb"
+        hashes_path = openkb_dir / "hashes.json"
+        hashes = json.loads(hashes_path.read_text(encoding="utf-8")) if hashes_path.exists() else {}
+        hashes["hash-paper"] = {"name": Path(file_path).name, "type": "md"}
+        hashes_path.write_text(json.dumps(hashes), encoding="utf-8")
+
+    with patch.object(add_documents, "add_single_file", side_effect=fake_add_single_file) as legacy_add, \
+        patch.object(add_documents, "import_document_source") as import_source, \
+        patch.object(add_documents, "summarize_documents") as summarize:
+        result = add_documents.add_documents(str(kb), str(source), legacy_compile=True)
+
+    assert result["ok"] is True
+    assert result["workflow"] == "legacy_compile"
+    assert result["added"] == [str(source)]
+    legacy_add.assert_called_once()
+    import_source.assert_not_called()
+    summarize.assert_not_called()
 
 
 def test_add_documents_validates_ingest_gate_force_reason(tmp_path):
@@ -370,6 +521,54 @@ def test_maintenance_rebuild_defaults_to_dry_run(tmp_path):
     assert result["ok"] is True
     assert result["dry_run"] is True
     assert result["would_rebuild"] == [str(source)]
+
+
+def test_maintenance_rebuild_yes_noops_without_raw_documents(tmp_path):
+    maintenance = _load_script("maintenance")
+    kb = _make_skill_kb(tmp_path)
+
+    with patch.object(maintenance, "staged_add_documents") as staged_add:
+        result = maintenance.rebuild(str(kb), yes=True)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is False
+    assert result["workflow"] == "staged_rebuild"
+    assert result["rebuilt"] == []
+    assert result["failed"] == []
+    staged_add.assert_not_called()
+
+
+def test_maintenance_rebuild_uses_staged_add_without_promotion(tmp_path):
+    maintenance = _load_script("maintenance")
+    kb = _make_skill_kb(tmp_path)
+    raw = kb / "raw"
+    raw.mkdir()
+    source = raw / "paper.md"
+    source.write_text("# Paper", encoding="utf-8")
+    calls: list[tuple[str, str, bool, bool]] = []
+
+    def fake_staged_add_documents(kb_arg, path_arg, *, force=False, strict=False, promote=False, **_kwargs):
+        calls.append((kb_arg, path_arg, force, promote))
+        return {
+            "ok": True,
+            "workflow": "staged",
+            "imported": [{"file_hash": "hash-paper", "name": "paper.md"}],
+            "file_hashes": ["hash-paper"],
+            "summary": {"generated": 1, "skipped": 0, "failed": 0, "total": 1, "failures": [], "documents": []},
+            "promotion": {"promoted": 0, "skipped": 0, "failed": 0, "total": 0, "failures": [], "documents": []},
+            "failed": [],
+        }
+
+    with patch.object(maintenance, "staged_add_documents", side_effect=fake_staged_add_documents):
+        result = maintenance.rebuild(str(kb), yes=True, strict=True)
+
+    assert result["ok"] is True
+    assert result["dry_run"] is False
+    assert result["workflow"] == "staged_rebuild"
+    assert result["rebuilt"] == [str(source)]
+    assert result["staged"]["summary"]["generated"] == 1
+    assert result["staged"]["promotion"]["promoted"] == 0
+    assert calls == [(str(kb), str(raw), True, False)]
 
 
 def test_maintenance_merge_concepts_dry_run_uses_system_proposals(tmp_path):

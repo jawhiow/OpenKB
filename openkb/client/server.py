@@ -2279,6 +2279,205 @@ def create_app(registry: JobRegistry | None = None, *, start_model_pool_probe_sc
     def favicon() -> Any:
         return Response(status_code=204)
 
+    # ------------------------------------------------------------------
+    # entity_registry — legacy registry maintenance
+    # ------------------------------------------------------------------
+
+    def _load_market_provider():
+        try:
+            from openkb.market_data.akshare_provider import AkShareProvider
+            return AkShareProvider()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/entities/registry")
+    def entities_registry(
+        kb_dir: str | None = Query(default=None),
+        type: str = Query(default="company"),
+        q: str = Query(default=""),
+        page: int = Query(default=1),
+        page_size: int = Query(default=50),
+    ) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(kb_dir)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+        from openkb.market_data.registry_import import load_registry_page
+
+        return load_registry_page(
+            target_kb,
+            entity_type=type,
+            query=q,
+            page=page,
+            page_size=page_size,
+        )
+
+    @app.put("/api/entities/registry/{entity_type}/{canonical_id}")
+    def entities_registry_update(
+        entity_type: str,
+        canonical_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+        from openkb.market_data.registry_import import update_registry_entity
+
+        return {"entity": update_registry_entity(
+            target_kb,
+            entity_type=entity_type,
+            canonical_id=canonical_id,
+            payload=payload,
+        )}
+
+    @app.post("/api/entities/import-akshare")
+    def entities_import_akshare(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        include_companies = bool(payload.get("include_companies", True))
+        include_industries = bool(payload.get("include_industries", False))
+        provider = _load_market_provider()
+
+        def run(job) -> dict[str, Any]:
+            from openkb.market_data.registry_import import import_akshare_entities
+
+            result = import_akshare_entities(
+                target_kb,
+                provider=provider,
+                include_companies=include_companies,
+                include_industries=include_industries,
+            )
+            return result.as_dict()
+
+        job = registry.submit(
+            "entity_import_akshare",
+            run,
+            message="Importing AkShare entities into registry",
+        )
+        return {"job": job.to_dict()}
+
+    # ------------------------------------------------------------------
+    # market_data — quote snapshots (Phase 2)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/market/refresh")
+    def market_refresh(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(payload.get("kb_dir"))
+        except Exception as exc:
+            raise translate_error(exc) from exc
+
+        symbol = (payload.get("symbol") or "").strip()
+        canonical_id = (payload.get("canonical_id") or "").strip()
+        all_registered = bool(payload.get("all_registered", False))
+        provided = sum(bool(x) for x in (symbol, canonical_id, all_registered))
+        if provided != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide exactly one of symbol, canonical_id, or all_registered.",
+            )
+
+        provider = _load_market_provider()
+        from openkb.market_data.refresh import (
+            DEFAULT_RATE_LIMITS,
+            refresh_all_registered,
+            refresh_symbol,
+            resolve_symbol,
+        )
+
+        if all_registered:
+            def run(job) -> dict[str, Any]:
+                result = refresh_all_registered(
+                    target_kb, provider=provider, rate_limits=DEFAULT_RATE_LIMITS,
+                )
+                return {
+                    "summary": result.summary(),
+                    "outcomes": [
+                        {
+                            "symbol": o.symbol,
+                            "market": o.market,
+                            "status": o.status,
+                            "error": o.error,
+                        }
+                        for o in result.outcomes
+                    ],
+                }
+
+            job = registry.submit("market_refresh_all", run, message="Refreshing all registered symbols")
+            return {"job": job.to_dict()}
+
+        target = symbol or canonical_id
+        resolved_symbol, resolved_market, resolved_id = resolve_symbol(target_kb, target)
+        if resolved_symbol is None or resolved_market is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not resolve '{target}' to a registered xueqiu_symbol.",
+            )
+        outcome = refresh_symbol(
+            target_kb, provider=provider,
+            symbol=resolved_symbol, market=resolved_market,
+        )
+        return {
+            "symbol": resolved_symbol,
+            "market": resolved_market,
+            "canonical_id": resolved_id,
+            "status": outcome.status,
+            "error": outcome.error,
+        }
+
+    @app.get("/api/market/status")
+    def market_status(kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(kb_dir)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+        from openkb.market_data.snapshot_store import load_status, read_quote_snapshot
+
+        status = load_status(target_kb)
+        rows: list[dict[str, Any]] = []
+        for symbol, info in sorted(status.items()):
+            readout = read_quote_snapshot(target_kb, symbol)
+            rows.append({
+                "symbol": symbol,
+                "outcome": info.get("outcome"),
+                "error": info.get("error"),
+                "at": info.get("at"),
+                "stale": (readout.stale if readout else None),
+                "stale_reason": (readout.stale_reason if readout else ""),
+            })
+        return {"rows": rows}
+
+    @app.get("/api/market/snapshot/{symbol}")
+    def market_snapshot(symbol: str, kb_dir: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            target_kb = _resolve_kb_dir(kb_dir)
+        except Exception as exc:
+            raise translate_error(exc) from exc
+        from openkb.market_data.refresh import resolve_symbol
+        from openkb.market_data.snapshot_store import read_quote_snapshot
+
+        # Allow callers to pass either a symbol or a canonical_id / alias.
+        resolved_symbol, resolved_market, canonical_id = resolve_symbol(target_kb, symbol)
+        actual_symbol = resolved_symbol or symbol
+        readout = read_quote_snapshot(target_kb, actual_symbol)
+        if readout is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No snapshot cached for {actual_symbol}. POST /api/market/refresh first.",
+            )
+        data = readout.as_dict()
+        data["canonical_id"] = canonical_id
+        if readout.stale:
+            data["disclaimer"] = (
+                "Market data is stale (cache TTL expired). "
+                "Refresh via POST /api/market/refresh."
+            )
+        return data
+
     return app
 
 

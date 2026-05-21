@@ -2,10 +2,8 @@
 
 Given a wiki directory under a KB, this module:
 
-  * Builds character-unigram signatures over each concept page's
-    ``slug + title + brief``.
-  * Pairs up concepts whose similarity exceeds a configurable threshold
-    (Jaccard or overlap-coefficient, mirroring ``compiler._similar_concept_slug``).
+  * Builds normalized name variants over each concept page's slug and H1.
+  * Pairs up only high-confidence aliases whose normalized names match.
   * Forms equivalence classes (Union-Find) so transitive variants land in
     the same merge group.
   * For each cluster of size ≥ 2:
@@ -43,6 +41,31 @@ _CJK_LO, _CJK_HI = "㐀", "鿿"
 def _unigrams(text: str) -> set[str]:
     text = unicodedata.normalize("NFKC", text or "").casefold()
     return {c for c in text if c.isalnum() or _CJK_LO <= c <= _CJK_HI}
+
+
+def _normalized_name(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text or "").casefold()
+    return "".join(c for c in text if c.isalnum() or _CJK_LO <= c <= _CJK_HI)
+
+
+def _strip_parenthetical(text: str) -> str:
+    return re.sub(r"[\(（][^\)）]*[\)）]", "", text).strip()
+
+
+def _name_variants(page: "ConceptPage") -> set[str]:
+    """Return conservative normalized aliases for a concept page.
+
+    The lint merge proposal path must be high precision because its output can
+    drive destructive merges. Character overlap alone produces many false
+    positives in Chinese investment KBs (for example 上行风险/下行风险 or
+    PCE/CPI), so only exact normalized slug/H1 aliases are considered.
+    """
+    variants: set[str] = set()
+    for value in (page.slug, page.title, _strip_parenthetical(page.title)):
+        normalized = _normalized_name(value)
+        if len(normalized) >= 3:
+            variants.add(normalized)
+    return variants
 
 
 def _parse_concept_page(path: Path) -> tuple[list[str], str, str]:
@@ -125,53 +148,9 @@ def _cjk_only(s: set[str]) -> set[str]:
 
 
 def _similarity(a: ConceptPage, b: ConceptPage) -> float:
-    """Best-of-three similarity, but prefer CJK-only signatures.
-
-    English slugs share many ASCII letters by coincidence (``capital_allocation``
-    vs ``cloud_profitability`` both contain ``a/c/i/l/o/t``). Mixing those
-    incidental hits with CJK character overlap inflates scores. So when both
-    pages carry ≥ 3 CJK chars in their wide signature, we restrict the
-    comparison to the CJK subset. When neither side has meaningful CJK
-    content we fall back to ASCII comparison at a stricter threshold.
-    """
-    a_tight_cjk = _cjk_only(a.tight_sig)
-    b_tight_cjk = _cjk_only(b.tight_sig)
-    a_wide_cjk = _cjk_only(a.wide_sig)
-    b_wide_cjk = _cjk_only(b.wide_sig)
-
-    if len(a_wide_cjk) >= 3 and len(b_wide_cjk) >= 3:
-        # Tight CJK Jaccard
-        inter = len(a_tight_cjk & b_tight_cjk)
-        if inter >= 3:
-            union = len(a_tight_cjk | b_tight_cjk)
-            sim = inter / union if union else 0.0
-            if sim >= 0.50:
-                return sim
-        # Wide CJK Jaccard
-        inter = len(a_wide_cjk & b_wide_cjk)
-        if inter >= 3:
-            union = len(a_wide_cjk | b_wide_cjk)
-            sim = inter / union if union else 0.0
-            if sim >= 0.40:
-                return sim
-        # CJK overlap-coefficient (for long descriptive slugs)
-        inter_t = len(a_tight_cjk & b_tight_cjk)
-        if inter_t >= 5:
-            base = min(len(a_tight_cjk), len(b_tight_cjk))
-            if base:
-                sim = inter_t / base
-                if sim >= 0.70:
-                    return sim * 0.95
-        return 0.0
-
-    # Both sides effectively English (no usable CJK): require very high
-    # tight-Jaccard to merge, since ASCII letters collide frequently.
-    inter = len(a.tight_sig & b.tight_sig)
-    if inter >= 4:
-        union = len(a.tight_sig | b.tight_sig)
-        sim = inter / union if union else 0.0
-        if sim >= 0.75:
-            return sim
+    """Return high-confidence alias similarity for merge proposals."""
+    if _name_variants(a) & _name_variants(b):
+        return 1.0
     return 0.0
 
 

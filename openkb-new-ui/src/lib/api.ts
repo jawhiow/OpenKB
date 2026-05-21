@@ -200,6 +200,8 @@ export interface ChatReference {
   doc_name?: string;
   query?: string;
   top_k?: number;
+  // market_snapshot tool reference
+  input?: string;
 }
 
 export interface StreamQueryPayload {
@@ -1400,6 +1402,7 @@ function asChatReferences(value: unknown): ChatReference[] {
       doc_name: nullableString(item.doc_name) ?? undefined,
       query: nullableString(item.query) ?? undefined,
       top_k: item.top_k === undefined || item.top_k === null ? undefined : Number(item.top_k),
+      input: nullableString(item.input) ?? undefined,
     }));
 }
 
@@ -1429,3 +1432,153 @@ function parseSseEvent(rawEvent: string): { event: string; data: Record<string, 
 
   return { event, data };
 }
+
+// ---------------------------------------------------------------------------
+// Entity registry maintenance + market snapshots
+// ---------------------------------------------------------------------------
+
+export interface RegistryEntity {
+  type: 'company' | 'industry';
+  canonical_id: string;
+  canonical_name: string;
+  display_name: string;
+  aliases: string[];
+  identifiers: Record<string, unknown>;
+  sources: string[];
+}
+
+export interface EntityRegistryResponse {
+  type: 'company' | 'industry';
+  items: RegistryEntity[];
+  total: number;
+  page: number;
+  page_size: number;
+  counts: {
+    companies: number;
+    industries: number;
+  };
+}
+
+export const getEntityRegistry = async (
+  kbDir: string,
+  params?: { type?: 'company' | 'industry'; q?: string; page?: number; page_size?: number },
+): Promise<EntityRegistryResponse> => {
+  const response = await apiClient.get('/entities/registry', {
+    params: { kb_dir: kbDir, ...params },
+  });
+  return response.data;
+};
+
+export interface UpdateRegistryEntityRequest {
+  kb_dir: string;
+  entity_type: 'company' | 'industry';
+  canonical_id: string;
+  canonical_name: string;
+  display_name: string;
+  aliases: string[];
+  identifiers?: Record<string, unknown>;
+  sources: string[];
+}
+
+export const updateRegistryEntity = async (
+  request: UpdateRegistryEntityRequest,
+): Promise<{ entity: RegistryEntity }> => {
+  const { entity_type, canonical_id, ...body } = request;
+  const response = await apiClient.put(
+    `/entities/registry/${encodeURIComponent(entity_type)}/${encodeURIComponent(canonical_id)}`,
+    body,
+  );
+  return response.data;
+};
+
+export interface ImportAkshareEntitiesRequest {
+  kb_dir: string;
+  include_companies?: boolean;
+  include_industries?: boolean;
+}
+
+export const importAkshareEntities = async (
+  request: ImportAkshareEntitiesRequest,
+): Promise<JobEnvelope> => {
+  const response = await apiClient.post('/entities/import-akshare', request);
+  return response.data;
+};
+
+export interface MarketRefreshRequest {
+  kb_dir: string;
+  symbol?: string;
+  canonical_id?: string;
+  all_registered?: boolean;
+}
+
+export interface MarketRefreshSingleResponse {
+  symbol: string;
+  market: string;
+  canonical_id: string | null;
+  status: string;
+  error?: string | null;
+}
+
+export type MarketRefreshResponse = JobEnvelope | MarketRefreshSingleResponse;
+
+export const refreshMarket = async (
+  request: MarketRefreshRequest,
+): Promise<MarketRefreshResponse> => {
+  const response = await apiClient.post('/market/refresh', request);
+  return response.data;
+};
+
+export interface MarketStatusRow {
+  symbol: string;
+  outcome: string | null;
+  error: string | null;
+  at: string | null;
+  stale: boolean | null;
+  stale_reason: string;
+}
+
+export interface MarketStatusResponse {
+  rows: MarketStatusRow[];
+}
+
+export const getMarketStatus = async (kbDir: string): Promise<MarketStatusResponse> => {
+  const response = await apiClient.get('/market/status', { params: { kb_dir: kbDir } });
+  return response.data;
+};
+
+export interface MarketSnapshotQuote {
+  currency: string | null;
+  price: number | null;
+  change_pct: number | null;
+  market_cap: number | null;
+  pe_ttm: number | null;
+  pb: number | null;
+  dividend_yield: number | null;
+}
+
+export interface MarketSnapshot {
+  symbol: string;
+  market: string;
+  name: string;
+  source: string;
+  function_version: string;
+  as_of: string;
+  expires_at: string;
+  quote: MarketSnapshotQuote;
+  missing_fields: string[];
+  stale: boolean;
+  stale_reason?: string;
+  canonical_id: string | null;
+  disclaimer?: string;
+}
+
+export const getMarketSnapshot = async (
+  kbDir: string,
+  symbolOrId: string,
+): Promise<MarketSnapshot> => {
+  const response = await apiClient.get(
+    `/market/snapshot/${encodeURIComponent(symbolOrId)}`,
+    { params: { kb_dir: kbDir } },
+  );
+  return response.data;
+};

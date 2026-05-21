@@ -2546,3 +2546,164 @@ def client(host, port, no_browser):
         raise click.ClickException(
             f"{exc}\nRun: pip install \"openkb[client]\""
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# entity — registry maintenance commands
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def entity():
+    """Entity registry maintenance commands."""
+
+
+def _require_kb_dir(ctx) -> Path:
+    kb_dir = _find_kb_dir(ctx.obj.get("kb_dir_override"))
+    if kb_dir is None:
+        raise click.ClickException(
+            "No knowledge base found. Run `openkb init` or pass --kb-dir."
+        )
+    return kb_dir
+
+
+def _load_default_provider():
+    try:
+        from openkb.market_data.akshare_provider import AkShareProvider
+        return AkShareProvider()
+    except RuntimeError as exc:
+        raise click.ClickException(
+            f"{exc}\nAkShare should be installed as a core dependency. "
+            "Run: pip install --upgrade akshare"
+        ) from exc
+
+
+@entity.command("import-akshare")
+@click.option("--companies/--no-companies", default=True,
+              help="Import AkShare company symbol rows into companies.yaml.")
+@click.option("--industries", is_flag=True, default=False,
+              help="Import strict industry classifications when available.")
+@click.pass_context
+def entity_import_akshare(ctx, companies, industries):
+    """Import AkShare entities directly into the YAML entity registry."""
+    from openkb.market_data.registry_import import import_akshare_entities
+
+    if not companies and not industries:
+        raise click.ClickException("Nothing to import. Enable --companies or --industries.")
+    kb_dir = _require_kb_dir(ctx)
+    provider = _load_default_provider()
+    result = import_akshare_entities(
+        kb_dir,
+        provider=provider,
+        include_companies=companies,
+        include_industries=industries,
+    )
+    click.echo(
+        "entity import-akshare  "
+        f"companies created={result.companies.created} updated={result.companies.updated} skipped={result.companies.skipped}; "
+        f"industries created={result.industries.created} updated={result.industries.updated} skipped={result.industries.skipped}"
+    )
+    try:
+        commit_kb_changes(kb_dir, "entity: import AkShare registry data")
+    except Exception as exc:  # pragma: no cover - git optional
+        logging.getLogger(__name__).warning("Git auto-commit failed: %s", exc)
+
+
+@entity.command("registry-status")
+@click.pass_context
+def entity_registry_status(ctx):
+    """Show counts from the YAML entity registry."""
+    from openkb.market_data.registry_import import load_registry_payload
+
+    kb_dir = _require_kb_dir(ctx)
+    payload = load_registry_payload(kb_dir)
+    click.echo(f"companies:  {len(payload['companies'])}")
+    click.echo(f"industries: {len(payload['industries'])}")
+
+
+# ---------------------------------------------------------------------------
+# market — quote snapshot commands (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def market():
+    """Market snapshot commands (Phase 2)."""
+
+
+@market.command("refresh")
+@click.option("--symbol", "symbol", default=None, help="Refresh a specific xueqiu symbol.")
+@click.option("--canonical-id", "canonical_id", default=None,
+              help="Refresh by registry canonical_id.")
+@click.option("--all-registered", "all_registered", is_flag=True, default=False,
+              help="Refresh every company with a xueqiu_symbol in companies.yaml.")
+@click.pass_context
+def market_refresh(ctx, symbol, canonical_id, all_registered):
+    """Fetch and store one or more market snapshots."""
+    from openkb.market_data.refresh import (
+        DEFAULT_RATE_LIMITS,
+        refresh_all_registered,
+        refresh_symbol,
+        resolve_symbol,
+    )
+
+    if sum(bool(x) for x in (symbol, canonical_id, all_registered)) != 1:
+        raise click.ClickException(
+            "Provide exactly one of --symbol, --canonical-id, or --all-registered."
+        )
+
+    kb_dir = _require_kb_dir(ctx)
+    provider = _load_default_provider()
+
+    if all_registered:
+        result = refresh_all_registered(kb_dir, provider=provider, rate_limits=DEFAULT_RATE_LIMITS)
+        click.echo(f"market refresh  {result.summary()}")
+        for outcome in result.outcomes:
+            if outcome.status != "refreshed":
+                click.echo(f"  {outcome.symbol} ({outcome.market}): {outcome.status}  {outcome.error or ''}")
+        return
+
+    target = symbol or canonical_id
+    resolved_symbol, resolved_market, resolved_id = resolve_symbol(kb_dir, target)
+    if resolved_symbol is None or resolved_market is None:
+        raise click.ClickException(
+            f"Could not resolve '{target}' to a registered xueqiu_symbol."
+        )
+    outcome = refresh_symbol(
+        kb_dir, provider=provider, symbol=resolved_symbol, market=resolved_market,
+    )
+    click.echo(
+        f"market refresh {resolved_symbol} ({resolved_market})  status={outcome.status}"
+        + (f"  error={outcome.error}" if outcome.error else "")
+    )
+
+
+@market.command("status")
+@click.option("--canonical-id", "canonical_id", default=None,
+              help="Limit status output to one canonical_id.")
+@click.pass_context
+def market_status(ctx, canonical_id):
+    """Show last refresh outcome for each tracked symbol."""
+    from openkb.market_data.refresh import resolve_symbol
+    from openkb.market_data.snapshot_store import load_status, read_quote_snapshot
+
+    kb_dir = _require_kb_dir(ctx)
+    status = load_status(kb_dir)
+    if not status:
+        click.echo("No market snapshots recorded. Run `openkb market refresh` first.")
+        return
+
+    target_symbol = None
+    if canonical_id:
+        target_symbol, _market, _cid = resolve_symbol(kb_dir, canonical_id)
+        if target_symbol is None:
+            raise click.ClickException(f"Unknown canonical_id: {canonical_id}")
+
+    for symbol, info in sorted(status.items()):
+        if target_symbol and symbol != target_symbol:
+            continue
+        readout = read_quote_snapshot(kb_dir, symbol)
+        stale = "stale" if (readout and readout.stale) else "fresh"
+        outcome = info.get("outcome", "?")
+        at = info.get("at", "?")
+        click.echo(f"{symbol}  outcome={outcome}  state={stale}  at={at}")

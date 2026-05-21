@@ -1,6 +1,7 @@
 """Q&A agent for querying the OpenKB knowledge base."""
 from __future__ import annotations
 
+import json as _json
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from agents import Agent, Runner, function_tool
 
 from agents import ToolOutputImage, ToolOutputText
 from openkb.agent.tools import (
+    get_market_snapshot,
     get_wiki_page_content,
     read_wiki_file,
     read_wiki_image,
@@ -53,7 +55,19 @@ You are OpenKB, a knowledge-base Q&A agent. You answer questions by searching th
     Never fetch the whole long document when a tight page range is enough.
 8. Source content may reference images (e.g. ![image](sources/images/doc/file.png)).
    Use the get_image tool to view them when needed.
-9. Synthesize a clear, concise, well-cited answer grounded in wiki content.
+9. For investment questions involving current price, PE/PB, market cap, or
+   ETF/fund NAV, call ``market_snapshot(entity_or_symbol)``. Inputs may be a
+   company name, registry canonical_id, or xueqiu symbol (e.g. "腾讯控股",
+   "SH601127"). When citing a number from the snapshot:
+   - Always include ``source`` and ``as_of`` so the user can audit freshness.
+   - If the snapshot returns ``stale: true`` or includes a ``disclaimer``
+     field, prefix the answer with a freshness warning and suggest
+     ``openkb market refresh`` rather than treating the figure as live.
+   - If the tool returns ``error: "unresolved_entity_or_symbol"``, do not
+     guess a ticker; tell the user the company is not in the registry.
+   - If the tool returns ``error: "no_snapshot_cached"``, surface the hint
+     verbatim instead of falling back to wiki content for prices.
+10. Synthesize a clear, concise, well-cited answer grounded in wiki content.
 
 Answer based only on wiki content. Be concise.
 Before each tool call, output one short sentence explaining the reason.
@@ -268,10 +282,30 @@ def build_query_agent(
         if result["type"] == "image":
             return ToolOutputImage(image_url=result["image_url"])
         return ToolOutputText(text=result["text"])
+
+    kb_root = str(Path(wiki_root).resolve().parent)
+
+    @function_tool
+    def market_snapshot(entity_or_symbol: str) -> str:
+        """Return cached market snapshot for a company or xueqiu symbol.
+
+        Use this for current-price / PE / PB / market-cap questions about
+        equities resolved in the entity registry. When ``stale`` is true the
+        answer MUST prefix a freshness disclaimer.
+
+        Args:
+            entity_or_symbol: Company alias, canonical_id, or xueqiu symbol
+                (e.g. '腾讯控股', 'SH601127').
+        """
+        if reference_tracker is not None:
+            reference_tracker.add({"type": "market_snapshot", "input": entity_or_symbol})
+        result = get_market_snapshot(entity_or_symbol, kb_root)
+        return _json.dumps(result, ensure_ascii=False)
+
     return Agent(
         name="wiki-query",
         instructions=instructions,
-        tools=[read_file, search_long_documents, get_page_content, get_image],
+        tools=[read_file, search_long_documents, get_page_content, get_image, market_snapshot],
         model=resolve_agent_model(model),
         model_settings=build_agent_model_settings(parallel_tool_calls=False, model=model),
     )

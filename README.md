@@ -367,6 +367,65 @@ OpenKB's wiki is a directory of Markdown files with `[[wikilinks]]`. Obsidian re
 3. Use graph view to see knowledge connections
 4. Use Obsidian Web Clipper to add web articles to `raw/`
 
+### Investment KB: Entity Registry & Market Data
+
+For investment-research knowledge bases, OpenKB ships two AkShare-backed
+layers that prevent duplicate company pages and answer current-price /
+PE / PB / market-cap questions.
+
+**Phase 1 — Entity registry import (identity).**
+Imports AkShare-listed companies directly into the legacy registry at
+`.openkb/entity_registry/companies.yaml`. Existing manual names are preserved;
+imports append aliases, identifiers, and sources so the compiler resolves each
+company to one canonical record. Strict industry import is available only when
+the provider exposes a strict industry taxonomy; loose concept/theme boards are
+not written into `industries.yaml`.
+
+```bash
+# Import all AkShare company rows into companies.yaml
+openkb entity import-akshare
+
+# Include strict industries when the provider exposes them
+openkb entity import-akshare --industries
+
+# Inspect current registry counts
+openkb entity registry-status
+```
+
+Lint surfaces three new findings: registered company aliases misused under
+`concepts/` or `industries/`, cross-listed pages split across multiple
+`companies/` files, and unregistered companies the compiler flagged for
+review.
+
+**Phase 2 — Market snapshots (on-demand).**
+Once aliases are resolved, fetch quote/valuation snapshots for any
+registered company. OpenKB never crawls the full market.
+
+```bash
+# Refresh one company by symbol or by canonical_id
+openkb market refresh --symbol SH601127
+openkb market refresh --canonical-id 赛力斯
+
+# Refresh every company with a xueqiu_symbol in the registry
+openkb market refresh --all-registered
+
+# Show last refresh outcome per symbol
+openkb market status
+```
+
+Snapshots land under `.openkb/market_data/current/<symbol>.json`. The
+`stale` flag is recomputed at read time from `expires_at`, so a cached file
+becomes stale automatically when its TTL passes without being rewritten.
+
+The query agent gains a `market_snapshot(entity_or_symbol)` tool. It cites
+`source` and `as_of` on every snapshot reference, and prefixes a freshness
+disclaimer when the cache is stale — so you always know whether a number is
+live or historical.
+
+Tune behavior via the `entity_enrichment` and `market_data` blocks in
+`config.yaml` (see `config.yaml.example` for the full list, including
+per-market rate limits).
+
 # 🧭 Learn More
 
 ### Compared to Karpathy's Approach

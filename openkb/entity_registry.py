@@ -168,6 +168,39 @@ def _namespace_order(namespace_hint: str) -> tuple[str, ...]:
     return ENTITY_TYPES
 
 
+# Xueqiu symbol prefix → canonical exchange code mapping.
+# Phase 1 covers A-share, Hong Kong, and US equities.
+_XUEQIU_PREFIX_EXCHANGE = {
+    "SH": "SSE",
+    "SZ": "SZSE",
+    "BJ": "BSE",
+    "HK": "HKEX",
+}
+
+
+def _parse_xueqiu_symbol(value: str) -> tuple[str, str] | None:
+    """Parse a Xueqiu-style symbol into (exchange, raw_symbol).
+
+    Examples:
+        ``SH601127`` → ("SSE", "601127")
+        ``HK00700``  → ("HKEX", "00700")
+        ``MSFT``     → ("US", "MSFT") — US tickers carry no exchange prefix on Xueqiu
+    """
+    text = (value or "").strip().upper()
+    if not text:
+        return None
+    prefix = text[:2]
+    exchange = _XUEQIU_PREFIX_EXCHANGE.get(prefix)
+    if exchange and text[2:]:
+        return exchange, text[2:]
+    # Pure alphabetic identifiers (typical of US Xueqiu symbols) are routed
+    # to the synthetic "US" exchange so cross-listed pages still match by
+    # ``exchange:symbol``.
+    if text.isalpha():
+        return "US", text
+    return None
+
+
 def _flatten_identifiers(identifiers: dict[str, Any]) -> list[tuple[str, str]]:
     items: list[tuple[str, str]] = []
     for key, value in identifiers.items():
@@ -180,14 +213,29 @@ def _flatten_identifiers(identifiers: dict[str, Any]) -> list[tuple[str, str]]:
                     if exchange and symbol:
                         items.append((f"{key_text}:exchange_symbol", f"{exchange}:{symbol}"))
                 elif str(entry).strip():
-                    items.append((key_text, str(entry).strip().casefold()))
+                    raw = str(entry).strip()
+                    items.append((key_text, raw.casefold()))
+                    # Xueqiu-style scalar entries (``SH601127``) should also
+                    # populate the exchange-aware index so registered tickers
+                    # match regardless of which key the lookup uses.
+                    if key_text in {"xueqiu_symbol", "xueqiu_symbol_alt"}:
+                        parsed = _parse_xueqiu_symbol(raw)
+                        if parsed is not None:
+                            exchange, symbol = parsed
+                            items.append(("tickers:exchange_symbol", f"{exchange}:{symbol}"))
         elif isinstance(value, dict):
             exchange = str(value.get("exchange") or "").strip().upper()
             symbol = str(value.get("symbol") or value.get("ticker") or "").strip().upper()
             if exchange and symbol:
                 items.append((f"{key_text}:exchange_symbol", f"{exchange}:{symbol}"))
         elif value is not None and str(value).strip():
-            items.append((key_text, str(value).strip().casefold()))
+            raw = str(value).strip()
+            items.append((key_text, raw.casefold()))
+            if key_text in {"xueqiu_symbol", "xueqiu_symbol_alt"}:
+                parsed = _parse_xueqiu_symbol(raw)
+                if parsed is not None:
+                    exchange, symbol = parsed
+                    items.append(("tickers:exchange_symbol", f"{exchange}:{symbol}"))
     return items
 
 

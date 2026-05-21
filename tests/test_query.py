@@ -18,7 +18,7 @@ class TestBuildQueryAgent:
 
     def test_agent_has_adaptive_long_document_tool(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
-        assert len(agent.tools) == 4
+        assert len(agent.tools) == 5
 
     def test_agent_tool_names(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")
@@ -27,6 +27,7 @@ class TestBuildQueryAgent:
         assert "search_long_documents" in names
         assert "get_page_content" in names
         assert "get_image" in names
+        assert "market_snapshot" in names
 
     def test_instructions_mention_adaptive_long_document_search(self, tmp_path):
         agent = build_query_agent(str(tmp_path), "gpt-4o-mini")

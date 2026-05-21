@@ -8,6 +8,7 @@ import yaml
 from click.testing import CliRunner
 
 from openkb.cli import cli
+from openkb.market_data.provider import CompanyAliasInfo, FakeProvider, IndustryRow, SymbolRow
 from openkb.schema import AGENTS_MD
 
 
@@ -101,6 +102,78 @@ def test_init_schema_content(tmp_path):
         assert "risks/" not in agents_content
         assert "must be an actual company" in agents_content
         assert "must be a real industry" in agents_content
+
+
+def test_entity_registry_status_counts_yaml_entries(tmp_path):
+    kb_dir = tmp_path / "kb"
+    base = kb_dir / ".openkb" / "entity_registry"
+    base.mkdir(parents=True)
+    (base / "companies.yaml").write_text(
+        "companies:\n"
+        "  赛力斯:\n"
+        "    canonical_name: 赛力斯\n",
+        encoding="utf-8",
+    )
+    (base / "industries.yaml").write_text(
+        "industries:\n"
+        "  industry-biomedicine:\n"
+        "    canonical_name: 生物医药\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    with patch("openkb.cli._find_kb_dir", return_value=kb_dir):
+        result = runner.invoke(cli, ["entity", "registry-status"])
+
+    assert result.exit_code == 0
+    assert "companies:  1" in result.output
+    assert "industries: 1" in result.output
+
+
+def test_entity_import_akshare_writes_legacy_registry(tmp_path):
+    kb_dir = tmp_path / "kb"
+    base = kb_dir / ".openkb" / "entity_registry"
+    base.mkdir(parents=True)
+    (base / "companies.yaml").write_text("companies: {}\n", encoding="utf-8")
+    (base / "industries.yaml").write_text("industries: {}\n", encoding="utf-8")
+    provider = FakeProvider(
+        symbols={
+            "CN_A": [
+                SymbolRow(
+                    symbol="SH601127",
+                    market="CN_A",
+                    short_name="赛力斯",
+                    full_name="重庆赛力斯集团股份有限公司",
+                    source="fake",
+                )
+            ],
+            "HK": [],
+            "US": [],
+        },
+        aliases={
+            ("CN_A", "SH601127"): CompanyAliasInfo(
+                symbol="SH601127",
+                market="CN_A",
+                short_name="赛力斯",
+                full_name="重庆赛力斯集团股份有限公司",
+            )
+        },
+        industries=[
+            IndustryRow(canonical_id="industry-biomedicine", name="生物医药", source="fake"),
+        ],
+    )
+
+    runner = CliRunner()
+    with patch("openkb.cli._find_kb_dir", return_value=kb_dir), \
+         patch("openkb.cli._load_default_provider", return_value=provider), \
+         patch("openkb.cli.commit_kb_changes"):
+        result = runner.invoke(cli, ["entity", "import-akshare", "--industries"])
+
+    assert result.exit_code == 0
+    companies = yaml.safe_load((base / "companies.yaml").read_text(encoding="utf-8"))["companies"]
+    industries = yaml.safe_load((base / "industries.yaml").read_text(encoding="utf-8"))["industries"]
+    assert companies["cna-sh601127"]["identifiers"]["xueqiu_symbol"] == "SH601127"
+    assert industries["industry-biomedicine"]["canonical_name"] == "生物医药"
 
 
 def test_query_save_commits_changed_wiki_files(tmp_path):

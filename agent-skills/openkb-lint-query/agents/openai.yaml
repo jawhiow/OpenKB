@@ -1,4 +1,4 @@
 interface:
   display_name: "OpenKB KB Workflows"
-  short_description: "Query, lint, inspect, add/import, delete, and maintain OpenKB knowledge bases."
-  default_prompt: "Use $openkb-lint-query in an OpenKB knowledge base directory to query, cite, lint, safely repair, inspect inventory, add/import/rebuild documents, delete indexed source documents, and run compact/merge/H1 maintenance."
+  short_description: "Query, lint, inspect, staged add/import, delete, and maintain OpenKB knowledge bases."
+  default_prompt: "Use $openkb-lint-query in an OpenKB knowledge base directory to query, cite, lint, safely repair, inspect inventory, staged add/import/rebuild documents, delete indexed source documents, and run compact/merge/H1 maintenance. Default document add/import must import source artifacts and generate scored review summaries; do not promote into downstream wiki pages unless explicitly requested."

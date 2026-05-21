@@ -1419,6 +1419,7 @@ def _resolve_company_items_against_registry(
     resolved_items: list[dict] = []
     resolved_entities: list[ResolvedEntity] = []
     seen: set[str] = set()
+    unmatched_surfaces: list[str] = []
     for item in items:
         surface = str(item.get("title") or item.get("name") or "").strip()
         match = registry.resolve(surface, namespace_hint="company")
@@ -1427,6 +1428,8 @@ def _resolve_company_items_against_registry(
             if slug and slug not in seen:
                 seen.add(slug)
                 resolved_items.append(item)
+                if surface:
+                    unmatched_surfaces.append(surface)
             continue
 
         if match.canonical_id in seen:
@@ -1438,7 +1441,107 @@ def _resolve_company_items_against_registry(
             "title": match.canonical_name,
             "action": "update",
         })
+    if unmatched_surfaces:
+        _record_unmatched_companies_for_review(unmatched_surfaces)
     return resolved_items, resolved_entities
+
+
+# Compiler hot-path: when a company candidate is not in the registry, peek at
+# any cached symbol index (no network) and stash a review hint. The enrichment
+# workflow then picks up these surfaces on the next run.
+_KB_DIR_FOR_HOTPATH: ContextVar[Path | None] = ContextVar(
+    "openkb_compile_kb_dir", default=None,
+)
+
+
+@contextmanager
+def compile_kb_dir(kb_dir: Path | None) -> Iterator[None]:
+    """Bind the active KB root so hot-path helpers can locate caches."""
+    token = _KB_DIR_FOR_HOTPATH.set(kb_dir)
+    try:
+        yield
+    finally:
+        _KB_DIR_FOR_HOTPATH.reset(token)
+
+
+def _record_unmatched_companies_for_review(surfaces: list[str]) -> None:
+    """Append unmatched surfaces with single symbol_index hits to a review file.
+
+    Reads symbol_index caches if present; never triggers a provider refresh.
+    Silent no-op when caches are missing or unreadable.
+    """
+    kb_dir = _KB_DIR_FOR_HOTPATH.get()
+    if kb_dir is None:
+        return
+    try:
+        from openkb.market_data.symbol_index import index_path
+        from openkb.market_data.provider import ALL_MARKETS, SymbolRow
+        from openkb.entity_registry import alias_key, legal_name_key
+    except Exception:
+        return
+
+    rows: list[dict] = []
+    for market in ALL_MARKETS:
+        path = index_path(kb_dir, market)
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for raw in data.get("rows", []) or []:
+            if isinstance(raw, dict):
+                rows.append(raw)
+    if not rows:
+        return
+
+    by_short: dict[str, list[dict]] = {}
+    by_full: dict[str, list[dict]] = {}
+    for row in rows:
+        sk = alias_key(str(row.get("short_name") or ""))
+        if sk:
+            by_short.setdefault(sk, []).append(row)
+        fk = alias_key(str(row.get("full_name") or "")) if row.get("full_name") else ""
+        if fk:
+            by_full.setdefault(fk, []).append(row)
+
+    hits: list[dict] = []
+    seen_surfaces: set[str] = set()
+    for surface in surfaces:
+        key = alias_key(surface)
+        if not key or key in seen_surfaces:
+            continue
+        seen_surfaces.add(key)
+        matches = by_short.get(key) or by_full.get(key) or []
+        if len(matches) != 1:
+            continue
+        row = matches[0]
+        hits.append({
+            "surface": surface,
+            "proposed_canonical": row.get("short_name") or surface,
+            "xueqiu_symbol": row.get("symbol"),
+            "market": row.get("market"),
+            "source": "compiler_hotpath",
+        })
+
+    if not hits:
+        return
+    review_dir = kb_dir / ".openkb" / "entity_registry" / "resolution"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    review_path = review_dir / "compile_unmatched_companies.json"
+    existing: list[dict] = []
+    if review_path.exists():
+        try:
+            loaded = json.loads(review_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                existing = loaded
+        except (OSError, json.JSONDecodeError):
+            existing = []
+    existing_keys = {alias_key(str(rec.get("surface") or "")) for rec in existing if isinstance(rec, dict)}
+    for hit in hits:
+        if alias_key(hit["surface"]) not in existing_keys:
+            existing.append(hit)
+    review_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _empty_investment_page_plan() -> dict[str, list[dict]]:
